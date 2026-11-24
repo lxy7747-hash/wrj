@@ -166,7 +166,7 @@ onBeforeUnmount(() => store.resetMaintenance())
       <el-table-column label="发射带宽（MHz）" min-width="120"><template #default="{ row }">{{ row.bandwidthMHz ?? '暂无数据' }}</template></el-table-column>
       <el-table-column label="发射功率（W）" min-width="110"><template #default="{ row }">{{ row.txPowerW ?? '暂无数据' }}</template></el-table-column>
       <el-table-column label="数据速率" min-width="120"><template #default="{ row }">{{ row.dataRateMbps == null ? '暂无数据' : formatDataRate(row.dataRateMbps) }}</template></el-table-column>
-      <el-table-column label="BER 阈值" min-width="140"><template #default="{ row }">{{ row.berThreshold ?? '暂无数据' }}</template></el-table-column>
+      <el-table-column label="误码率阈值" min-width="140"><template #default="{ row }">{{ row.berThreshold ?? '暂无数据' }}</template></el-table-column>
       <el-table-column prop="version" label="版本" width="75" />
       <el-table-column label="状态" width="85"><template #default="{ row }">{{ row.active === false ? '已停用' : '已启用' }}</template></el-table-column>
       <el-table-column label="只读" width="75"><template #default="{ row }">{{ row.readOnly ? '是' : '否' }}</template></el-table-column>
@@ -191,7 +191,7 @@ onBeforeUnmount(() => store.resetMaintenance())
         <el-descriptions-item label="发射带宽（MHz）">{{ viewing.bandwidthMHz ?? '暂无数据' }}</el-descriptions-item>
         <el-descriptions-item label="发射功率（W）">{{ viewing.txPowerW ?? '暂无数据' }}</el-descriptions-item>
         <el-descriptions-item label="数据速率">{{ viewing.dataRateMbps == null ? '暂无数据' : formatDataRate(viewing.dataRateMbps) }}</el-descriptions-item>
-        <el-descriptions-item label="BER 阈值">{{ viewing.berThreshold ?? '暂无数据' }}</el-descriptions-item>
+        <el-descriptions-item label="误码率阈值">{{ viewing.berThreshold ?? '暂无数据' }}</el-descriptions-item>
         <el-descriptions-item label="版本">{{ viewing.version }}</el-descriptions-item>
         <el-descriptions-item label="状态">{{ viewing.active === false ? '已停用' : '已启用' }}</el-descriptions-item>
         <el-descriptions-item label="只读">{{ viewing.readOnly ? '是' : '否' }}</el-descriptions-item>
@@ -273,7 +273,7 @@ onBeforeUnmount(() => store.resetMaintenance())
         <section class="equipment-editor__section" aria-labelledby="equipment-quality-title">
           <h3 id="equipment-quality-title">质量阈值</h3>
           <div class="equipment-editor__grid">
-            <el-form-item label="BER 阈值" :error="parameterIssues.berThreshold"><el-input-number :model-value="editor.berThreshold" :disabled="pending" :step="0.000001" controls-position="right" placeholder="未配置" data-testid="equipment-threshold" @update:model-value="editor.berThreshold = $event ?? null" /></el-form-item>
+            <el-form-item label="误码率阈值" :error="parameterIssues.berThreshold"><el-input-number :model-value="editor.berThreshold" :disabled="pending" :step="0.000001" controls-position="right" placeholder="未配置" data-testid="equipment-threshold" @update:model-value="editor.berThreshold = $event ?? null" /></el-form-item>
           </div>
         </section>
         <el-alert v-if="feedback.state === 'ERROR' && feedback.message" :title="`${feedback.message}${feedback.fieldPath ? `（${feedback.fieldPath}）` : ''}`" type="error" :closable="false" />
@@ -311,7 +311,7 @@ onBeforeUnmount(() => store.resetMaintenance())
         <el-form-item label="频率下限（MHz）"><el-input-number :model-value="recreate.frequencyMinMHz ?? null" controls-position="right" @update:model-value="recreate.frequencyMinMHz = $event ?? null" /></el-form-item>
         <el-form-item label="频率上限（MHz）"><el-input-number :model-value="recreate.frequencyMaxMHz ?? null" controls-position="right" @update:model-value="recreate.frequencyMaxMHz = $event ?? null" /></el-form-item>
         <el-form-item label="调制方式"><el-input :model-value="recreate.modulation ?? ''" @update:model-value="recreate.modulation = $event || null" /></el-form-item>
-        <el-form-item label="BER 阈值"><el-input-number :model-value="recreate.berThreshold ?? null" :step="0.000001" controls-position="right" @update:model-value="recreate.berThreshold = $event ?? null" /></el-form-item>
+        <el-form-item label="误码率阈值"><el-input-number :model-value="recreate.berThreshold ?? null" :step="0.000001" controls-position="right" @update:model-value="recreate.berThreshold = $event ?? null" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="recreate = null">取消</el-button><el-button type="primary" :loading="recreating" data-testid="equipment-recreate-submit" @click="submitRecreate">重建</el-button></template>
     </el-dialog>

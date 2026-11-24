@@ -188,6 +188,16 @@ export class AuthSqliteStorage implements AuthStorage {
       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`).run(user.userId, user.username, user.role, user.status, salt.toString('hex'), derive(password, salt).toString('hex'), user.displayName ?? user.username)
   }
 
+  resetPassword(userId: string, password: string): void {
+    if (!validPassword(password) || password.length > 32) {
+      throw new Error('密码须为 6–32 位。密码不能全为空白。')
+    }
+    const salt = randomBytes(16)
+    this.db.prepare('UPDATE users SET password_salt=?, password_hash=? WHERE user_id=?')
+      .run(salt.toString('hex'), derive(password, salt).toString('hex'), userId)
+    this.revokeUser(userId)
+  }
+
   delete(id: string): void {
     this.writeUser(id, undefined, () => { this.db.prepare('DELETE FROM users WHERE user_id=?').run(id) })
     this.revokeUser(id)

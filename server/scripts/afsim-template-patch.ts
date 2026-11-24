@@ -4,7 +4,7 @@
  * 只允许修改以下区域，其余字节保持模板原文：
  * 1. comm_platform_REAR.txt 的 fw_sit_dst、fw_tgt_dst 两个数组元素；
  * 2. comm_platform_REAR.txt 的 link_calc 处理器参数块；
- * 3. comm_platform_MISSION_UAV.txt 的 relayNames、rt_video_dsts、rt_status_dsts 三个数组元素；
+ * 3. comm_platform_MISSION_UAV.txt 的三个数组元素及 sat_link 接收频率单位；
  * 4. comm_SimSetup.txt 的 realtime、clock_rate；
  * 5. 指向同一激光端口的 laser_link 声明/引用统一为 lazer_link（1112 源模板已统一，当前命中 0 处）。
  *
@@ -206,10 +206,21 @@ export function stripScriptComments(text: string): string {
   return joinLineRecords(kept)
 }
 
+function spliceSectionLines(records: LineRecord[], start: number, end: number, lines: readonly string[], keepFinalEnding: boolean): string {
+  const blockEnding = records[start]!.ending || '\n'
+  const finalEnding = keepFinalEnding ? records[end]!.ending : (records[end]!.ending || '\n')
+  const replacement: LineRecord[] = lines.map((content, index) => ({
+    content,
+    ending: index === lines.length - 1 ? finalEnding : blockEnding,
+  }))
+  records.splice(start, end - start + 1, ...replacement)
+  return joinLineRecords(records)
+}
+
 /**
  * 替换无人机编队实例段：从“无人机编队”注释块开始，到干扰站实例前的最后一个 `end_platform`。
  * 该段由场景配置生成 mission_uav 实例（数量、阵营、初始位置、航点、盘旋、返航、角色）；
- * 其余平台实例（后方车/指挥车/卫星/干扰站）保持模板原文。
+ * 其余固定平台实例（后方车/指挥车/卫星）保持模板原文。
  */
 export function replaceMissionUavSection(text: string, fileName: Template1112FileName, lines: readonly string[]): string {
   const records = splitLineRecords(text)
@@ -224,14 +235,35 @@ export function replaceMissionUavSection(text: string, fileName: Template1112Fil
     throw new TemplateRegionError(fileName, 'mission_uav 实例段', '定位失败：未找到无人机段的 end_platform。')
   }
   if (lines.length === 0) throw new TemplateRegionError(fileName, 'mission_uav 实例段', '生成内容为空。')
-  const blockEnding = records[start]!.ending || '\n'
-  const finalEnding = records[end]!.ending || '\n'
-  const replacement: LineRecord[] = lines.map((content, index) => ({
-    content,
-    ending: index === lines.length - 1 ? finalEnding : blockEnding,
-  }))
-  records.splice(start, end - start + 1, ...replacement)
-  return joinLineRecords(records)
+  return spliceSectionLines(records, start, end, lines, false)
+}
+
+/**
+ * 替换 5.x 干扰源配置段：从“5.x 干扰源配置”注释块开始，到末尾最后一个 `end_platform`。
+ * 该段由场景配置生成地面干扰站与机载干扰平台（数量、阵营、初始位置、航线、盘旋、侦测范围）。
+ */
+export function replaceJammerSection(text: string, fileName: Template1112FileName, lines: readonly string[]): string {
+  const records = splitLineRecords(text)
+  const matches = records.flatMap((record, index) => /^\s*\/\/\s*5\.x\s*干扰源配置/u.test(record.content) ? [index] : [])
+  if (matches.length !== 1) {
+    throw new TemplateRegionError(
+      fileName,
+      '干扰源实例段',
+      matches.length === 0 ? '定位失败：未找到“5.x 干扰源配置”注释标记。' : `定位失败：匹配到 ${matches.length} 处“5.x 干扰源配置”注释标记。`,
+    )
+  }
+  const comment = matches[0]!
+  const start = comment > 0 && /^\s*\/\/\s*=+\s*$/u.test(records[comment - 1]!.content) ? comment - 1 : comment
+  let end = records.length - 1
+  while (end > start && !/^\s*end_platform\s*$/u.test(records[end]!.content)) end -= 1
+  if (end <= start || !/^\s*end_platform\s*$/u.test(records[end]!.content)) {
+    throw new TemplateRegionError(fileName, '干扰源实例段', '定位失败：未找到干扰源段的 end_platform。')
+  }
+  if (records.slice(end + 1).some(record => record.content.trim() !== '' && !/^\s*(?:\/\/|#)/u.test(record.content))) {
+    throw new TemplateRegionError(fileName, '干扰源实例段', '结构异常：干扰源段之后存在未预期的模板语句。')
+  }
+  if (lines.length === 0) throw new TemplateRegionError(fileName, '干扰源实例段', '生成内容为空。')
+  return spliceSectionLines(records, start, end, lines, true)
 }
 
 /**
@@ -319,6 +351,8 @@ export type TemplateRenderInput = {
   returnStatusDestinations: readonly string[]
   /** comm_platform_INS.txt 中无人机编队段的完整文本行（含注释头与各 mission_uav 实例块）。 */
   missionUavLines: readonly string[]
+  /** comm_platform_INS.txt 中 5.x 干扰源配置段的完整文本行（含注释头与各干扰源实例块）。 */
+  jammerLines: readonly string[]
   /** 完整 link_calc 块，含 add processor 与 end_processor 行。 */
   linkCalcLines: readonly string[]
   /** 本地运行包用 local_link_stub 原位替换时传入对应处理器声明。 */
@@ -336,6 +370,7 @@ export type TemplateRenderReport = {
 /** 生成 10 个执行 TXT：固定模板 + 受控替换。 */
 export function renderTemplate1112(input: TemplateRenderInput): TemplateRenderReport {
   const files = {} as Record<Template1112FileName, string>
+  const uavFile = 'comm_platform_MISSION_UAV.txt'
   const laserRenames: LaserRename[] = []
   for (const fileName of Object.keys(TEMPLATE_1112_FILES) as Template1112FileName[]) {
     const normalized = normalizeLaserPortName(fileName, TEMPLATE_1112_FILES[fileName])
@@ -343,23 +378,29 @@ export function renderTemplate1112(input: TemplateRenderInput): TemplateRenderRe
     laserRenames.push(...normalized.renames)
   }
   files['comm_platform_INS.txt'] = replaceMissionUavSection(files['comm_platform_INS.txt'], 'comm_platform_INS.txt', input.missionUavLines)
+  files['comm_platform_INS.txt'] = replaceJammerSection(files['comm_platform_INS.txt'], 'comm_platform_INS.txt', input.jammerLines)
   files['comm_platform_REAR.txt'] = replaceArrayValues(files['comm_platform_REAR.txt'], 'comm_platform_REAR.txt', 'fw_sit_dst', input.rearSituationDestinations)
   files['comm_platform_REAR.txt'] = replaceArrayValues(files['comm_platform_REAR.txt'], 'comm_platform_REAR.txt', 'fw_tgt_dst', input.rearTargetDestinations)
   files['comm_platform_REAR.txt'] = replaceLinkCalcBlock(files['comm_platform_REAR.txt'], 'comm_platform_REAR.txt', input.linkCalcLines, input.linkCalcHeader)
-  files['comm_platform_MISSION_UAV.txt'] = replaceArrayValues(files['comm_platform_MISSION_UAV.txt'], 'comm_platform_MISSION_UAV.txt', 'relayNames', input.relayNames)
-  files['comm_platform_MISSION_UAV.txt'] = replaceArrayValues(files['comm_platform_MISSION_UAV.txt'], 'comm_platform_MISSION_UAV.txt', 'rt_video_dsts', input.returnVideoDestinations)
-  files['comm_platform_MISSION_UAV.txt'] = replaceArrayValues(files['comm_platform_MISSION_UAV.txt'], 'comm_platform_MISSION_UAV.txt', 'rt_status_dsts', input.returnStatusDestinations)
+  files[uavFile] = replaceArrayValues(files[uavFile], uavFile, 'relayNames', input.relayNames)
+  files[uavFile] = replaceArrayValues(files[uavFile], uavFile, 'rt_video_dsts', input.returnVideoDestinations)
+  files[uavFile] = replaceArrayValues(files[uavFile], uavFile, 'rt_status_dsts', input.returnStatusDestinations)
+  files[uavFile] = replaceUniqueLine(files[uavFile], uavFile, 'sat_link 接收频率',
+    content => /^[ \t]*frequency 11\.8 MHz[ \t]*$/u.test(content),
+    content => content.replace('11.8 MHz', '11.8 GHz'))
   files['comm_SimSetup.txt'] = replaceSimulationSpeed(files['comm_SimSetup.txt'], 'comm_SimSetup.txt', input.realtimeEnabled, input.clockRate)
   return {
     files,
     regions: [
       { fileName: 'comm_platform_INS.txt', region: 'mission_uav 实例段（数量/阵营/位置/航线/盘旋/返航/角色）' },
+      { fileName: 'comm_platform_INS.txt', region: '5.x 干扰源实例段（数量/阵营/位置/航线/盘旋/侦测范围）' },
       { fileName: 'comm_platform_REAR.txt', region: 'fw_sit_dst 数组' },
       { fileName: 'comm_platform_REAR.txt', region: 'fw_tgt_dst 数组' },
       { fileName: 'comm_platform_REAR.txt', region: 'link_calc 处理器参数块' },
       { fileName: 'comm_platform_MISSION_UAV.txt', region: 'relayNames 数组' },
       { fileName: 'comm_platform_MISSION_UAV.txt', region: 'rt_video_dsts 数组' },
       { fileName: 'comm_platform_MISSION_UAV.txt', region: 'rt_status_dsts 数组' },
+      { fileName: uavFile, region: 'sat_link 接收频率单位' },
       { fileName: 'comm_SimSetup.txt', region: 'realtime / clock_rate' },
     ],
     laserRenames,

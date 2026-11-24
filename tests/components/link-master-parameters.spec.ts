@@ -33,7 +33,7 @@ describe('通用基础数据预填链路', () => {
   it('仅接受闭合的来源快照与装备允许字段', () => {
     expect(isLinkParameterSource({ kind: 'EQUIPMENT', sourceId: 'EQ-1', sourceVersion: 1, fields: ['bandwidth'] })).toBe(true)
     expect(isLinkParameterSource({ kind: 'EQUIPMENT', sourceId: 'EQ-1', sourceVersion: 1, fields: ['frequency'] })).toBe(false)
-    expect(isLinkParameterSource({ kind: 'MASTER_DATA', sourceId: 'MD-1', sourceVersion: 1, fields: ['coding'], entryKey: 'coding.UNCODED', extra: true })).toBe(false)
+    expect(isLinkParameterSource({ kind: 'MASTER_DATA', sourceId: 'MD-1', sourceVersion: 1, fields: ['modulation'], entryKey: 'modulation.QPSK', extra: true })).toBe(false)
   })
 
   it('按明确字段名和单位复制，跳过未知和错误单位，且不修改输入', () => {
@@ -49,7 +49,7 @@ describe('通用基础数据预填链路', () => {
   })
 
   it('只应用用户选择的受控枚举条目，并保持激光调制和光学参数不变', () => {
-    const dictionary = { ...master([{ key: 'modulation.QPSK', valueType: 'TEXT', value: 'QPSK' }, { key: 'coding.UNCODED', valueType: 'TEXT', value: 'UNCODED' }]), kind: 'ENUMERATION' }
+    const dictionary = { ...master([{ key: 'modulation.QPSK', valueType: 'TEXT', value: 'QPSK' }, { key: 'txPolarization.horizontal', valueType: 'TEXT', value: 'horizontal' }]), kind: 'ENUMERATION' }
     expect(prepareLinkMasterData(link(), dictionary, [], 'modulation.QPSK')).toMatchObject({ ok: true, fields: ['modulation'], link: { modulation: 'QPSK' } })
     expect(prepareLinkMasterData(link({ type: 'LASER' }), dictionary, [], 'modulation.QPSK')).toMatchObject({ ok: false, fieldPath: 'content.entries' })
   })

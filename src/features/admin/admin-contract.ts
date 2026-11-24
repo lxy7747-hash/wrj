@@ -147,7 +147,7 @@ export function isMasterDetails(value: unknown): value is MasterDataDetails {
 export function isBackupRecord(value: unknown): value is BackupRecord {
   return isAdminObject(value, ['backupId', 'status', 'checksum', 'createdAt'], ['name', 'format'])
     && (value.name === undefined || (isAdminText(value.name) && value.name.length <= 80))
-    && (value.format === undefined || value.format === 'SYSTEM_SQLITE_V1' || value.format === 'MAIN_SQLITE_V1')
+    && (value.format === undefined || value.format === 'SYSTEM_SQLITE_V1' || value.format === 'SYSTEM_SQLITE_V2' || value.format === 'MAIN_SQLITE_V1')
     && isAdminText(value.backupId) && isAdminText(value.checksum)
     && (value.status === 'VALID_FIXTURE' || value.status === 'INVALID_FIXTURE' || value.status === 'VALID' || value.status === 'INVALID')
     && (!(value.status === 'VALID' || value.status === 'INVALID') || /^[A-F0-9]{64}$/.test(value.checksum))

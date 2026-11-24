@@ -155,6 +155,7 @@ describe('部署地址下的角色权限配置', () => {
   })
 
   it('保留两个旧基础数据菜单键，以合并后的分类名称加载、编辑和保存', async () => {
+    APP_CONFIG.systemManagement.showMasterData = true
     const profile = {
       profileId: 'MASTER-DATA', name: '基础数据管理员', baseRole: 'ADMIN',
       permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'],
@@ -181,18 +182,21 @@ describe('部署地址下的角色权限配置', () => {
     })
   })
 
-  it('全局隐藏基础数据时，角色编辑器同时隐藏两个旧基础数据菜单分类', async () => {
+  it('全局隐藏基础数据时，角色编辑器同时隐藏两个旧基础数据菜单分类与维护权限', async () => {
     APP_CONFIG.systemManagement.showMasterData = false
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({
       version: 1,
-      profiles: [{ profileId: 'MASTER-DATA', name: '基础数据管理员', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'], menuPaths: ['/admin'] }],
+      profiles: [{ profileId: 'MASTER-DATA', name: '基础数据管理员', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN', 'MASTER_DATA_MAINTAIN'], menuPaths: ['/admin', '/admin?section=master-data'] }],
       assignments: [],
     })))
 
     const wrapper = setup()
     await flushPromises()
+    expect(wrapper.text()).not.toContain('装备与通用数据维护')
+    expect(wrapper.text()).not.toContain('基础数据管理（通用基础数据）')
     await button(wrapper, '编辑').trigger('click')
     const editor = wrapper.findAll('section').find(section => section.text().includes('编辑自定义角色'))
+    expect(editor?.text()).not.toContain('装备与通用数据维护')
     expect(editor?.text()).not.toContain('基础数据管理（设备参数）')
     expect(editor?.text()).not.toContain('基础数据管理（通用基础数据）')
   })
@@ -230,5 +234,33 @@ describe('部署地址下的角色权限配置', () => {
       profiles: [expect.objectContaining({ profileId: 'READ' })],
       assignments: [{ userId: 'USER-1', profileId: 'READ' }],
     })
+  })
+
+  it('支持自动生成角色编号、精确逐项校验、快捷全选与未保存变更标记', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response(emptyConfig()))
+      .mockImplementationOnce((_url, init) => Promise.resolve(response({ ...JSON.parse(String(init.body)), version: 2 })))
+    vi.stubGlobal('fetch', fetch)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+
+    const wrapper = setup()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="unsaved-role-changes"]').exists()).toBe(false)
+
+    await button(wrapper, '新增角色').trigger('click')
+    await wrapper.get('[data-testid="profile-id"]').setValue('非法中文编号')
+    await button(wrapper, '确认配置').trigger('click')
+    expect(wrapper.get('[data-testid="profile-editor-error"]').text()).toContain('仅支持字母、数字、下划线和短横线')
+
+    await wrapper.get('[data-testid="generate-profile-id"]').trigger('click')
+    expect((wrapper.get('[data-testid="profile-id"]').element as HTMLInputElement).value).toBe('OP_ROLE_1')
+
+    await wrapper.get('[data-testid="profile-name"]').setValue('值班操作员')
+    await button(wrapper, '确认配置').trigger('click')
+    expect(wrapper.find('[data-testid="unsaved-role-changes"]').exists()).toBe(true)
+
+    await button(wrapper, '保存权限配置').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="unsaved-role-changes"]').exists()).toBe(false)
   })
 })

@@ -24,7 +24,7 @@ test('场景页签切换和缩放不触发尺寸循环，表格保留内部横�
     await page.setViewportSize({ width, height: viewport.height })
     for (const [tab, tableId] of [
       ['节点配置', 'platform-table'], ['链路配置', 'link-table'],
-      ['干扰设备', 'jammer-table'], ['传感器', 'sensor-table'],
+      ['干扰设备', 'jammer-table'],
       ['节点配置', 'platform-table'], ['链路配置', 'link-table'],
     ] as const) {
       await page.getByRole('tab', { name: tab, exact: true }).click()

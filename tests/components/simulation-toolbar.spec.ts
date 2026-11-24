@@ -46,7 +46,7 @@ describe('仿真工具栏', () => {
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
     await wrapper.setProps({ status: 'RUNNING', receptionActive: true, engineControl: { connected: true, action: null, delivery: 'IDLE' } })
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('select').exists()).toBe(false)
     await wrapper.setProps({ engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
     expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
@@ -64,30 +64,31 @@ describe('仿真工具栏', () => {
     expect(wrapper.text()).toContain('执行结果待确认')
   })
 
-  it('真实引擎连接开放暂停；发送后允许手动恢复，始终标记待确认且不开放倍速', async () => {
-    wrapper = mount(SimulationToolbar, { props: { ...baseProps, realMission: true,
+  it('远端引擎连接开放暂停；发送后允许手动恢复，始终标记待确认且不开放倍速', async () => {
+    wrapper = mount(SimulationToolbar, { props: { ...baseProps, remoteEngine: true, receptionActive: true,
       engineControl: { connected: true, action: null, delivery: 'IDLE' } }, global: { plugins: [ElementPlus] } })
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('select').exists()).toBe(false)
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     expect(wrapper.emitted('pause')).toHaveLength(1)
     await wrapper.setProps({ engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('恢复')
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     expect(wrapper.emitted('start')).toHaveLength(1)
     expect(wrapper.get('[data-testid="engine-control-status"]').text()).toContain('待确认')
     expect(wrapper.text()).not.toContain('仿真已暂停')
     await wrapper.setProps({ engineControl: { connected: true, action: 'stop', delivery: 'SENT' } })
-    for (const button of ['start', 'pause', 'stop']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
+    for (const button of ['start', 'pause']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-testid="engine-control-status"] small').attributes('title')).toContain('配置保持锁定')
   })
 
   it.each(['SENDING', 'UNKNOWN'] as const)('%s 或断线时禁用引擎控制，不通过重复点击重发', async delivery => {
-    wrapper = mount(SimulationToolbar, { props: { ...baseProps, realMission: true,
+    wrapper = mount(SimulationToolbar, { props: { ...baseProps, remoteEngine: true, receptionActive: true,
       engineControl: { connected: true, action: 'pause', delivery } }, global: { plugins: [ElementPlus] } })
-    for (const button of ['start', 'pause', 'stop']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
+    for (const button of ['start', 'pause']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="simulation-stop"]').element).toHaveProperty('disabled', delivery === 'SENDING')
     await wrapper.setProps({ engineControl: { connected: false, action: null, delivery: 'IDLE' } })
     expect(wrapper.get('[data-testid="engine-control-status"] small').text()).toBe('未连接')
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
@@ -97,42 +98,62 @@ describe('仿真工具栏', () => {
     wrapper = mount(SimulationToolbar, {
       props: { ...baseProps, filePlayback: true }, global: { plugins: [ElementPlus] },
     })
-    const select = wrapper.get('[aria-label="仿真倍速"]')
+    const select = wrapper.get('[aria-label="文件回放倍速"]')
     expect(select.find(`option[value="${speed}"]`).text()).toBe(`×${speed}`)
     await select.setValue(String(speed))
     expect(wrapper.emitted('update:speed')).toEqual([[speed]])
   })
 
-  it('未知模式保守禁用暂停、继续和倍速，但不冒充真实模式', async () => {
+  it('未知模式禁用暂停和继续，进入文件回放后显示倍速', async () => {
     wrapper = mount(SimulationToolbar, { props: { ...baseProps, runtimeUnknown: true }, global: { plugins: [ElementPlus] } })
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('select').exists()).toBe(false)
     expect(wrapper.text()).toContain('运行模式尚未确认')
     expect(wrapper.text()).not.toContain('真实 mission')
     await wrapper.setProps({ status: 'PAUSED' })
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
     await wrapper.setProps({ runtimeUnknown: false, filePlayback: true })
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[aria-label="文件回放倍速"]').attributes('disabled')).toBeUndefined()
   })
 
-  it('真实 mission 禁用暂停、继续和倍速并说明原因，Mock 模式保持原控制行为', async () => {
+  it('本机 Mission 核实连接后开放暂停，发送后可继续，断线时仍可停止', async () => {
     wrapper = mount(SimulationToolbar, {
-      props: { ...baseProps, realMission: true },
+      props: { ...baseProps, status: 'STOPPED', realMission: true },
       global: { plugins: [ElementPlus] },
     })
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('开始')
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('title')).toBe('当前模式不支持暂停。')
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('title')).toBe('当前模式不支持调整倍速。')
-    expect(wrapper.text()).not.toContain('真实 mission 模式仅支持开始和停止')
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('title')).toContain('控制连接尚未就绪')
+    expect(wrapper.get('[data-testid="simulation-stop"]').text()).toContain('停止')
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('select').exists()).toBe(false)
     expect(wrapper.find('.simulation-toolbar__runtime').exists()).toBe(false)
 
-    await wrapper.setProps({ realMission: false })
+    await wrapper.setProps({ status: 'RUNNING', engineControl: { connected: true, action: null, delivery: 'IDLE' } })
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    expect(wrapper.emitted('pause')).toHaveLength(1)
+    await wrapper.setProps({ engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('继续')
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="engine-control-status"]').text()).toContain('待确认')
+    await wrapper.setProps({ engineControl: { connected: false, action: 'pause', delivery: 'UNKNOWN' } })
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeUndefined()
 
-    await wrapper.setProps({ realMission: true, status: 'PAUSED' })
+    await wrapper.setProps({ realMission: false, engineControl: undefined })
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('select').exists()).toBe(false)
+
+    await wrapper.setProps({ filePlayback: true })
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[aria-label="文件回放倍速"]').exists()).toBe(true)
+
+    await wrapper.setProps({ filePlayback: false, realMission: true, status: 'PAUSED' })
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
     expect(wrapper.find('[data-testid="simulation-step"]').exists()).toBe(false)
   })

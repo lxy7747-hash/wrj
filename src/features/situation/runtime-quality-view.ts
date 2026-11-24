@@ -5,7 +5,7 @@ import type { RuntimeLinkStatus } from '../data-exchange/runtime-link-decisions'
 export const RUNTIME_STATUS_LABELS = { UNKNOWN: '待判定', UP: '正常', DEGRADED: '劣化', DOWN: '中断' } as const
 
 const DECISION_REASONS: Record<string, string> = {
-  GXB_OR_BER_MISSING: '缺少 GXB 或 BER 测量', RECEIVED_POWER_MISSING: '缺少接收功率测量',
+  GXB_OR_BER_MISSING: '缺少 GXB 或误码率测量', RECEIVED_POWER_MISSING: '缺少接收功率测量',
   FAILURE_THRESHOLD_REACHED: '达到失效门限', AVAILABLE: '满足可用性门限',
   AVAILABILITY_THRESHOLD_NOT_MET: '未满足可用性门限', STABILITY_PENDING: '等待连续稳定帧',
   LINK_DISABLED: '链路已停用', SPATIAL_ISOLATION_NOT_MET: '未满足空域隔离门限',

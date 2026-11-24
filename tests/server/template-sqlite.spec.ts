@@ -136,10 +136,9 @@ describe('SQLite 模板持久化', () => {
     expect(second.templates.load()).toEqual([template])
   })
 
-  it('更新递增版本，重名/非法扩展/操作员写入拒绝且不破坏旧模板', async () => {
+  it('更新递增版本，重名/非法扩展拒绝且不破坏旧模板；操作员拥有模板维护权可创建（2026-11-24）', async () => {
     const server = await start(await path())
-    await server.api.post('/api/v1/templates').set(operator).send(body()).expect(403)
-    const created = (await server.api.post('/api/v1/templates').set(headers).send(body()).expect(201)).body.data
+    const created = (await server.api.post('/api/v1/templates').set(operator).send(body()).expect(201)).body.data
     await server.api.post('/api/v1/templates').set(headers).send(body()).expect(409)
     const invalid = body()
     invalid.uiExtensions.jammers[0]!.jammerId = 'UNKNOWN'
@@ -162,7 +161,8 @@ describe('SQLite 模板持久化', () => {
     const copied = await server.api.post(`/api/v1/templates/${template.templateId}/copy`).set(operator).send({ name: '旧模板副本' }).expect(201)
     expect(copied.body.data.uiExtensions.jammers).toHaveLength(legacy.config.jammers.length)
     const endpoint = `/api/v1/templates/${template.templateId}`
-    await server.api.delete(endpoint).set(operator).expect(403)
+    // 操作员已有模板维护权：删除同样需要一次性确认。
+    await server.api.delete(endpoint).set(operator).expect(428)
     await server.api.delete(endpoint).set(headers).expect(428)
     const id = await confirmation(server.api, template.templateId)
     await server.api.delete(endpoint).set({ ...headers, 'X-Confirmation-Id': id }).expect(200)

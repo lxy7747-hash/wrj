@@ -1,11 +1,14 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { APP_CONFIG } from '../../src/config/app.config'
 import type { EquipmentParameter, Link, LinkType, MasterData, ScenarioParameterCatalog } from '../../src/contracts/domain-models'
 import LinkEditorDialog from '../../src/components/scenarios/LinkEditorDialog.vue'
 
 enableAutoUnmount(afterEach)
-afterEach(() => { document.body.innerHTML = '' })
+const initialShowMasterData = APP_CONFIG.systemManagement.showMasterData
+beforeEach(() => { APP_CONFIG.systemManagement.showMasterData = true })
+afterEach(() => { APP_CONFIG.systemManagement.showMasterData = initialShowMasterData; document.body.innerHTML = '' })
 const equipment: EquipmentParameter = { equipmentId: 'EQ-LINK', type: '数传通信设备', frequencyMinMHz: 100, frequencyMaxMHz: 200,
   bandwidthMHz: 5, txPowerW: 20, dataRateMbps: 2, modulation: 'QPSK', berThreshold: 0.001, active: true, readOnly: false, version: 1 }
 const dictionary: MasterData = { dataId: 'DICT-LINK', kind: 'PARAMETER_DICTIONARY', version: 2, referenceCount: 0, active: true,
@@ -40,6 +43,14 @@ async function dialog(current = link(), currentCatalog = catalog, linkTypeOption
 }
 
 describe('链路弹框引用基础数据', () => {
+  it('全局隐藏基础数据时，链路编辑弹框隐藏基础数据引用控件', async () => {
+    APP_CONFIG.systemManagement.showMasterData = false
+    const { wrapper } = await dialog()
+    expect(wrapper.find('[data-testid="link-parameter-select"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="link-parameter-refresh"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="link-parameter-source"]').exists()).toBe(false)
+  })
+
   it('下拉框按设备参数和通用基础数据分组，字典与枚举同属通用组', async () => {
     const { wrapper } = await dialog()
     document.querySelector<HTMLElement>('[data-testid="link-parameter-select"] .el-select__wrapper')!.click()

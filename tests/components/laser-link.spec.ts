@@ -68,8 +68,8 @@ describe('激光链路编辑器', () => {
     expect(numberInput(wrapper, 'link-rx-frequency').props('modelValue')).toBe(681_300_000)
     expect(numberInput(wrapper, 'link-rx-bandwidth').props('modelValue')).toBe(1_000)
     // 激光链路可选数值：EIRP 20 dBW / G-T 15 dB/K / 噪声 5 dB。
-    expect(wrapper.find('[data-testid="laser-eirp"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="laser-gt"]').exists()).toBe(false)
+    expect(numberInput(wrapper, 'laser-eirp').props('modelValue')).toBe(20)
+    expect(numberInput(wrapper, 'laser-gt').props('modelValue')).toBe(15)
     expect(wrapper.get('[data-testid="link-laser-advanced"]').attributes('open')).toBeUndefined()
     expect(numberInput(wrapper, 'laser-noise').props('modelValue')).toBe(5)
     // 光学口径/脉宽/OOK 为可选扩展，切换时不强制填写。
@@ -77,6 +77,11 @@ describe('激光链路编辑器', () => {
       expect(numberInput(wrapper, id).props('modelValue')).toBeUndefined()
     }
     expect(select(wrapper, 'laser-modulation').props('modelValue')).toBeUndefined()
+    const modulation = wrapper.get('[data-testid="link-quality-advanced"] [data-testid="laser-modulation"]')
+    expect(modulation.element.closest('.el-form-item')?.querySelector('label')?.textContent).toBe('调制方式')
+    const threshold = wrapper.get('[data-testid="link-quality-advanced"] [data-testid="link-ber-threshold"]')
+    expect(threshold.element.closest('.el-form-item')?.parentElement).toBe(modulation.element.closest('.el-form-item')?.parentElement)
+    expect(wrapper.find('[data-testid="link-laser-advanced"] [data-testid="laser-modulation"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="laser-wavelength"]').text()).toContain('440')
     expect(wrapper.find('[data-testid="link-modulation"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="link-tx-polarization"]').exists()).toBe(false)
@@ -99,6 +104,19 @@ describe('激光链路编辑器', () => {
     legacy.unmount()
   })
 
+  it('质量参数常驻显示激光调制方式的校验错误', async () => {
+    const wrapper = mountEditor(link('LASER'))
+    await wrapper.setProps({ validate: () => [{
+      severity: 'ERROR', code: 'LASER_MODULATION_INVALID', fieldPath: 'laser.modulation', message: '激光调制方式有误。',
+    }] })
+    const quality = wrapper.get('section[data-testid="link-quality-advanced"]')
+    expect(quality.get('[data-testid="laser-modulation"]').element.closest('details')).toBeNull()
+    await wrapper.get('[data-testid="apply-link"]').trigger('click')
+    const field = wrapper.findAllComponents({ name: 'ElFormItem' }).find(item => item.props('label') === '调制方式')
+    expect(field?.props('error')).toBe('激光调制方式有误。')
+    wrapper.unmount()
+  })
+
   it('将 ns 脉宽转换为 s，提交完整 OOK 光学参数并通过写入校验', async () => {
     const wrapper = mountEditor(link())
     await switchToLaser(wrapper)
@@ -107,6 +125,11 @@ describe('激光链路编辑器', () => {
     expect(numberInput(wrapper, 'laser-tx-aperture').props('modelValue')).toBeUndefined()
     fillLaser(wrapper)
     await flushPromises()
+    const modulation = select(wrapper, 'laser-modulation')
+    await modulation.trigger('mouseenter')
+    await modulation.get('.el-select__clear').trigger('click')
+    expect(modulation.props('modelValue')).toBeUndefined()
+    modulation.vm.$emit('update:modelValue', 'OOK')
     expect(wrapper.get('[data-testid="laser-wavelength"]').text()).toContain('1549.31')
 
     await wrapper.get('[data-testid="apply-link"]').trigger('click')

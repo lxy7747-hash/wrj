@@ -18,17 +18,21 @@ function formItemFor(wrapper: ReturnType<typeof mount>, testId: string) {
 
 it('链路设置把父级实时校验文字显示在字段下方，修正后立即消失', async () => {
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-  const message = ref('干扰圈半径必须在 1～100 km 之间。')
+  const message = ref('')
   const wrapper = mount(LinkSettingsPanel, {
     props: {
       modelValue: readLinkSettings(config), dialogVisible: true, platforms: config.platforms, links: config.links,
       jammers: config.jammers, disabled: false,
       typeOptions: [{ value: 'SAT', label: '卫星' }],
-      fieldMessage: (path: string) => path === 'linkCalc.jammingRangeKm' ? message.value : '',
+      fieldMessage: (path: string) => 'linkCalc.jammingRangeKm'.startsWith(`${path}.`) || path === 'linkCalc.jammingRangeKm' ? message.value : '',
     },
     global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
   })
 
+  expect(wrapper.find('[data-testid="link-calc-updateIntervalS"]').exists()).toBe(true)
+  expect(wrapper.find('[data-testid="link-calc-jammingRangeKm"]').exists()).toBe(false)
+  message.value = '干扰圈半径必须在 1～100 km 之间。'
+  await nextTick()
   const range = formItemFor(wrapper, 'link-calc-jammingRangeKm')
   expect(range.props('error')).toBe('干扰圈半径必须在 1～100 km 之间。')
 

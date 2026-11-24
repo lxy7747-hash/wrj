@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'node:path'
 import type { EquipmentParameter, LinkParameterSource, MasterData, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models.js'
-import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions, isRfc3339DateTime } from '../../src/features/scenarios/scenario-validation.js'
 import { prepareLinkEquipment } from '../../src/features/scenarios/link-equipment-parameters.js'
 import { prepareLinkMasterData } from '../../src/features/scenarios/link-master-parameters.js'
 import type { ScenarioStorage } from '../scenarios/projection.js'
@@ -21,6 +21,7 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
     try {
       this.db.exec(`
         PRAGMA busy_timeout = 1000;
+        BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS scenarios (
           id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(id)) > 0),
           name TEXT NOT NULL CHECK (length(trim(name)) > 0),
@@ -29,6 +30,10 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
           revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1)
         ) STRICT;
       `)
+      if (!this.db.prepare('PRAGMA table_info(scenarios)').all().some(row => row.name === 'created_at')) {
+        this.db.exec('ALTER TABLE scenarios ADD COLUMN created_at TEXT')
+      }
+      this.db.exec('COMMIT')
       if (sources) {
         // ATTACH 会创建空库；本机启动随后初始化各自的表，测试只传场景库时保持旧行为。
         this.db.prepare('ATTACH DATABASE ? AS equipment').run(sources.equipmentPath)
@@ -58,6 +63,8 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
   private readRow(row: Record<string, unknown>): ScenarioDraft {
     if (typeof row.config_json !== 'string' || typeof row.ui_extensions_json !== 'string'
       || !Number.isSafeInteger(row.revision) || Number(row.revision) < 1) throw new Error('场景存储结构不正确。')
+    const createdAt = row.created_at
+    if (createdAt !== null && !isRfc3339DateTime(createdAt)) throw new Error('场景创建时间不正确。')
     const config: unknown = dropRetiredScenarioFields(JSON.parse(row.config_json))
     const uiExtensions: unknown = dropRetiredUiExtensionFields(JSON.parse(row.ui_extensions_json))
     restoreRequiredMotionFields(config, uiExtensions)
@@ -71,6 +78,7 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
       config: config as ScenarioConfig,
       uiExtensions: { jammers: extensions.jammers!, sensors: extensions.sensors! },
       revision: Number(row.revision),
+      ...(createdAt === null ? {} : { createdAt }),
       // 运行期锁不写入场景库；真实 Mission 的未结清记录由服务启动层恢复保护。
       locked: false,
       officialLibraryChanged: false,
@@ -104,11 +112,11 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
         this.syncParameterSources(current?.config, draft)
       }
       this.db.prepare(`
-        INSERT INTO scenarios (id, name, config_json, ui_extensions_json, revision)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO scenarios (id, name, config_json, ui_extensions_json, revision, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, config_json = excluded.config_json,
           ui_extensions_json = excluded.ui_extensions_json, revision = excluded.revision
-      `).run(draft.config.scenario.id, draft.config.scenario.name, JSON.stringify(dropRetiredScenarioFields(structuredClone(draft.config))), JSON.stringify(dropRetiredUiExtensionFields(structuredClone(draft.uiExtensions))), draft.revision)
+      `).run(draft.config.scenario.id, draft.config.scenario.name, JSON.stringify(dropRetiredScenarioFields(structuredClone(draft.config))), JSON.stringify(dropRetiredUiExtensionFields(structuredClone(draft.uiExtensions))), draft.revision, draft.createdAt ?? null)
       this.db.exec('COMMIT')
       return true
     } catch (error) {

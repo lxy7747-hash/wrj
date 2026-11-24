@@ -65,4 +65,18 @@ describe('运行结果导航入口', () => {
       expect(wrapper.text()).not.toContain('查看回放')
     } finally { wrapper.unmount() }
   })
+
+  it('仅切换 query.resultId 时同步选中项而不重复拉取运行结果目录', async () => {
+    const second = { ...record, resultId: 'RESULT-22222222-2222-4222-8222-222222222222', scenarioName: '第二次执行' }
+    const { wrapper, router } = await mountResults('report', [record, second])
+    try {
+      const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      await router.push({ path: '/reports', query: { resultId: second.resultId } })
+      await flushPromises()
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const select = wrapper.findComponent({ name: 'ElSelect' })
+      expect(select.props('modelValue')).toBe(second.resultId)
+    } finally { wrapper.unmount() }
+  })
 })

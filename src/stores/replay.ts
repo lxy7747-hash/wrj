@@ -7,6 +7,7 @@ import type {
   Replay,
   ReplayCommand,
   ReplayState,
+  ScenarioConfig,
   SwitchEvent,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
@@ -15,6 +16,8 @@ import { isSituationEvent, useTelemetryStore } from './telemetry'
 import { isLocalReplaySnapshot, type LocalReplaySnapshot } from '../features/replays/local-replay'
 import { isLocalArchiveSnapshot } from '../features/admin/local-archive'
 import { isEngineReplaySnapshot, type EngineReplaySnapshot } from '../features/replays/engine-replay'
+import { extractReplayScenarioConfig } from '../features/replays/replay-situation'
+import type { ConfiguredJammerRange } from '../features/situation/interference-ranges'
 
 type ReplayEvent = DetectionEvent | SwitchEvent
 
@@ -89,9 +92,49 @@ export const useReplayStore = defineStore('replay', {
     engineScenarioId: null as string | null,
     engineEpoch: undefined as number | undefined,
     engineLoading: false,
+    /** 运行结果对应场景的干扰/探测范围配置；用于历史回放与态势页一致地画圈。 */
+    configuredJammers: null as ConfiguredJammerRange[] | null,
+    /** 运行结果对应场景的完整配置（平台/链路/环境等）；用于历史回放与态势主界面一致渲染。 */
+    scenarioConfig: null as ScenarioConfig | null,
   }),
 
   actions: {
+    /**
+     * 读取运行结果所属场景的配置（平台、链路、环境与干扰/探测范围）。
+     * 读不到或结构不完整时保持对应字段为 null，让地图继续回退为文件模式/引擎上报范围。
+     */
+    async loadScenarioJammers(scenarioId: string, expectedEpoch?: number): Promise<void> {
+      try {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}`, {
+          headers: { 'X-Demo-Role': useAuthStore().role },
+        })
+        if (!response.ok || (expectedEpoch !== undefined && expectedEpoch !== this.requestEpoch)) return
+        const data = unwrapSuccessData(await response.json()) as { config?: { jammers?: unknown } }
+        if (expectedEpoch !== undefined && expectedEpoch !== this.requestEpoch) return
+        const extractedConfig = extractReplayScenarioConfig(data?.config)
+        this.scenarioConfig = extractedConfig ? markRaw(extractedConfig) : null
+        const raw = data?.config?.jammers
+        if (!Array.isArray(raw)) return
+        const ranges: ConfiguredJammerRange[] = []
+        for (const item of raw) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+          const jammer = item as Record<string, unknown>
+          if (typeof jammer.id !== 'string' || typeof jammer.platformId !== 'string'
+            || typeof jammer.jammingRange !== 'number' || !Number.isFinite(jammer.jammingRange) || jammer.jammingRange <= 0) continue
+          ranges.push({
+            id: jammer.id, platformId: jammer.platformId, jammingRange: jammer.jammingRange,
+            ...(typeof jammer.detectionRange === 'number' && Number.isFinite(jammer.detectionRange) && jammer.detectionRange > 0
+              ? { detectionRange: jammer.detectionRange } : {}),
+          })
+        }
+        this.configuredJammers = ranges.length ? ranges : null
+      } catch {
+        if (expectedEpoch !== undefined && expectedEpoch !== this.requestEpoch) return
+        this.configuredJammers = null
+        this.scenarioConfig = null
+      }
+    },
+
     /**
      * 读取本机文件回放快照；true 为已加载，null 为未配置，false 为读取失败。
      * 未配置时显示空态，读取失败显示错误，页面不回退演示数据。
@@ -120,10 +163,16 @@ export const useReplayStore = defineStore('replay', {
           return null
         }
         this.localSnapshot = markRaw(snapshot)
+        this.configuredJammers = null
+        this.scenarioConfig = null
         // 只供既有时间轴使用的本地游标，不代表 mission 引擎运行，不发送到 Mock 命令接口。
         this.replay = { replayId: 'REPLAY-LOCAL-FILE', runId: 'RUN-LOCAL-FILE', state: 'PAUSED',
           durationS: snapshot.durationS, currentTimeS: 0, eventIds: [] }
         this.state = 'PAUSED'
+        if (result) {
+          await this.loadScenarioJammers(result.record.scenarioId, epoch)
+          if (epoch !== this.requestEpoch) return false
+        }
         if (result?.record.runId && result.record.taskId) {
           this.engineResultId = resultId!
           this.engineRunId = result.record.runId
@@ -426,6 +475,8 @@ export const useReplayStore = defineStore('replay', {
       this.replay = null
       this.localSnapshot = null
       this.engineHistory = null
+      this.configuredJammers = null
+      this.scenarioConfig = null
       this.events = []
       this.selectedEventId = null
       this.state = error instanceof TypeError ? 'CORRUPT' : 'ERROR'
@@ -443,6 +494,8 @@ export const useReplayStore = defineStore('replay', {
       runtimeFor(this).engineRequest?.abort(); runtimeFor(this).engineRequest = null
       this.engineHistory = null; this.engineResultId = null; this.engineRunId = null; this.engineScenarioId = null
       this.engineEpoch = undefined; this.engineLoading = false
+      this.configuredJammers = null
+      this.scenarioConfig = null
       this.replays = []
       this.replay = null
       this.localSnapshot = null

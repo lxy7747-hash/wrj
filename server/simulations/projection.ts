@@ -414,7 +414,7 @@ export class SimulationProjection {
     if (this.remote && (command.command === 'STEP' || command.command === 'SET_SPEED')) {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '远端数据服务未提供单步或倍速协议。' }
     }
-    if (this.run.engineControl && action) {
+    if (this.run.engineControl && action && action !== 'stop') {
       return ACTIVE_STATUSES.has(this.run.uiStatus) && canSendEngineControl(this.run.engineControl, action)
         ? { ok: true, data: command }
         : { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '引擎连接或控制发送状态不允许此操作；请核实待确认结果。' }
@@ -447,7 +447,7 @@ export class SimulationProjection {
     if (!inspected.ok) return inspected
     const command = inspected.data
     if (this.remote) return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '远端接收会话必须经过实际连接及归档通道。' }
-    if (this.run.engineControl && engineControlAction(command.command)) {
+    if (this.run.engineControl && command.command !== 'STOP' && engineControlAction(command.command)) {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: 'WebSocket 控制必须经过发送通道，不能直接修改运行状态。' }
     }
     if (command.command === 'STOP' && !stopConfirmed) {
@@ -497,6 +497,7 @@ export class SimulationProjection {
       this.run.canonical.progress = 0
       this.run.canonical.processId = null
       this.run.configLocked = false
+      delete this.run.engineControl
       delete this.run.completedAt
     }
 

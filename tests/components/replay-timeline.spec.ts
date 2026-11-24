@@ -36,4 +36,26 @@ describe('ReplayTimeline', () => {
     expect(wrapper.emitted('select')).toEqual([['SW-003']])
     expect(wrapper.emitted('seek')).toEqual([[2_518]])
   })
+
+  it('renders engine timeline markers with distinct kinds and supports quick-jump to jam and switch moments', async () => {
+    const replay = { ...(fixtureSource.replay as Replay), durationS: 60, currentTimeS: 5 }
+    const engineMarkers = [
+      { id: 'EVENT-DETECT:10:0', kind: 'DETECTION' as const, time: 10, frameId: 10, label: '目标侦测', detail: '干扰站 → 无人机 1' },
+      { id: 'ALARM:20:0', kind: 'ALARM' as const, time: 20, frameId: 20, label: '受扰告警', detail: '微波链路受扰中断' },
+      { id: 'SWITCH:25:0', kind: 'SWITCH' as const, time: 25, frameId: 25, label: '链路切换', detail: '切至 卫通（无人机 1）' },
+    ]
+    const wrapper = mount(ReplayTimeline, {
+      props: { replay, events: [], engineMarkers, selectedEventId: null },
+    })
+
+    expect(wrapper.findAll('.replay-timeline__marker--engine')).toHaveLength(3)
+    expect(wrapper.find('.replay-timeline__marker.is-detection').exists()).toBe(true)
+    expect(wrapper.find('.replay-timeline__marker.is-jammed').exists()).toBe(true)
+    expect(wrapper.find('.replay-timeline__marker.is-switch').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="jump-next-jam"]').trigger('click')
+    await wrapper.get('[data-testid="jump-next-switch"]').trigger('click')
+    expect(wrapper.emitted('seek')).toEqual([[20], [25]])
+    expect(wrapper.emitted('select')).toEqual([['ALARM:20:0'], ['SWITCH:25:0']])
+  })
 })

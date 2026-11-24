@@ -17,17 +17,20 @@ const leafletMocks = vi.hoisted(() => {
     fitBounds: vi.fn(),
     invalidateSize: vi.fn(),
   }
-  const tileLayer = { addTo: vi.fn(() => tileLayer) }
+  const vectorLayer = { addTo: vi.fn(), on: vi.fn() }
+  const createVectorLayer = vi.fn(() => vectorLayer)
   const zoomControl = { addTo: vi.fn(() => zoomControl) }
   const group = { addTo: vi.fn(() => group), remove: vi.fn() }
   const polygon = { addTo: vi.fn(() => polygon), remove: vi.fn() }
-  return { state, map, tileLayer, zoomControl, group, polygon }
+  return { state, map, vectorLayer, createVectorLayer, zoomControl, group, polygon }
 })
 
+vi.mock('leaflet.vectorgrid', () => ({}))
 vi.mock('leaflet', () => ({
   default: {
     map: vi.fn(() => leafletMocks.map),
-    tileLayer: vi.fn(() => leafletMocks.tileLayer),
+    vectorGrid: { protobuf: leafletMocks.createVectorLayer },
+    canvas: { tile: vi.fn() },
     control: { zoom: vi.fn(() => leafletMocks.zoomControl) },
     circleMarker: vi.fn((position: unknown) => position),
     layerGroup: vi.fn(() => leafletMocks.group),
@@ -71,7 +74,9 @@ describe('海面区域地图框选', () => {
 
   it('无已保存区域时显示任务范围，逐点放置后闭合并确认六位小数顶点', async () => {
     const wrapper = await open()
-    expect(L.latLngBounds).toHaveBeenCalledWith(MAP_CONFIG.taskBounds.map(([lat, lng]) => [lat, lng]))
+    expect(leafletMocks.createVectorLayer).toHaveBeenCalledExactlyOnceWith(MAP_CONFIG.resources.vector.tileUrl, expect.objectContaining({ interactive: false }))
+    expect(leafletMocks.vectorLayer.addTo).toHaveBeenCalledExactlyOnceWith(leafletMocks.map)
+    expect(leafletMocks.map.fitBounds).toHaveBeenCalledWith(MAP_CONFIG.taskBounds, { padding: MAP_CONFIG.fitPadding, animate: false })
     expect(leafletMocks.map.invalidateSize).toHaveBeenCalledWith({ pan: false })
     expect(button('confirm-sea-area').disabled).toBe(true)
     expect(button('sea-area-undo').disabled).toBe(true)

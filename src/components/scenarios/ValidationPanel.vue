@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { CapabilityState, ValidationIssue, ValidationResult } from '../../contracts/domain-models'
+import type { CapabilityState, ScenarioConfig, ValidationIssue, ValidationResult } from '../../contracts/domain-models'
+import { formatValidationFieldLabel, formatValidationIssueMessage } from '../../features/scenarios/validation-field-labels'
 
 const props = defineProps<{
   pending: boolean
@@ -8,6 +9,7 @@ const props = defineProps<{
   resultMessage: string
   validation: ValidationResult
   completed: boolean
+  config?: Pick<ScenarioConfig, 'platforms' | 'links' | 'jammers' | 'sensors'> & Partial<Pick<ScenarioConfig, 'deviceParameters'>>
 }>()
 
 const emit = defineEmits<{
@@ -54,13 +56,14 @@ const issues = computed(() => [...props.validation.errors, ...props.validation.w
             type="button"
             class="validation-issue"
             :data-testid="`locate-validation-issue-${index}`"
+            :data-field-path="issue.fieldPath"
             @click="emit('locate', issue)"
           >
             <el-tag :type="issue.severity === 'ERROR' ? 'danger' : 'warning'" size="small">
               {{ issue.severity === 'ERROR' ? '错误' : '警告' }}
             </el-tag>
-            <code>{{ issue.fieldPath }}</code>
-            <span>{{ issue.message }}</span>
+            <span class="validation-issue__path" :title="issue.fieldPath">{{ formatValidationFieldLabel(issue.fieldPath, config) }}</span>
+            <span>{{ formatValidationIssueMessage(issue, config) }}</span>
             <strong>定位</strong>
           </button>
         </li>
@@ -127,7 +130,7 @@ const issues = computed(() => [...props.validation.errors, ...props.validation.w
 .validation-issue {
   display: grid;
   width: 100%;
-  grid-template-columns: auto minmax(12rem, 0.75fr) minmax(16rem, 1.5fr) auto;
+  grid-template-columns: auto minmax(14rem, 0.95fr) minmax(16rem, 1.45fr) auto;
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem;
@@ -146,7 +149,12 @@ const issues = computed(() => [...props.validation.errors, ...props.validation.w
   outline: none;
 }
 
-.validation-issue code,
+.validation-issue__path {
+  color: var(--console-cyan);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .validation-issue strong {
   color: var(--console-cyan);
 }

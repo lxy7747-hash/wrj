@@ -25,21 +25,30 @@ const TEMPLATE_FILES = [
   'comm_SimSetup.txt', 'observers.txt',
 ] as const
 
-/** 遮蔽动态生成的 mission_uav 实例段；其余实例仍按模板逐字节比较。 */
-function maskMissionUavSection(text: string): string {
+/** 遮蔽动态生成的 mission_uav 实例段与 5.x 干扰源实例段；其余固定实例仍按模板逐字节比较。 */
+function maskDynamicInsSections(text: string): string {
   const records = text.match(/[^\n]*\n|[^\n]+$/g) ?? []
   const content = records.map(raw => raw.replace(/\r?\n$/u, ''))
   const routes = content.flatMap((line, index) => /^\s*route\s+\S+/u.test(line) ? [index] : [])
   const firstUav = content.findIndex(line => /^\s*platform mission_uav_01 MISSION_UAV_PLATFORM\s*$/u.test(line))
   expect(firstUav, '缺少 mission_uav_01 实例').toBeGreaterThanOrEqual(0)
   const start = routes.length > 0 ? Math.min(routes[0]!, firstUav) : firstUav
-  const jammer = content.findIndex((line, index) => index > start && /^\s*platform\s+jammer_station_01\s+GROUND_JAMMER_STATION\s*$/u.test(line))
-  expect(jammer, '缺少 jammer_station_01').toBeGreaterThan(start)
-  let end = jammer - 1
-  while (end > start && !/^\s*end_platform\s*$/u.test(content[end]!)) end -= 1
-  expect(end, '缺少无人机段 end_platform').toBeGreaterThanOrEqual(start)
+  const jammerStart = content.findIndex((line, index) => index > start && /^\s*platform\s+jammer_station_01\s+GROUND_JAMMER_STATION\s*$/u.test(line))
+  expect(jammerStart, '缺少 jammer_station_01').toBeGreaterThan(start)
+  let uavEnd = jammerStart - 1
+  while (uavEnd > start && !/^\s*end_platform\s*$/u.test(content[uavEnd]!)) uavEnd -= 1
+  expect(uavEnd, '缺少无人机段 end_platform').toBeGreaterThanOrEqual(start)
+  let jammerEnd = content.length - 1
+  while (jammerEnd > jammerStart && !/^\s*end_platform\s*$/u.test(content[jammerEnd]!)) jammerEnd -= 1
+  expect(jammerEnd, '缺少干扰源段 end_platform').toBeGreaterThanOrEqual(jammerStart)
   const ending = /\r?\n$/u.exec(records[0] ?? '')?.[0] ?? '\n'
-  return [...records.slice(0, start), `<MISSION_UAV_SECTION>${ending}`, ...records.slice(end + 1)].join('')
+  return [
+    ...records.slice(0, start),
+    `<MISSION_UAV_SECTION>${ending}`,
+    ...records.slice(uavEnd + 1, jammerStart),
+    `<JAMMER_SECTION>${ending}`,
+    ...records.slice(jammerEnd + 1),
+  ].join('')
 }
 
 /** 仅遮蔽明确允许变化的区域，保留行尾与其余字节。 */
@@ -128,14 +137,26 @@ describe('1112 固定模板基线', () => {
     const generated = buildMissionPackage(withAllTemplateCommPorts())
     for (const name of TEMPLATE_FILES) {
       const template = await readFile(join(TEMPLATE_DIRECTORY, name), 'utf8')
+      const expected = name === 'comm_platform_MISSION_UAV.txt'
+        ? template.replace(/(\breceiver\r?\n[ \t]*frequency 11\.8 )MHz(?=\r?\n)/u, '$1GHz')
+        : template
       const generatedText = name === 'comm_platform_INS.txt'
-        ? maskMissionUavSection(patchModule.stripScriptComments(generated.files[name]!))
+        ? maskDynamicInsSections(patchModule.stripScriptComments(generated.files[name]!))
         : maskAllowedRegions(name, patchModule.stripScriptComments(generated.files[name]!))
       const templateText = name === 'comm_platform_INS.txt'
-        ? maskMissionUavSection(patchModule.stripScriptComments(template))
-        : maskAllowedRegions(name, patchModule.stripScriptComments(template))
+        ? maskDynamicInsSections(patchModule.stripScriptComments(expected))
+        : maskAllowedRegions(name, patchModule.stripScriptComments(expected))
       expect(generatedText, `${name} 存在不属于允许区域的差异`).toBe(templateText)
     }
+  })
+
+  it.each([undefined, { linkCalc: 'PRESERVE' } as const])('交付及本地运行包修正无人机卫星接收频率，模板原件保持原单位（%j）', runtime => {
+    const file = 'comm_platform_MISSION_UAV.txt'
+    const satPort = (text: string) => /^\s*comm sat_link WSF_RADIO_TRANSCEIVER\r?\n[\s\S]*?^\s*end_comm\b/mu.exec(text)?.[0]
+    expect(satPort(templateModule.TEMPLATE_1112_FILES[file])).toMatch(/\breceiver\r?\n[ \t]*frequency 11\.8 MHz\b/u)
+    const generated = buildMissionPackage(withAllTemplateCommPorts(), undefined, runtime).files[file]!
+    expect(satPort(generated)).toMatch(/\btransmitter\r?\n[ \t]*frequency 14\.2 GHz\b/u)
+    expect(satPort(generated)).toMatch(/\breceiver\r?\n[ \t]*frequency 11\.8 GHz\b/u)
   })
 
   it('mission_uav 实例段按场景配置生成：数量、位置、航线与返航可配置', () => {
@@ -156,6 +177,36 @@ describe('1112 固定模板基线', () => {
     expect([...generated.matchAll(/^platform (mission_uav_\d+) MISSION_UAV_PLATFORM$/gmu)].map(match => match[1])).toEqual(['mission_uav_01', 'mission_uav_02', 'mission_uav_03', 'mission_uav_04'])
     expect(generated).toContain('platform mission_uav_04 MISSION_UAV_PLATFORM')
     expect(generated).toContain('position 24.9n 119.9e altitude 4000 m speed 80 m/s')
+  })
+
+  it('5.x 干扰源实例段按场景配置生成：地面与机载位置、盘旋航线、侦测范围与增减数量可配置', () => {
+    const custom = createTemplateScenario()
+    const groundStation = custom.config.platforms.find(platform => platform.type === 'GROUND_JAMMER_DETECTION_STATION')!
+    groundStation.initialPosition = { longitude: 121.371465, latitude: 24.614799, altitude: 120 }
+    groundStation.faction = 'BLUE'
+    custom.config.jammers[0]!.detectionRange = 60_000
+    const airborne = custom.config.platforms.find(platform => platform.type === 'AIRBORNE_JAMMER_PLATFORM')!
+    airborne.initialPosition = { longitude: 119.8, latitude: 24.2, altitude: 4200 }
+    airborne.loiterWaypoints = [
+      { longitude: 120.1, latitude: 24.2, altitude: 4200, speed: 95 },
+      { longitude: 119.8, latitude: 24.5, altitude: 4200, speed: 95 },
+      { longitude: 119.5, latitude: 24.2, altitude: 4200, speed: 95 },
+    ]
+    const secondAirborne = structuredClone(airborne)
+    secondAirborne.id = 'AJ-EXTRA'
+    secondAirborne.name = '额外机载干扰'
+    secondAirborne.jammerIds = []
+    custom.config.platforms.push(secondAirborne)
+
+    const generated = buildMissionPackage(custom).files['comm_platform_INS.txt']!
+    expect(generated).toContain('platform jammer_station_01 GROUND_JAMMER_STATION')
+    expect(generated).toContain('side blue')
+    expect(generated).toContain('position 24.614799n 121.371465e altitude 120 m')
+    expect(generated).toContain(`double detection_range_nm = ${String(60_000 / 1852)};`)
+    expect(generated).toContain('platform jammer_airborne_01 AIRBORNE_JAMMER_PLATFORM')
+    expect(generated).toContain('position 24.2n 119.8e altitude 4200 m heading 0 deg speed 95 m/s')
+    expect(generated).toContain('position 24.5n 119.8e altitude 4200 m speed 95 m/s turn left')
+    expect([...generated.matchAll(/^platform (jammer_airborne_\d+) AIRBORNE_JAMMER_PLATFORM$/gmu)].map(match => match[1])).toEqual(['jammer_airborne_01', 'jammer_airborne_02'])
   })
 
   it('REAR 只保留 fw_sit_dst / fw_tgt_dst 两个原有数组，不新增路由或端口变量，且行尾无多余反斜杠', () => {
@@ -198,10 +249,10 @@ describe('1112 固定模板基线', () => {
     const mission = portParams.find(item => item.platform_type === 'MISSION_UAV_PLATFORM')!
     expect(mission.comm_params.map(item => item.comm_name)).toContain('lazer_link')
     expect(mission.comm_params.map(item => item.comm_name)).not.toContain('laser_link')
-    // 模板中的 lazer_link 收发参数除 G_T_dBK 按要求统一写 0 外未被改动。
+    // 模板中的 lazer_link 收发参数未被改动；EIRP/G_T 直接采用端口配置值。
     const lazer = mission.comm_params.find(item => item.comm_name === 'lazer_link') as unknown as { transmitter: Record<string, number>; receiver: Record<string, number> }
-    expect(lazer.transmitter).toMatchObject({ frequency_ghz: 681300, bandwidth_mhz: 1000, power_w: 0.1, peak_gain_dB: 45, 'information_rate_bit/s': 2_500_000_000 })
-    expect(lazer.receiver).toMatchObject({ noise_figure_dB: 5, 'G_T_dBK': 0 })
+    expect(lazer.transmitter).toMatchObject({ frequency_ghz: 681300, bandwidth_mhz: 1000, power_w: 0.1, eirp_dBW: 20, peak_gain_dB: 45, 'information_rate_bit/s': 2_500_000_000 })
+    expect(lazer.receiver).toMatchObject({ noise_figure_dB: 5, 'G_T_dBK': 15 })
   })
 
   it('区域定位必须唯一：缺失或重复标记时明确报错，不使用第一个匹配', () => {
@@ -210,5 +261,7 @@ describe('1112 固定模板基线', () => {
     expect(() => patchModule.replaceLinkCalcBlock('  processor script_proc WSF_SCRIPT_PROCESSOR\n  end_processor', 'comm_platform_REAR.txt', ['  add processor link_calc WSF_LINK_CALC_PROCESSOR', '  end_processor'])).toThrow(/未找到 add processor link_calc/u)
     expect(() => patchModule.replaceSimulationSpeed('realtime\nrealtime\nclock_rate 2', 'comm_SimSetup.txt', true, 2)).toThrow(/匹配到 2 处/u)
     expect(() => patchModule.replaceSimulationSpeed('realtime\nclock_rate 2', 'comm_SimSetup.txt', true, 0)).toThrow(/倍速必须/u)
+    expect(() => patchModule.replaceJammerSection('platform rear_comm_vehicle REAR_COMM_PLATFORM\nend_platform', 'comm_platform_INS.txt', ['// 5.x 干扰源配置'])).toThrow(/定位失败/u)
+    expect(() => patchModule.replaceJammerSection('// 5.x 干扰源配置\n// 5.x 干扰源配置\nend_platform', 'comm_platform_INS.txt', ['// 5.x 干扰源配置'])).toThrow(/匹配到 2 处/u)
   })
 })

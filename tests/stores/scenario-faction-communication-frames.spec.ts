@@ -49,6 +49,12 @@ function errorCodes(config: ScenarioConfig, prefix: string): string[] {
     .map(issue => issue.code)
 }
 
+function warningCodes(config: ScenarioConfig, prefix: string): string[] {
+  return inspectScenarioConfig(config, 'write').result.warnings
+    .filter(issue => issue.fieldPath.startsWith(prefix))
+    .map(issue => issue.code)
+}
+
 describe('F01 所属阵营写入校验', () => {
   it.each(['BLUE', 'RED', 'NEUTRAL'] as const)('显式阵营 %s 合法且不改写输入', (faction) => {
     const config = configuration()
@@ -105,17 +111,19 @@ describe('F06 干扰计划帧写入校验', () => {
     expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
   })
 
-  it('停止帧不大于启动帧被拒绝', () => {
+  it('停止帧不大于启动帧仅提示，不阻止保存', () => {
     const config = jammerConfiguration()
     config.jammers[0]!.plannedStartFrame = 900
     config.jammers[0]!.plannedStopFrame = 300
-    expect(errorCodes(config, 'jammers[0].planned')).toEqual(['JAMMER_PLANNED_FRAME_ORDER_INVALID'])
+    expect(errorCodes(config, 'jammers[0].planned')).toEqual([])
+    expect(warningCodes(config, 'jammers[0].planned')).toEqual(['JAMMER_PLANNED_FRAME_ORDER_INVALID'])
   })
 
-  it.each([300.5, -1])('非负整数之外的计划帧 %s 被拒绝', (value) => {
+  it.each([300.5, -1])('非负整数之外的计划帧 %s 仅提示，不阻止保存', (value) => {
     const config = jammerConfiguration()
     config.jammers[0]!.plannedStartFrame = value
-    expect(errorCodes(config, 'jammers[0].plannedStartFrame')).toEqual(['JAMMER_PLANNED_FRAME_INVALID'])
+    expect(errorCodes(config, 'jammers[0].plannedStartFrame')).toEqual([])
+    expect(warningCodes(config, 'jammers[0].plannedStartFrame')).toEqual(['JAMMER_PLANNED_FRAME_INVALID'])
   })
 })
 

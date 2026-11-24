@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
-import type { EngineFrameArchiveEventRow, EngineFrameArchiveSegmentRow, EngineFrameArchiveSummary, EngineFrameArchiveSwitchRow, EngineFrameSnapshot } from '../../src/contracts/domain-models.js'
+import { MAX_LOCAL_REPORT_TREND_POINTS, type EngineFrameArchiveEventRow, type EngineFrameArchiveSegmentRow, type EngineFrameArchiveSummary, type EngineFrameArchiveSwitchRow, type EngineFrameSnapshot, type LocalReportTrendPoint } from '../../src/contracts/domain-models.js'
 import { readEngineCsvSource } from './engine-csv-report.js'
 import type { EvidenceSource } from '../../src/features/reports/report-evidence.js'
 import { isEngineFrameId, isEngineFrameSnapshot, ENGINE_FRAME_ID_STEP } from '../../src/features/data-exchange/engine-frame-snapshot.js'
@@ -37,10 +37,25 @@ export interface EngineFrameArchiveSession {
   failure(): Error | null
 }
 
+export interface EngineAggregateSummary {
+  uniqueSingleSegmentCount: number
+  averageGxbDb?: number
+  averageBer?: number
+  switchCount: number
+  /** 由引擎帧 link.status / jammer.deviceStatus 的连续帧区间计算；单帧不推算。 */
+  averageConnectedDurationS?: number
+  jammingDurationS?: number
+  switchCountTrend?: LocalReportTrendPoint[]
+  jammingDurationTrend?: LocalReportTrendPoint[]
+  missing: string[]
+}
+
 export interface EngineFrameArchive {
   begin(scope: EngineFrameArchiveScope, linkBindings?: Readonly<Record<string, EngineLinkBinding>>): Promise<EngineFrameArchiveSession>
   load(runId: string, expectedScope?: EngineFrameArchiveScope, selection?: { start: number; end: number; includeEnd?: boolean; nodeId?: string; linkId?: string }): Promise<EngineFrameArchiveSummary | null>
-  /** D3 完整读取：按字节上限流式读取全部命中明细（不按 50000 行截断），可按固定 sourceSha256 读取不可变历史批次。 */
+  /** Single-pass summary + aggregate computation for initial report loading and filtering. */
+  loadWithAggregate?(runId: string, expectedScope?: EngineFrameArchiveScope, selection?: { start: number; end: number; includeEnd?: boolean; nodeId?: string; linkId?: string }): Promise<{ summary: EngineFrameArchiveSummary; aggregate: EngineAggregateSummary } | null>
+  /** D3 完整读取：按字节上限流式读取全部命中的段/切换/事件明细（不按 50000 行截断），可按固定 sourceSha256 读取不可变历史批次。 */
   loadComplete(runId: string, expectedScope?: EngineFrameArchiveScope, selection?: { start: number; end: number; includeEnd?: boolean; nodeId?: string; linkId?: string }, sourceSha256?: string): Promise<EngineFrameArchiveSummary | null>
   getFile(runId: string, sourceSha256: string): Promise<string | null>
   finalizeCsv(runId: string, expectedScope: EngineFrameArchiveScope, linkBindings: Readonly<Record<string, EngineLinkBinding>>): Promise<EngineCsvEvidence | null>
@@ -48,7 +63,7 @@ export interface EngineFrameArchive {
   publishTaskCsv(runId: string, directory: string, evidence: EngineCsvEvidence): Promise<void>
   loadCsvSource(runId: string, expectedScope: EngineFrameArchiveScope, sourceSha256?: string): Promise<EvidenceSource | null>
   replay(runId: string, expectedScope: EngineFrameArchiveScope, time: number, engineEpoch?: number): Promise<EngineReplaySnapshot | null>
-  aggregate(runId: string, expectedScope: EngineFrameArchiveScope, linkBindings: Readonly<Record<string, EngineLinkBinding>>, selection?: { start: number; end: number; includeEnd?: boolean; nodeId?: string; linkId?: string }): Promise<{ uniqueSingleSegmentCount: number; averageGxbDb?: number; averageBer?: number; switchCount: number; missing: string[] } | null>
+  aggregate(runId: string, expectedScope: EngineFrameArchiveScope, linkBindings: Readonly<Record<string, EngineLinkBinding>>, selection?: { start: number; end: number; includeEnd?: boolean; nodeId?: string; linkId?: string }): Promise<EngineAggregateSummary | null>
   /** D3 有界：各 kind 全量计数（不保留明细数组）。 */
   queryCounts(runId: string, expectedScope?: EngineFrameArchiveScope, selection?: NativeSelection, sourceSha256?: string): Promise<NativeCounts | null>
   /** D3 有界：按 epoch→frameId→帧内序号分页，total 来自全量扫描，仅保留当前页。 */
@@ -114,6 +129,216 @@ async function regularFile(path: string): Promise<void> {
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('引擎帧归档必须是普通文件。')
 }
 
+async function regularFileSig(path: string): Promise<string> {
+  const info = await lstat(path, { bigint: true })
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error('引擎帧归档必须是普通文件。')
+  return `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}:${info.birthtimeNs}`
+}
+
+function lruCacheSet<K, V>(cache: Map<K, V>, key: K, value: V, limit = 8): void {
+  if (cache.has(key)) cache.delete(key)
+  else if (cache.size >= limit) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+  cache.set(key, value)
+}
+
+function selectionCacheKey(selection?: ArchiveSelection): string {
+  if (!selection) return ''
+  return `${selection.start}:${selection.end}:${selection.includeEnd === false ? '0' : '1'}:${selection.nodeId ?? ''}:${selection.linkId ?? ''}`
+}
+
+function accumulateFrameSummary(
+  frame: EngineFrameSnapshot,
+  selection: ArchiveSelection | undefined,
+  maxReportRows: number,
+  state: {
+    segmentRows: EngineFrameArchiveSegmentRow[]
+    switchRows: EngineFrameArchiveSwitchRow[]
+    eventRows: EngineFrameArchiveEventRow[]
+    detailTruncated: boolean
+  },
+): void {
+  if (!inSelection(selection, frame.simulationTime)) return
+  const common = { engineEpoch: frame.engineEpoch, frameId: frame.frameId, simulationTime: frame.simulationTime }
+  const selectedLinkId = selection?.linkId
+  const segmentRowsForFrame = frame.links.filter(link => (!selection?.nodeId || link.sourcePlatformId === selection.nodeId || link.targetPlatformId === selection.nodeId)
+    && (!selectedLinkId || link.linkId === selectedLinkId || link.linkIds.includes(selectedLinkId)))
+  const switchRowsForFrame = frame.routing.switches.filter(route => (!selection?.nodeId || route.sourcePlatformId === selection.nodeId || route.targetPlatformId === selection.nodeId
+    || route.nodes.some(node => node.platformId === selection.nodeId) || route.oldNodes.some(node => node.platformId === selection.nodeId))
+    && (!selectedLinkId || route.reasons.some(reason => reason.linkId === selectedLinkId
+      || frame.links.some(link => link.linkId === reason.linkId && link.linkIds.includes(selectedLinkId)))))
+  // Engine events have no link membership; link-filtered reports omit them rather than cross-associate a frame.
+  const eventRowsForFrame = selectedLinkId ? [] : frame.events.filter(event => !selection?.nodeId || event.uavIds.includes(selection.nodeId) || event.jammerIds.includes(selection.nodeId))
+  const added = segmentRowsForFrame.length + switchRowsForFrame.length + eventRowsForFrame.length
+  if (state.segmentRows.length + state.switchRows.length + state.eventRows.length + added > maxReportRows) {
+    state.detailTruncated = true
+    return
+  }
+  state.segmentRows.push(...segmentRowsForFrame.map(segment => ({ ...common, segment })))
+  state.switchRows.push(...switchRowsForFrame.map(value => ({ ...common, value })))
+  state.eventRows.push(...eventRowsForFrame.map(value => ({ ...common, value })))
+}
+
+type TrendChanges<T> = { changes: Map<number, T>; omittedFrom?: number }
+type JammingBoundary = { known: number; active: number }
+
+function recordTrendChange<T>(trend: TrendChanges<T>, time: number, value: T, merge: (left: T, right: T) => T | undefined): void {
+  if (trend.omittedFrom !== undefined && time >= trend.omittedFrom) return
+  const existing = trend.changes.get(time)
+  if (existing !== undefined) {
+    const combined = merge(existing, value)
+    if (combined === undefined) trend.changes.delete(time)
+    else trend.changes.set(time, combined)
+    return
+  }
+  // 留出实际首帧基准和最终点的位置，省略区间不画连线。
+  if (trend.changes.size < MAX_LOCAL_REPORT_TREND_POINTS - 2) trend.changes.set(time, value)
+  else trend.omittedFrom = time
+}
+
+function orderedTrendChanges<T>(trend: TrendChanges<T>): Array<[number, T]> {
+  return [...trend.changes].filter(([time]) => trend.omittedFrom === undefined || time < trend.omittedFrom)
+    .sort(([left], [right]) => left - right)
+}
+
+function addJammingBoundary(left: JammingBoundary, right: JammingBoundary): JammingBoundary | undefined {
+  const known = left.known + right.known, active = left.active + right.active
+  return known === 0 && active === 0 ? undefined : { known, active }
+}
+
+type EngineAggregateState = {
+  count: number
+  gxb: number
+  ber: number
+  switches: number
+  linkDurations: Map<string, number>
+  observedLinks: Set<string>
+  previousLinkStatuses?: Map<string, boolean | null>
+  previousSimulationTime?: number
+  previousFrameId?: number
+  jammingDuration: number
+  previousJammingOn?: boolean
+  previousJammingKnown?: boolean
+  intervalObserved: boolean
+  switchChanges: TrendChanges<number>
+  jammingBoundaries: TrendChanges<JammingBoundary>
+  firstObservedTime?: number
+  lastObservedTime?: number
+  lastKnownJammingTime?: number
+}
+
+function createAggregateState(): EngineAggregateState {
+  return { count: 0, gxb: 0, ber: 0, switches: 0, linkDurations: new Map(), observedLinks: new Set(),
+    jammingDuration: 0, intervalObserved: false,
+    switchChanges: { changes: new Map() }, jammingBoundaries: { changes: new Map() } }
+}
+
+function scopedJammerStatus(frame: EngineFrameSnapshot, selection: ArchiveSelection): boolean | undefined {
+  const { linkId, nodeId } = selection
+  // 链路必须有本帧归档输入关联，不能以同一帧出现的其他设备替代。
+  const jammerIds = linkId
+    ? new Set(frame.links.filter(link => segmentMatches(link, selection) && link.linkIds.includes(linkId))
+      .flatMap(link => link.inputTrace.jammers.flatMap(jammer => jammer.platformId === null ? [] : [jammer.platformId])))
+    : new Set([nodeId])
+  if (jammerIds.size === 0) return undefined
+  const off = new Set<string>()
+  for (const jammer of frame.jammers) {
+    if (jammer.platformId === null || !jammerIds.has(jammer.platformId)) continue
+    if (jammer.deviceStatus === 'ON') return true
+    if (jammer.deviceStatus === 'OFF') off.add(jammer.platformId)
+  }
+  return off.size === jammerIds.size ? false : undefined
+}
+
+function accumulateFrameAggregate(
+  frame: EngineFrameSnapshot,
+  linkBindings: Readonly<Record<string, EngineLinkBinding>>,
+  selection: ArchiveSelection | undefined,
+  state: EngineAggregateState,
+): void {
+  if (!inSelection(selection, frame.simulationTime)) return
+  const nodeId = selection?.nodeId
+  const selectedLinkId = selection?.linkId
+  const scoped = !!(nodeId || selectedLinkId)
+  const time = frame.simulationTime
+  state.firstObservedTime = Math.min(state.firstObservedTime ?? time, time)
+  state.lastObservedTime = Math.max(state.lastObservedTime ?? time, time)
+  // 只有连续帧之间才累计状态持续时间；单帧、断帧或筛选空洞不推算。
+  if (state.previousSimulationTime !== undefined) {
+    const deltaSeconds = frame.simulationTime - state.previousSimulationTime
+    const deltaFrames = frame.frameId - (state.previousFrameId ?? frame.frameId)
+    if (deltaSeconds > 0 && deltaFrames > 0 && deltaFrames <= ENGINE_FRAME_ID_STEP) {
+      state.intervalObserved = true
+      for (const [linkId, up] of state.previousLinkStatuses ?? []) {
+        if (up === null) continue
+        if (scoped) state.observedLinks.add(linkId)
+        if (up) state.linkDurations.set(linkId, (state.linkDurations.get(linkId) ?? 0) + deltaSeconds)
+      }
+      if (state.previousJammingOn) state.jammingDuration += deltaSeconds
+      if (state.previousJammingKnown) {
+        const active = state.previousJammingOn ? 1 : 0
+        recordTrendChange(state.jammingBoundaries, state.previousSimulationTime, { known: 1, active }, addJammingBoundary)
+        recordTrendChange(state.jammingBoundaries, time, { known: -1, active: -active }, addJammingBoundary)
+        state.lastKnownJammingTime = Math.max(state.lastKnownJammingTime ?? time, time)
+      }
+    }
+  }
+  const currentLinkStatuses = new Map<string, boolean | null>()
+  const nodeLinkIds = nodeId
+    ? new Set(frame.links.filter(link => segmentMatches(link, selection)).flatMap(link => link.linkIds))
+    : undefined
+  for (const link of frame.links) {
+    for (const linkId of new Set(link.linkIds)) {
+      if (selectedLinkId && linkId !== selectedLinkId) continue
+      const binding = nodeId && Object.hasOwn(linkBindings, linkId) ? linkBindings[linkId] : undefined
+      // 节点筛选定位逻辑链路，再按该链路的全部已归档设备段累计。
+      if (nodeId && (binding
+        ? binding.sourcePlatformId !== nodeId && binding.targetPlatformId !== nodeId && binding.relayPlatformId !== nodeId
+        : !nodeLinkIds?.has(linkId))) continue
+      if (!scoped) state.observedLinks.add(linkId)
+      const up = scoped && link.status === 'UNKNOWN' ? null : link.status === 'UP'
+      const previous = currentLinkStatuses.get(linkId)
+      currentLinkStatuses.set(linkId, previous === false || up === false ? false : previous === null || up === null ? null : true)
+    }
+  }
+  state.previousLinkStatuses = currentLinkStatuses
+  state.previousSimulationTime = frame.simulationTime
+  state.previousFrameId = frame.frameId
+  if (scoped) {
+    state.previousJammingOn = scopedJammerStatus(frame, selection!)
+    state.previousJammingKnown = state.previousJammingOn !== undefined
+  } else {
+    state.previousJammingOn = frame.jammers.some(jammer => jammer.deviceStatus === 'ON')
+    state.previousJammingKnown = state.previousJammingOn
+      || (frame.jammers.length > 0 && frame.jammers.every(jammer => jammer.deviceStatus === 'OFF'))
+  }
+  let switches = 0
+  for (const route of frame.routing.switches) {
+    if (switchMatches(frame, route, selection)) switches += 1
+  }
+  if (switches > 0) {
+    state.switches += switches
+    recordTrendChange(state.switchChanges, time, switches, (left, right) => left + right)
+  }
+  const linkIdCounts = new Map<string, number>()
+  for (const item of frame.links) {
+    const uniqueIds = item.linkIds.length <= 1 ? item.linkIds : [...new Set(item.linkIds)]
+    for (const lid of uniqueIds) linkIdCounts.set(lid, (linkIdCounts.get(lid) ?? 0) + 1)
+  }
+  for (const link of frame.links) {
+    const id = link.linkIds.length === 1 ? link.linkIds[0]! : undefined
+    const binding = id ? linkBindings[id] : undefined
+    if (binding && !binding.relayPlatformId && binding.sourcePlatformId === link.sourcePlatformId && binding.targetPlatformId === link.targetPlatformId
+      && link.error === null && (linkIdCounts.get(id!) ?? 0) === 1
+      && (!selection?.nodeId || link.sourcePlatformId === selection.nodeId || link.targetPlatformId === selection.nodeId)
+      && (!selection?.linkId || id === selection.linkId) && link.quality.gxbDb !== null && link.quality.ber !== null) {
+      state.count += 1; state.gxb += link.quality.gxbDb; state.ber += link.quality.ber
+    }
+  }
+}
+
 /**
  * 把指针文件恢复到其先前内容；先前不存在时删除指针，使整组发布回到“未发布”状态。
  * 尽力而为：回滚失败不掩盖触发回滚的原始错误，也不删除已写好的不可变代文件。
@@ -140,6 +365,22 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
     const candidate = resolve(root, runId)
     const outside = relative(root, candidate)
     return outside === '..' || outside.startsWith(`..${sep}`) ? null : candidate
+  }
+  const summaryCache = new Map<string, { fileSig: string; result: EngineFrameArchiveSummary }>()
+  const aggregateCache = new Map<string, { fileSig: string; result: EngineAggregateSummary }>()
+  const countsCache = new Map<string, { fileSig: string; result: NativeCounts }>()
+  const catalogCache = new Map<string, { fileSig: string; result: NativeSeriesMetaOut[] }>()
+  const csvSourceCache = new Map<string, { fileSigs: string[]; result: EvidenceSource | null }>()
+  const readCurrentManifest = async (runId: string, expectedScope?: EngineFrameArchiveScope): Promise<{ runRoot: string; manifest: Manifest } | null> => {
+    const runRoot = runDirectory(runId)
+    if (!runRoot) return null
+    const pointer = join(runRoot, 'current.json')
+    try { await regularFile(pointer) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error }
+    let manifest: unknown
+    try { manifest = JSON.parse(await readFile(pointer, 'utf8')) } catch { throw new Error('引擎帧归档清单不是有效 JSON。') }
+    if (!isManifest(manifest, runId)) throw new Error('引擎帧归档清单无效。')
+    if (expectedScope && ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt'].some(key => manifest.scope[key as keyof EngineFrameArchiveScope] !== expectedScope[key as keyof EngineFrameArchiveScope])) throw new Error('引擎帧归档作用域与运行结果不一致。')
+    return { runRoot, manifest }
   }
 
   return {
@@ -335,16 +576,90 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       }
     },
     async load(runId, expectedScope, selection) {
-      const runRoot = runDirectory(runId)
-      if (!runRoot) return null
-      const pointer = join(runRoot, 'current.json')
-      try { await regularFile(pointer) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error }
-      let manifest: unknown
-      try { manifest = JSON.parse(await readFile(pointer, 'utf8')) } catch { throw new Error('引擎帧归档清单不是有效 JSON。') }
-      if (!isManifest(manifest, runId)) throw new Error('引擎帧归档清单无效。')
-      if (expectedScope && ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt'].some(key => manifest.scope[key as keyof EngineFrameArchiveScope] !== expectedScope[key as keyof EngineFrameArchiveScope])) throw new Error('引擎帧归档作用域与运行结果不一致。')
+      const resolved = await readCurrentManifest(runId, expectedScope)
+      if (!resolved) return null
       if (selection && (!Number.isFinite(selection.start) || !Number.isFinite(selection.end) || selection.start < 0 || selection.end < selection.start)) throw new Error('引擎帧归档筛选时间范围无效。')
-      return readSummary(runRoot, manifest, selection, maxReportRows)
+      const { runRoot, manifest } = resolved
+      const framePath = join(runRoot, manifest.fileName)
+      const fileSig = await regularFileSig(framePath)
+      const cacheKey = `${runRoot}\0${manifest.fileName}\0${manifest.sourceSha256}\0${maxReportRows}\0${selectionCacheKey(selection)}`
+      const cached = summaryCache.get(cacheKey)
+      if (cached?.fileSig === fileSig) {
+        lruCacheSet(summaryCache, cacheKey, cached)
+        return cached.result
+      }
+      const result = await readSummary(runRoot, manifest, selection, maxReportRows)
+      lruCacheSet(summaryCache, cacheKey, { fileSig, result })
+      return result
+    },
+    async loadWithAggregate(runId, expectedScope, selection) {
+      const resolved = await readCurrentManifest(runId, expectedScope)
+      if (!resolved) return null
+      if (selection && (!Number.isFinite(selection.start) || !Number.isFinite(selection.end) || selection.start < 0 || selection.end < selection.start)) throw new Error('引擎帧归档筛选时间范围无效。')
+      const { runRoot, manifest } = resolved
+      const framePath = join(runRoot, manifest.fileName)
+      const fileSig = await regularFileSig(framePath)
+      const effectiveBindings = manifest.linkBindings ?? {}
+      const selKey = selectionCacheKey(selection)
+      const bindingsKey = JSON.stringify(effectiveBindings)
+      const sumKey = `${runRoot}\0${manifest.fileName}\0${manifest.sourceSha256}\0${maxReportRows}\0${selKey}`
+      const aggKey = `${runRoot}\0${manifest.fileName}\0${manifest.sourceSha256}\0${bindingsKey}\0${selKey}`
+      const cachedSum = summaryCache.get(sumKey)
+      const cachedAgg = aggregateCache.get(aggKey)
+      if (cachedSum?.fileSig === fileSig && cachedAgg?.fileSig === fileSig) {
+        lruCacheSet(summaryCache, sumKey, cachedSum)
+        lruCacheSet(aggregateCache, aggKey, cachedAgg)
+        return { summary: cachedSum.result, aggregate: cachedAgg.result }
+      }
+      const sumState = {
+        segmentRows: [] as EngineFrameArchiveSegmentRow[],
+        switchRows: [] as EngineFrameArchiveSwitchRow[],
+        eventRows: [] as EngineFrameArchiveEventRow[],
+        detailTruncated: false,
+      }
+      const aggState = createAggregateState()
+      const nativeCounts: NativeCounts = { segments: 0, switches: 0, events: 0, sourceSha256: manifest.sourceSha256 }
+      const nativeIdentities = new Map<string, NativeSeriesIdentity>()
+      let rows = 0
+      const source = await readStableUtf8Lines(framePath, line => {
+        let frame: unknown
+        try { frame = JSON.parse(line) } catch { throw new Error('引擎帧归档包含无效 JSON 记录。') }
+        if (!isEngineFrameSnapshot(frame)) throw new Error('引擎帧归档包含不符合契约的记录。')
+        rows += 1
+        nativeCounts.segments += frame.links.length
+        nativeCounts.switches += frame.routing.switches.length
+        nativeCounts.events += frame.events.length
+        for (const link of frame.links) {
+          const identity = identityOf(frame, link)
+          const key = seriesKey(identity)
+          if (!nativeIdentities.has(key)) nativeIdentities.set(key, identity)
+        }
+        accumulateFrameSummary(frame, selection, maxReportRows, sumState)
+        accumulateFrameAggregate(frame, effectiveBindings, selection, aggState)
+      }, MAX_ARCHIVE_BYTES, ENGINE_JSONL_LINE_LIMIT_BYTES)
+      if (source.waitingForLine || source.source.sha256 !== manifest.sourceSha256 || rows !== manifest.frameCount) throw new Error('引擎帧归档来源校验失败。')
+      const summary: EngineFrameArchiveSummary = {
+        sourceSha256: manifest.sourceSha256,
+        frameCount: manifest.frameCount,
+        firstSimulationTime: manifest.firstSimulationTime,
+        lastSimulationTime: manifest.lastSimulationTime,
+        missingFieldNames: manifest.missingFieldNames,
+        segmentRows: sumState.segmentRows,
+        switchRows: sumState.switchRows,
+        eventRows: sumState.eventRows,
+        ...(sumState.detailTruncated ? { detailTruncated: true, retainedDetailRows: sumState.segmentRows.length + sumState.switchRows.length + sumState.eventRows.length } : {}),
+      }
+      const aggregate = aggregateSummary(aggState)
+      const catalogMetas: NativeSeriesMetaOut[] = []
+      for (const identity of [...nativeIdentities.values()].sort((left, right) => seriesKey(left).localeCompare(seriesKey(right)))) {
+        catalogMetas.push({ seriesId: seriesIdOf(identity, 'gxb'), unit: 'dB', identity }, { seriesId: seriesIdOf(identity, 'ber'), unit: 'BER', identity })
+      }
+      lruCacheSet(summaryCache, sumKey, { fileSig, result: summary })
+      lruCacheSet(aggregateCache, aggKey, { fileSig, result: aggregate })
+      const nativeBaseKey = `${runRoot}\0${manifest.fileName}\0${manifest.sourceSha256}\0`
+      lruCacheSet(countsCache, nativeBaseKey, { fileSig, result: nativeCounts })
+      lruCacheSet(catalogCache, nativeBaseKey, { fileSig, result: catalogMetas })
+      return { summary, aggregate }
     },
     async loadComplete(runId, expectedScope, selection, sourceSha256) {
       const runRoot = runDirectory(runId)
@@ -357,7 +672,16 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
     async queryCounts(runId, expectedScope, selection, sourceSha256) {
       const runRoot = runDirectory(runId); if (!runRoot) return null
       const resolved = await resolveEvidenceFile(runRoot, runId, expectedScope, sourceSha256); if (!resolved) return null
-      return countNative(runRoot, resolved.fileName, selection, resolved.expectedSha)
+      const fileSig = await regularFileSig(join(runRoot, resolved.fileName))
+      const cacheKey = `${runRoot}\0${resolved.fileName}\0${resolved.expectedSha ?? ''}\0${selectionCacheKey(selection)}`
+      const cached = countsCache.get(cacheKey)
+      if (cached?.fileSig === fileSig) {
+        lruCacheSet(countsCache, cacheKey, cached)
+        return cached.result
+      }
+      const result = await countNative(runRoot, resolved.fileName, selection, resolved.expectedSha)
+      lruCacheSet(countsCache, cacheKey, { fileSig, result })
+      return result
     },
     async queryRows(runId, expectedScope, options, sourceSha256) {
       const runRoot = runDirectory(runId); if (!runRoot) return null
@@ -368,7 +692,16 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
     async querySeriesCatalog(runId, expectedScope, selection, sourceSha256) {
       const runRoot = runDirectory(runId); if (!runRoot) return null
       const resolved = await resolveEvidenceFile(runRoot, runId, expectedScope, sourceSha256); if (!resolved) return null
-      return catalogNative(runRoot, resolved.fileName, selection, resolved.expectedSha)
+      const fileSig = await regularFileSig(join(runRoot, resolved.fileName))
+      const cacheKey = `${runRoot}\0${resolved.fileName}\0${resolved.expectedSha ?? ''}\0${selectionCacheKey(selection)}`
+      const cached = catalogCache.get(cacheKey)
+      if (cached?.fileSig === fileSig) {
+        lruCacheSet(catalogCache, cacheKey, cached)
+        return cached.result
+      }
+      const result = await catalogNative(runRoot, resolved.fileName, selection, resolved.expectedSha)
+      lruCacheSet(catalogCache, cacheKey, { fileSig, result })
+      return result
     },
     async querySeriesPoints(runId, expectedScope, seriesId, selection, maxPoints, sourceSha256, cursorOffset) {
       const runRoot = runDirectory(runId); if (!runRoot) return null
@@ -436,21 +769,120 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       const manifest: unknown = JSON.parse(await readFile(join(runRoot, 'current.json'), 'utf8'))
       if (!isManifest(manifest, runId) || manifest.sourceSha256 !== evidence.sourceSha256
         || ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt'].some(key => manifest.scope[key as keyof EngineFrameArchiveScope] !== expectedScope[key as keyof EngineFrameArchiveScope])) throw new Error('任务 CSV 与运行归档来源不一致。')
-      return readEngineCsvSource(evidence, expectedScope.taskId, manifest.linkBindings ?? {},
-        name => this.getCsvFile(runId, evidence.sourceSha256, name), sourceSha256)
+      const csvRoot = join(runRoot, 'csv')
+      const relevantFiles = evidence.files.filter(file => file.fileName === 'link_state.csv' || file.fileName === 'link_loss.csv' || file.fileName === 'link_switch.csv')
+      if (!relevantFiles.length) return null
+      const bindings = manifest.linkBindings ?? {}
+      const resolvedPaths = await Promise.all(relevantFiles.map(file => getEngineCsvFile(csvRoot, evidence.sourceSha256, file.fileName, { skipContentValidation: true })))
+      const cacheKey = `${runRoot}\0${expectedScope.taskId}\0${evidence.sourceSha256}\0${JSON.stringify(bindings)}\0${JSON.stringify(relevantFiles.map(f => [f.fileName, f.sha256, f.rowCount]))}`
+      const matchRequested = (source: EvidenceSource | null) =>
+        source && (sourceSha256 === undefined || source.sourceSha256 === sourceSha256) ? source : null
+      if (resolvedPaths.every((p): p is string => p !== null)) {
+        try {
+          const fileSigs = await Promise.all([regularFileSig(join(csvRoot, 'current.json')), ...resolvedPaths.map(p => regularFileSig(p))])
+          const cached = csvSourceCache.get(cacheKey)
+          if (cached && cached.fileSigs.length === fileSigs.length && cached.fileSigs.every((s, idx) => s === fileSigs[idx])) {
+            lruCacheSet(csvSourceCache, cacheKey, cached)
+            return matchRequested(cached.result)
+          }
+          const result = await readEngineCsvSource(evidence, expectedScope.taskId, bindings,
+            name => getEngineCsvFile(csvRoot, evidence.sourceSha256, name, { skipContentValidation: true }))
+          lruCacheSet(csvSourceCache, cacheKey, { fileSigs, result })
+          return matchRequested(result)
+        } catch (error) {
+          if (error instanceof Error && (error.message.includes('任务 CSV') || error.message.includes('引擎帧归档'))) throw error
+        }
+      }
+      return readEngineCsvSource(evidence, expectedScope.taskId, bindings,
+        name => getEngineCsvFile(csvRoot, evidence.sourceSha256, name, { skipContentValidation: true }), sourceSha256)
     },
     async aggregate(runId, expectedScope, linkBindings, selection) {
-      const runRoot = runDirectory(runId); if (!runRoot) return null
-      const pointer = join(runRoot, 'current.json'); await regularFile(pointer)
-      const manifest: unknown = JSON.parse(await readFile(pointer, 'utf8'))
-      if (!isManifest(manifest, runId) || ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt'].some(key => manifest.scope[key as keyof EngineFrameArchiveScope] !== expectedScope[key as keyof EngineFrameArchiveScope])) throw new Error('引擎帧归档作用域与运行结果不一致。')
+      const resolved = await readCurrentManifest(runId, expectedScope)
+      if (!resolved) return null
       if (selection && (!Number.isFinite(selection.start) || !Number.isFinite(selection.end) || selection.start < 0 || selection.end < selection.start)) throw new Error('引擎帧归档筛选时间范围无效。')
-      linkBindings = manifest.linkBindings ?? {}; let count = 0, gxb = 0, ber = 0, switches = 0
-      const raw = join(runRoot, manifest.fileName); await regularFile(raw)
-      let rows = 0; const source = await readStableUtf8Lines(raw, line => { const frame: unknown = JSON.parse(line); if (!isEngineFrameSnapshot(frame)) throw new Error('引擎帧归档包含不符合契约的记录。'); rows += 1; if (!inSelection(selection, frame.simulationTime)) return; for (const route of frame.routing.switches) if ((!selection?.nodeId || route.sourcePlatformId === selection.nodeId || route.targetPlatformId === selection.nodeId || route.nodes.some(node => node.platformId === selection.nodeId) || route.oldNodes.some(node => node.platformId === selection.nodeId)) && (!selection?.linkId || route.reasons.some(reason => reason.linkId === selection.linkId || frame.links.some(link => link.linkId === reason.linkId && link.linkIds.includes(selection.linkId!))))) switches += 1; for (const link of frame.links) { const id = link.linkIds.length === 1 ? link.linkIds[0]! : undefined, binding = id ? linkBindings[id] : undefined; if (binding && !binding.relayPlatformId && binding.sourcePlatformId === link.sourcePlatformId && binding.targetPlatformId === link.targetPlatformId && link.error === null && frame.links.filter(item => item.linkIds.includes(id!)).length === 1 && (!selection?.nodeId || link.sourcePlatformId === selection.nodeId || link.targetPlatformId === selection.nodeId) && (!selection?.linkId || id === selection.linkId) && link.quality.gxbDb !== null && link.quality.ber !== null) { count += 1; gxb += link.quality.gxbDb; ber += link.quality.ber } } }, MAX_ARCHIVE_BYTES, ENGINE_JSONL_LINE_LIMIT_BYTES)
+      const { runRoot, manifest } = resolved
+      linkBindings = manifest.linkBindings ?? {}
+      const raw = join(runRoot, manifest.fileName)
+      const fileSig = await regularFileSig(raw)
+      const cacheKey = `${runRoot}\0${manifest.fileName}\0${manifest.sourceSha256}\0${JSON.stringify(linkBindings)}\0${selectionCacheKey(selection)}`
+      const cached = aggregateCache.get(cacheKey)
+      if (cached?.fileSig === fileSig) {
+        lruCacheSet(aggregateCache, cacheKey, cached)
+        return cached.result
+      }
+      const aggState = createAggregateState()
+      let rows = 0
+      const source = await readStableUtf8Lines(raw, line => {
+        const frame: unknown = JSON.parse(line)
+        if (!isEngineFrameSnapshot(frame)) throw new Error('引擎帧归档包含不符合契约的记录。')
+        rows += 1
+        accumulateFrameAggregate(frame, linkBindings, selection, aggState)
+      }, MAX_ARCHIVE_BYTES, ENGINE_JSONL_LINE_LIMIT_BYTES)
       if (source.waitingForLine || source.source.sha256 !== manifest.sourceSha256 || rows !== manifest.frameCount) throw new Error('引擎帧归档来源校验失败。')
-      return { uniqueSingleSegmentCount: count, ...(count ? { averageGxbDb: gxb / count, averageBer: ber / count } : {}), switchCount: switches, missing: ['connectivityDurationS', 'interferenceDurationS'] }
+      const result = aggregateSummary(aggState)
+      lruCacheSet(aggregateCache, cacheKey, { fileSig, result })
+      return result
     },
+  }
+}
+
+function switchCountTrend(state: EngineAggregateState): LocalReportTrendPoint[] {
+  const { firstObservedTime, lastObservedTime, switchChanges } = state
+  if (firstObservedTime === undefined || lastObservedTime === undefined) return []
+  const changes = orderedTrendChanges(switchChanges)
+  const points: LocalReportTrendPoint[] = []
+  if ((changes[0]?.[0] ?? Infinity) > firstObservedTime && (switchChanges.omittedFrom ?? Infinity) > firstObservedTime) {
+    points.push({ time: firstObservedTime, value: 0 })
+  }
+  let value = 0
+  for (const [time, count] of changes) {
+    value += count
+    points.push({ time, value })
+  }
+  if (points.at(-1)?.time !== lastObservedTime) points.push({
+    time: lastObservedTime, value: state.switches,
+    ...(switchChanges.omittedFrom !== undefined ? { breakBefore: true } : {}),
+  })
+  return points
+}
+
+function jammingDurationTrend(state: EngineAggregateState): LocalReportTrendPoint[] {
+  if (state.lastKnownJammingTime === undefined) return []
+  const points: LocalReportTrendPoint[] = []
+  let known = 0, active = 0, value = 0
+  for (const [time, boundary] of orderedTrendChanges(state.jammingBoundaries)) {
+    const previous = points.at(-1)
+    if (previous && known > 0) value = Math.min(state.jammingDuration, value + (time - previous.time) * active)
+    const discontinuous = known === 0 && previous !== undefined
+    known += boundary.known
+    active += boundary.active
+    points.push({ time, value, ...(discontinuous ? { breakBefore: true } : {}) })
+  }
+  const last = points.at(-1)
+  if (last && last.time === state.lastKnownJammingTime) last.value = state.jammingDuration
+  else points.push({
+    time: state.lastKnownJammingTime, value: state.jammingDuration,
+    ...(last || state.jammingBoundaries.omittedFrom !== undefined ? { breakBefore: true } : {}),
+  })
+  return points
+}
+
+function aggregateSummary(state: EngineAggregateState): EngineAggregateSummary {
+  const connected = state.intervalObserved && state.observedLinks.size > 0
+    ? [...state.linkDurations.values()].reduce((sum, value) => sum + value, 0) / state.observedLinks.size
+    : undefined
+  const jamming = state.lastKnownJammingTime === undefined ? undefined : state.jammingDuration
+  const switchTrend = switchCountTrend(state)
+  const jammingTrend = jamming === undefined ? [] : jammingDurationTrend(state)
+  return {
+    uniqueSingleSegmentCount: state.count,
+    ...(state.count ? { averageGxbDb: state.gxb / state.count, averageBer: state.ber / state.count } : {}),
+    switchCount: state.switches,
+    ...(connected === undefined ? {} : { averageConnectedDurationS: connected }),
+    ...(jamming === undefined ? {} : { jammingDurationS: jamming }),
+    ...(switchTrend.length ? { switchCountTrend: switchTrend } : {}),
+    ...(jammingTrend.length ? { jammingDurationTrend: jammingTrend } : {}),
+    missing: [...(connected === undefined ? ['connectivityDurationS'] : []), ...(jamming === undefined ? ['interferenceDurationS'] : [])],
   }
 }
 
@@ -463,28 +895,15 @@ async function readSummary(runRoot: string, manifest: Manifest, selection?: Arch
   const eventRows: EngineFrameArchiveEventRow[] = []
   let rows = 0
   let detailTruncated = false
+  const summaryState = { segmentRows, switchRows, eventRows, detailTruncated }
   const source = await readStableUtf8Lines(framePath, line => {
     let frame: unknown
     try { frame = JSON.parse(line) } catch { throw new Error('引擎帧归档包含无效 JSON 记录。') }
     if (!isEngineFrameSnapshot(frame)) throw new Error('引擎帧归档包含不符合契约的记录。')
     rows += 1
-    if (!inSelection(selection, frame.simulationTime)) return
-    const common = { engineEpoch: frame.engineEpoch, frameId: frame.frameId, simulationTime: frame.simulationTime }
-    const selectedLinkId = selection?.linkId
-    const segmentRowsForFrame = frame.links.filter(link => (!selection?.nodeId || link.sourcePlatformId === selection.nodeId || link.targetPlatformId === selection.nodeId)
-      && (!selectedLinkId || link.linkId === selectedLinkId || link.linkIds.includes(selectedLinkId)))
-    const switchRowsForFrame = frame.routing.switches.filter(route => (!selection?.nodeId || route.sourcePlatformId === selection.nodeId || route.targetPlatformId === selection.nodeId
-      || route.nodes.some(node => node.platformId === selection.nodeId) || route.oldNodes.some(node => node.platformId === selection.nodeId))
-      && (!selectedLinkId || route.reasons.some(reason => reason.linkId === selectedLinkId
-        || frame.links.some(link => link.linkId === reason.linkId && link.linkIds.includes(selectedLinkId)))))
-    // Engine events have no link membership; link-filtered reports omit them rather than cross-associate a frame.
-    const eventRowsForFrame = selectedLinkId ? [] : frame.events.filter(event => !selection?.nodeId || event.uavIds.includes(selection.nodeId) || event.jammerIds.includes(selection.nodeId))
-    const added = segmentRowsForFrame.length + switchRowsForFrame.length + eventRowsForFrame.length
-    if (segmentRows.length + switchRows.length + eventRows.length + added > maxReportRows) { detailTruncated = true; return }
-    segmentRows.push(...segmentRowsForFrame.map(segment => ({ ...common, segment })))
-    switchRows.push(...switchRowsForFrame.map(value => ({ ...common, value })))
-    eventRows.push(...eventRowsForFrame.map(value => ({ ...common, value })))
+    accumulateFrameSummary(frame, selection, maxReportRows, summaryState)
   }, MAX_ARCHIVE_BYTES, ENGINE_JSONL_LINE_LIMIT_BYTES)
+  detailTruncated = summaryState.detailTruncated
   if (source.waitingForLine || source.source.sha256 !== manifest.sourceSha256 || rows !== manifest.frameCount) throw new Error('引擎帧归档来源校验失败。')
   return { sourceSha256: manifest.sourceSha256, frameCount: manifest.frameCount, firstSimulationTime: manifest.firstSimulationTime,
     lastSimulationTime: manifest.lastSimulationTime, missingFieldNames: manifest.missingFieldNames, segmentRows, switchRows, eventRows,

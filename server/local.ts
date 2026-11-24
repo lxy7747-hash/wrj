@@ -4,6 +4,7 @@ import { statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { writeScriptText } from './local/script-file.js'
+import { createScriptPackageEngineLoadChecker } from './local/script-engine-load-check.js'
 import { LocalMissionPool, readMissionConcurrency } from './local/mission-pool.js'
 import { readMissionRunTimeout } from './local/mission-runner.js'
 import { DiskRealtimeJournal } from './local/realtime-journal.js'
@@ -152,6 +153,7 @@ const server = createMockServer({
   remoteEngineNow: () => new Date().toISOString(),
   createEngineSnapshotClient: (url, publish, diagnose) => new EngineSnapshotClient(url, publish, undefined, diagnose),
   writeScriptText: (script, revision, draft) => writeScriptText(scriptOutputRoot, script, revision, draft),
+  ...(!lan?.webOnly ? { checkScriptEngineLoad: createScriptPackageEngineLoadChecker(missionExecutable) } : {}),
   loadInitialNodes: () => {
     const { eventPath } = runtimeConfig.load()
     if (!eventPath) throw new Error('尚未配置事件文件路径。')
@@ -173,6 +175,7 @@ const server = createMockServer({
   exportLocalReport: (report, format, actor, source, comparisons, filter) => exportLocalReport(join(outputRoot, 'reports'), report, format, actor, source, comparisons, filter),
   exportReportEvidence: (input) => exportEvidenceReport(join(outputRoot, 'reports'), input),
   scenarioStorage,
+  scenarioNow: () => new Date().toISOString(),
   templateStorage,
   authStorage,
   backupStorage,

@@ -209,7 +209,7 @@ function isEvidence(value: unknown, sourceSha256: string): value is EngineCsvEvi
     && Array.isArray((value as { files?: unknown }).files) && Array.isArray((value as { missing?: unknown }).missing)
 }
 
-export async function getEngineCsvFile(directory: string, sourceSha256: string, fileName: string): Promise<string | null> {
+export async function getEngineCsvFile(directory: string, sourceSha256: string, fileName: string, options?: { skipContentValidation?: boolean }): Promise<string | null> {
   if (!names.includes(fileName as typeof names[number]) || !/^[a-f0-9]{64}$/u.test(sourceSha256)) return null
   const root = resolve(directory)
   let pointer: { generation?: unknown; sourceSha256?: unknown }
@@ -223,7 +223,9 @@ export async function getEngineCsvFile(directory: string, sourceSha256: string, 
   if (!declared) return null
   const candidate = join(generation, fileName), info = await lstat(candidate).catch(() => null)
   if (!info?.isFile() || info.isSymbolicLink()) return null
-  try { await validateCsvFile(candidate, fileName as typeof names[number], declared.rowCount, declared.sha256) } catch { return null }
+  if (!options?.skipContentValidation) {
+    try { await validateCsvFile(candidate, fileName as typeof names[number], declared.rowCount, declared.sha256) } catch { return null }
+  }
   return candidate
 }
 

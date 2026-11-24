@@ -52,6 +52,17 @@ describe('JSON 文本语法定位', () => {
     expect(result).toMatchObject({ valid: false, issue: { fieldPath: '$[1:8]' } })
   })
 
+  it('V8 未报告偏移时只定位出现一次的意外字符', () => {
+    vi.spyOn(JSON, 'parse')
+      .mockImplementationOnce(() => { throw new SyntaxError("Unexpected token '}', JSON input is not valid") })
+      .mockImplementationOnce(() => { throw new SyntaxError("Unexpected token '}', JSON input is not valid") })
+
+    expect(parseJsonText('{\n  "name": }')).toMatchObject({ valid: false, issue: { fieldPath: '$[2:11]' } })
+    expect(parseJsonText('{ "name": "}", "key": }')).toMatchObject({
+      valid: false, issue: { fieldPath: '$', message: 'JSON 语法不正确，遇到意外字符 "}"。' },
+    })
+  })
+
   it('保留 Firefox 提供的行列信息，并在宿主无法定位时明确保留根诊断', () => {
     vi.spyOn(JSON, 'parse').mockImplementationOnce(() => {
       throw new SyntaxError('JSON.parse: expected property name at line 2 column 7 of the JSON data')
@@ -112,30 +123,29 @@ describe('链路新增参数边界', () => {
     config.linkSettings.enabledTypes = { SAT: 'true' as never, MICROWAVE: true, DATALINK: true, LASER: true, FIBER: true }
     config.linkSettings.switchCooldownS = -1
     config.linkSettings.priority = ['SAT', 'SAT', 'LASER', 'MICROWAVE', 'FIBER']
-    Object.assign(config.links[0]!, { enabled: 'true', antennaGainCorrectionDb: NaN, antiJammingGainDb: -1, spatialIsolationDb: Infinity, coding: 'bad\nscript' })
+    Object.assign(config.links[0]!, { enabled: 'true', antennaGainCorrectionDb: NaN, antiJammingGainDb: -1, spatialIsolationDb: Infinity })
     const paths = inspectScenarioConfig(config).result.errors.map(e => e.fieldPath)
     expect(paths).toEqual(expect.arrayContaining([
       'linkSettings.enabledSatellites.SHENTONG', 'linkSettings.enabledTypes.SAT', 'linkSettings.switchCooldownS', 'linkSettings.priority',
-      'links[0].enabled', 'links[0].antennaGainCorrectionDb', 'links[0].antiJammingGainDb', 'links[0].spatialIsolationDb', 'links[0].coding',
+      'links[0].enabled', 'links[0].antennaGainCorrectionDb', 'links[0].antiJammingGainDb', 'links[0].spatialIsolationDb',
     ]))
+    const retiredCoding = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    ;(retiredCoding.links[0] as { coding?: unknown }).coding = 'UNCODED'
+    expect(inspectScenarioConfig(retiredCoding).result.valid).toBe(true)
+    expect(dropRetiredScenarioFields(retiredCoding).links[0]).not.toHaveProperty('coding')
   })
 
-  it('校验云层参数、数传波段与阶段切换规则，旧场景缺省字段仍有效', () => {
+  it('校验云层参数与数传波段，旧场景缺省字段和已删除的阶段切换规则仍可读取', () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
     const datalink = config.links.findIndex(link => link.type === 'DATALINK')
     const microwave = config.links.findIndex(link => link.type === 'MICROWAVE')
-    const target = config.links[datalink]!
     Object.assign(config.scenario.environment, { cloudAltitudeMinM: 500, cloudAltitudeMaxM: 2000, cloudWaterDensityGM3: 0.5 })
     config.links[datalink]!.band = 'L'
     config.linkSettings = readLinkSettings(config)
-    config.linkSettings.switchRules = [
-      { id: 'RULE-1', trigger: 'DISTANCE_ABOVE', distanceThresholdM: 200_000, sourcePlatformId: target.sourcePlatformId,
-        targetPlatformId: target.targetPlatformId, toLinkId: target.id },
-      { id: 'RULE-2', enabled: false, trigger: 'JAMMING_ACTIVE', jammerId: config.jammers[0]!.id, sourcePlatformId: target.sourcePlatformId,
-        targetPlatformId: target.targetPlatformId, toLinkId: target.id },
-    ]
+    ;(config.linkSettings as { switchRules?: unknown }).switchRules = [{ id: 'OLD-RULE' }]
     const baseline = inspectScenarioConfig(structuredClone(fixtureSource.scenario) as ScenarioConfig, 'write').result.errors
     expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(baseline)
+    expect(dropRetiredScenarioFields(config).linkSettings).not.toHaveProperty('switchRules')
     config.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }, { longitude: 119, latitude: 25 }]
     expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(baseline)
     config.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 200, latitude: 24 }, { longitude: 119, latitude: 25 }]
@@ -145,46 +155,11 @@ describe('链路新增参数边界', () => {
     delete config.scenario.environment.seaPolygon
     Object.assign(config.scenario.environment, { cloudAltitudeMinM: 3000, cloudWaterDensityGM3: -1 })
     config.links[microwave]!.band = 'C'
-    const otherEndpoints = config.links.find(link => link.sourcePlatformId !== target.sourcePlatformId || link.targetPlatformId !== target.targetPlatformId)!
-    config.linkSettings.switchRules = [
-      { id: 'RULE-1', trigger: 'DISTANCE_ABOVE', sourcePlatformId: target.sourcePlatformId, targetPlatformId: target.targetPlatformId,
-        toLinkId: otherEndpoints.id, jammerId: config.jammers[0]!.id },
-      { id: 'RULE-1', trigger: 'JAMMING_STOPPED', jammerId: 'NO-SUCH', sourcePlatformId: 'NO-SUCH', targetPlatformId: target.targetPlatformId,
-        toLinkId: 'NO-SUCH', distanceThresholdM: 5 },
-    ]
     const paths = inspectScenarioConfig(config, 'write').result.errors.map(e => e.fieldPath)
     expect(paths).toEqual(expect.arrayContaining([
       'scenario.environment.cloudAltitudeMaxM', 'scenario.environment.cloudWaterDensityGM3', `links[${microwave}].band`,
-      'linkSettings.switchRules[0].distanceThresholdM', 'linkSettings.switchRules[0].jammerId', 'linkSettings.switchRules[0].toLinkId',
-      'linkSettings.switchRules[1].id', 'linkSettings.switchRules[1].sourcePlatformId', 'linkSettings.switchRules[1].toLinkId',
-      'linkSettings.switchRules[1].jammerId', 'linkSettings.switchRules[1].distanceThresholdM',
     ]))
-  })
-
-  it('切换规则目标链路须与端点业务同方向：前向业务切到返向链路被阻断', () => {
-    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-    const forward = config.links[0]!
-    forward.direction = 'FORWARD'
-    const reverse = { ...structuredClone(forward), id: 'L-REV', direction: 'REVERSE' as const, frequency: forward.frequency + 10 }
-    config.links.push(reverse)
-    config.platforms.filter(p => p.id === forward.sourcePlatformId || p.id === forward.targetPlatformId).forEach(p => p.linkIds.push(reverse.id))
-    config.informationDemand = [{ ...config.informationDemand[0]!, id: 'D-FWD', sourcePlatformId: forward.sourcePlatformId,
-      destinationPlatformIds: [forward.targetPlatformId], linkId: forward.id, direction: 'FORWARD', enabled: true }]
-    config.linkSettings = readLinkSettings(config)
-    const rule = { id: 'RULE-REV', trigger: 'DISTANCE_ABOVE' as const, distanceThresholdM: 1000,
-      sourcePlatformId: forward.sourcePlatformId, targetPlatformId: forward.targetPlatformId, toLinkId: reverse.id }
-    config.linkSettings.switchRules = [rule]
-    const issues = () => inspectScenarioConfig(config, 'write').result.errors.filter(e => e.code === 'SWITCH_RULE_DIRECTION_MISMATCH')
-    expect(issues().map(e => e.fieldPath)).toEqual(['linkSettings.switchRules[0].toLinkId'])
-    // 同方向目标、停用规则、或存在不限方向的旧业务时均不阻断。
-    config.linkSettings.switchRules = [{ ...rule, toLinkId: forward.id }]
-    expect(issues()).toEqual([])
-    config.linkSettings.switchRules = [{ ...rule, enabled: false }]
-    expect(issues()).toEqual([])
-    config.linkSettings.switchRules = [rule]
-    const { linkId: _linkId, direction: _direction, ...legacy } = config.informationDemand[0]!
-    config.informationDemand = [{ ...legacy, id: 'D-OLD' }]
-    expect(issues()).toEqual([])
+    expect(paths.some(path => path.includes('switchRules'))).toBe(false)
   })
 })
 it('单条启停优先于历史类型开关，同类型链路独立且不改写原快照', () => {
@@ -953,6 +928,26 @@ describe('P2-6 场景模板 Store', () => {
     expect(scenario.templateResultMessage).toContain('未写入真实文件')
   })
 
+  it('直接回导已导出的模板，遇到同名时新建编号递增的副本', async () => {
+    const source = { ...template(), uiExtensions: scenarioDraft().uiExtensions }
+    const firstCopy = { ...source, templateId: 'TPL-SCN-002', name: `${source.name} 副本` }
+    const secondCopy = { ...source, templateId: 'TPL-SCN-003', name: `${source.name} 副本 2`, version: '1', referenceCount: 0 }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(source)))
+      .mockResolvedValueOnce(jsonResponse(success(secondCopy)))
+    vi.stubGlobal('fetch', fetchSpy)
+    useAuthStore().$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const scenario = useScenarioStore()
+    scenario.templates = [source, firstCopy]
+
+    const exported = await scenario.exportTemplate(source.templateId)
+    await expect(scenario.importTemplate(exported!)).resolves.toBe(true)
+    expect(JSON.parse(fetchSpy.mock.calls[1]![1].body)).toEqual({
+      name: secondCopy.name, config: source.config, uiExtensions: source.uiExtensions,
+    })
+    expect(scenario.templates).toEqual([source, firstCopy, secondCopy])
+  })
+
   it('保留 API 失败代码并拒绝无效失败信封', async () => {
     const typedFailure = jsonResponse(apiFailure('模板操作冲突。', 'name', 'CONFLICT'), false)
     const malformedFailure = jsonResponse({ ok: false }, false)
@@ -981,7 +976,7 @@ describe('P2-6 场景模板 Store', () => {
     }
   })
 
-  it('更新未缓存模板并在导出详情失败时停止', async () => {
+  it('从明确选定的场景更新未缓存模板，并在导出详情失败时停止', async () => {
     const updated = template('TPL-SCN-009', '2', 0)
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(jsonResponse(success(updated)))
@@ -990,9 +985,13 @@ describe('P2-6 场景模板 Store', () => {
     const auth = useAuthStore()
     auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
     const scenario = useScenarioStore()
-    scenario.draft = scenarioDraft()
+    const selected = scenarioDraft()
 
-    await expect(scenario.updateTemplate(updated.templateId, updated.name)).resolves.toBe(true)
+    await expect(scenario.updateTemplate(updated.templateId, updated.name, selected)).resolves.toBe(true)
+    expect(JSON.parse(fetchSpy.mock.calls[0]![1].body)).toEqual({
+      name: updated.name, config: selected.config, uiExtensions: selected.uiExtensions,
+    })
+    expect(scenario.draft).toBeNull()
     expect(scenario.templates).toEqual([updated])
     await expect(scenario.exportTemplate('TPL-NOT-FOUND')).resolves.toBeUndefined()
     expect(scenario.templateResultCode).toBe('NOT_FOUND')
@@ -1010,6 +1009,13 @@ describe('P2-6 场景模板 Store', () => {
     expect(scenario.templateResultCode).toBe('JSON_SYNTAX_ERROR')
     expect(scenario.templateResultMessage).toContain('第 1 行，第 2 列')
     await expect(scenario.importTemplate(JSON.stringify({ name: '缺少配置' }))).resolves.toBe(false)
+    const create = vi.spyOn(scenario, 'createTemplate')
+    await expect(scenario.importTemplate(JSON.stringify({ name: '空配置', config: null }))).resolves.toBe(false)
+    expect(scenario.templateResultMessage).toContain('config')
+    await expect(scenario.importTemplate(JSON.stringify({ name: '模板', config: {}, extra: true }))).resolves.toBe(false)
+    expect(scenario.templateResultMessage).toContain('extra')
+    expect(create).not.toHaveBeenCalled()
+    create.mockRestore()
     expect(scenario.templateResultCode).toBe('VALIDATION_FAILED')
     await expect(scenario.copyTemplate('TPL-SCN-001', '模板副本')).resolves.toBe(true)
     expect(scenario.draft?.config.scenario.name).toBe('模板副本')
@@ -1646,12 +1652,7 @@ describe('P2-7 传感器、输出与信息需求字段校验', () => {
     const cases: Array<[string, (config: ScenarioConfig) => void]> = [
       ['sensors[0]', (config) => { config.sensors[0] = null as never }],
       ['sensors[0].id', (config) => { config.sensors[0]!.id = '' }],
-      ['sensors[0].platformId', (config) => { config.sensors[0]!.platformId = 'MISSING' }],
       ['sensors[0].frequencyRange', (config) => { config.sensors[0]!.frequencyRange = null as never }],
-      ['sensors[0].frequencyRange.min', (config) => { config.sensors[0]!.frequencyRange.min = 0 }],
-      ['sensors[0].frequencyRange.max', (config) => { config.sensors[0]!.frequencyRange.max = 0 }],
-      ['sensors[0].frequencyRange.max', (config) => { config.sensors[0]!.frequencyRange = { min: 2, max: 1 } }],
-      ['sensors[0].detectionRange', (config) => { config.sensors[0]!.detectionRange = -1 }],
       ['output', (config) => { config.output = null as never }],
       ['output.directory', (config) => { config.output.directory = ' ' }],
       ['output.writeInterval', (config) => { config.output.writeInterval = 0 }],
@@ -1677,6 +1678,19 @@ describe('P2-7 传感器、输出与信息需求字段校验', () => {
       mutate(config)
       expect(inspectScenarioConfig(config).result.errors.map((issue) => issue.fieldPath)).toContain(fieldPath)
     }
+    // 传感器页已并入干扰设备；旧 sensors 的数值异常只提示，不阻止保存（2026-11-24）。
+    const legacySensorCases: typeof cases = [
+      ['sensors[0].platformId', (config) => { config.sensors[0]!.platformId = 'MISSING' }],
+      ['sensors[0].frequencyRange.min', (config) => { config.sensors[0]!.frequencyRange.min = 0 }],
+      ['sensors[0].frequencyRange.max', (config) => { config.sensors[0]!.frequencyRange.max = 0 }],
+      ['sensors[0].frequencyRange.max', (config) => { config.sensors[0]!.frequencyRange = { min: 2, max: 1 } }],
+      ['sensors[0].detectionRange', (config) => { config.sensors[0]!.detectionRange = -1 }],
+    ]
+    for (const [fieldPath, mutate] of legacySensorCases) {
+      const config = scenarioDraft().config
+      mutate(config)
+      expect(inspectScenarioConfig(config).result.warnings.map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
   })
 
   it('定位传感器界面扩展的闭合字段和一一对应错误', () => {
@@ -1688,8 +1702,6 @@ describe('P2-7 传感器、输出与信息需求字段校验', () => {
       ['uiExtensions.sensors[0]', [{ ...uiExtensions.sensors[0], extra: true }]],
       ['uiExtensions.sensors[0].sensorId', [{ ...uiExtensions.sensors[0], sensorId: '' }]],
       ['uiExtensions.sensors[0].type', [{ ...uiExtensions.sensors[0], type: 'RADAR' }]],
-      ['uiExtensions.sensors[0].direction', [{ ...uiExtensions.sensors[0], direction: 361 }]],
-      ['uiExtensions.sensors[0].probability', [{ ...uiExtensions.sensors[0], probability: 2 }]],
       ['uiExtensions.sensors[0].enabled', [{ ...uiExtensions.sensors[0], enabled: 'yes' }]],
       ['uiExtensions.sensors', [{ ...uiExtensions.sensors[0] }, { ...uiExtensions.sensors[0] }]],
       ['uiExtensions.sensors', []],
@@ -1697,6 +1709,16 @@ describe('P2-7 传感器、输出与信息需求字段校验', () => {
     for (const [fieldPath, sensors] of cases) {
       expect(inspectScenarioUiExtensions({ jammers: uiExtensions.jammers, sensors }, jammerIds, sensorIds).result.errors
         .map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
+    // 旧传感器方向、概率不参与仿真，界面不再提供编辑；异常只提示。
+    const legacyUiCases: typeof cases = [
+      ['uiExtensions.sensors[0].direction', [{ ...uiExtensions.sensors[0], direction: 361 }]],
+      ['uiExtensions.sensors[0].probability', [{ ...uiExtensions.sensors[0], probability: 2 }]],
+    ]
+    for (const [fieldPath, sensors] of legacyUiCases) {
+      const inspected = inspectScenarioUiExtensions({ jammers: uiExtensions.jammers, sensors }, jammerIds, sensorIds).result
+      expect(inspected.valid).toBe(true)
+      expect(inspected.warnings.map((issue) => issue.fieldPath)).toContain(fieldPath)
     }
   })
 })
@@ -1889,7 +1911,9 @@ describe('跨对象频段冲突检测', () => {
       expect.objectContaining({ code: 'LINK_FREQUENCY_CONFLICT', fieldPath: `links[${config.links.findIndex(link => link.id === 'L-DL-06')}].frequency` }),
       expect.objectContaining({ code: 'LINK_FREQUENCY_CONFLICT', fieldPath: `links[${index}].frequency` }),
     ])
-    expect(conflicts[1]!.message).toContain('L-DL-06')
+    expect(conflicts[1]!.message).not.toContain('L-DL-06')
+    expect(conflicts[1]!.message).toContain(`第 ${config.links.findIndex(link => link.id === 'L-DL-06') + 1} 条链路`)
+    expect(conflicts[1]!.message).toContain(config.platforms.find(platform => platform.id === 'AIR-01')!.name)
     expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     config.links[index]!.frequency = base.frequency + base.bandwidth * 10
     expect(codes(config)).toEqual([])
@@ -1915,6 +1939,31 @@ describe('跨对象频段冲突检测', () => {
     config.jammers[0]!.frequency = 50
     config.jammers[0]!.bandwidth = 1
     expect(codes(config)).toEqual([expect.objectContaining({ code: 'JAMMER_BAND_UNMATCHED', fieldPath: 'jammers[0].frequency' })])
+  })
+
+  it('干扰多频段只要任一组覆盖启用链路即不告警，非法频段项由校验阻断', () => {
+    const config = scenarioDraft().config
+    const linkFrequency = config.links.find(link => link.enabled !== false && link.type !== 'FIBER')!.frequency
+    config.jammers[0]!.frequency = 50
+    config.jammers[0]!.bandwidth = 1
+    config.jammers[0]!.weaponBands = [
+      { frequency: 50, bandwidth: 1 },
+      { frequency: linkFrequency, bandwidth: 40 },
+    ]
+    expect(codes(config)).toEqual([])
+
+    config.jammers[0]!.weaponBands = [
+      { frequency: 50, bandwidth: 1, mode: 'SPOT', spotBandwidthMHz: 0, sweepDutyCycle: 0 },
+      { frequency: 0, bandwidth: -10, mode: 'SWEEP', spotBandwidthMHz: 0, sweepDutyCycle: 1.5 },
+    ]
+    const inspected = inspectScenarioConfig(config, 'write').result
+    expect(inspected.valid).toBe(false)
+    expect(inspected.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'JAMMER_SPOT_BANDWIDTH_INVALID', fieldPath: 'jammers[0].weaponBands[0].spotBandwidthMHz' }),
+      expect.objectContaining({ code: 'JAMMER_FREQUENCY_INVALID', fieldPath: 'jammers[0].weaponBands[1].frequency' }),
+      expect.objectContaining({ code: 'JAMMER_BANDWIDTH_INVALID', fieldPath: 'jammers[0].weaponBands[1].bandwidth' }),
+      expect.objectContaining({ code: 'JAMMER_CALC_PARAMETER_INVALID', fieldPath: 'jammers[0].weaponBands[1].sweepDutyCycle' }),
+    ]))
   })
 })
 
@@ -1971,7 +2020,7 @@ describe('P2-3 链路字段校验', () => {
 })
 
 describe('P2-4 干扰设备字段校验', () => {
-  it('时长非法只跳过触发时间上限，仍拒绝非法触发值', () => {
+  it('时长非法只跳过触发时间上限，非法触发值仅提示不阻止保存', () => {
     const config = scenarioDraft().config
     for (const duration of [Number.NaN, 0, -1]) {
       config.scenario.duration = duration
@@ -1982,7 +2031,7 @@ describe('P2-4 干扰设备字段校验', () => {
     }
     for (const triggerTimeS of [-1, Number.NaN, Infinity]) {
       config.jammers[0]!.triggerTimeS = triggerTimeS
-      expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ fieldPath: 'jammers[0].triggerTimeS' }))
+      expect(inspectScenarioConfig(config, 'write').result.warnings).toContainEqual(expect.objectContaining({ fieldPath: 'jammers[0].triggerTimeS' }))
     }
   })
 
@@ -2035,7 +2084,10 @@ describe('P2-4 干扰设备字段校验', () => {
     config.jammers[0]!.jammingRange = 44448
     for (const trigger of [-1, config.scenario.duration + 1, Number.NaN]) {
       config.jammers[0]!.triggerTimeS = trigger
-      expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].triggerTimeS')
+      // 触发时间不写入脚本，越界只提示（2026-11-24）。
+      const inspected = inspectScenarioConfig(config, 'write').result
+      expect(inspected.valid).toBe(true)
+      expect(inspected.warnings.map(issue => issue.fieldPath)).toContain('jammers[0].triggerTimeS')
     }
     for (const trigger of [0, config.scenario.duration]) {
       config.jammers[0]!.triggerTimeS = trigger
@@ -2114,7 +2166,9 @@ describe('P2-4 干扰设备字段校验', () => {
 
     const invalid = structuredClone(native)
     invalid.sensors[0]!.esm = { sensitivityDbw: 1, detectionThresholdDb: -1, dwellTimeS: 0, revisitTimeS: Number.NaN }
-    expect(inspectScenarioUiExtensions(invalid, jammerIds, sensorIds).result.errors.map(issue => issue.fieldPath)).toEqual(expect.arrayContaining([
+    // 原生 ESM 参数随旧传感器保留，异常只提示。
+    expect(inspectScenarioUiExtensions(invalid, jammerIds, sensorIds).result.valid).toBe(true)
+    expect(inspectScenarioUiExtensions(invalid, jammerIds, sensorIds).result.warnings.map(issue => issue.fieldPath)).toEqual(expect.arrayContaining([
       'uiExtensions.sensors[0].esm.sensitivityDbw',
       'uiExtensions.sensors[0].esm.detectionThresholdDb',
       'uiExtensions.sensors[0].esm.dwellTimeS',

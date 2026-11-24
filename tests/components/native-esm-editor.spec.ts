@@ -42,7 +42,8 @@ describe('NativeEsmEditor', () => {
     const invalid = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as NativeEsmSettings
     expect(Number.isNaN(invalid.dwellTimeS)).toBe(true)
     const result = inspectScenarioUiExtensions({ jammers: [], sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true, esm: invalid }] }, [], ['ESM-01']).result
-    expect(result.errors).toContainEqual(expect.objectContaining({ fieldPath: 'uiExtensions.sensors[0].esm.dwellTimeS' }))
+    // ESM 参数不进仿真脚本，非法值只给警告（2026-11-24）。
+    expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'NATIVE_ESM_DWELL_INVALID', fieldPath: 'uiExtensions.sensors[0].esm.dwellTimeS' }))
 
     wrapper.findComponent(ElSwitch).vm.$emit('update:modelValue', false)
     expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([undefined])

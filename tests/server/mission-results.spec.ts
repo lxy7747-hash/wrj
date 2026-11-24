@@ -2,8 +2,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { POSITION_CSV } from '../fixtures/local-replay'
+import type { AfsimEventLog } from '../../src/features/data-exchange/afsim-event-log'
 import { fileReceptionScenarioId, playbackFileSource } from '../../src/features/situation/file-reception'
-import type { ScenarioDraft, AccessControlConfig, Report, LocalReportFilter, LocalReportFilterResult } from '../../src/contracts/domain-models'
+import type { ScenarioDraft, AccessControlConfig, Report, LocalReportFilter, LocalReportFilterResult, LocalSwitchEvent } from '../../src/contracts/domain-models'
 import type { MissionResultParameterComparison, MissionResultRecord, MissionResultSnapshot } from '../../src/features/results/mission-result'
 import { snapshotMissionResultParameters, isMissionResultSnapshot } from '../../src/features/results/mission-result'
 const { mkdtemp, mkdir, readFile, writeFile, rm, readdir } = await import('node:fs/' + 'promises')
@@ -237,6 +238,61 @@ describe('真实仿真结果闭环', () => {
     expect((await results.get(record.resultId))?.report.reportId).toBe(snapshot.report.reportId)
   })
 
+  it('历史切换记录按事件时间、归档链路和节点归属筛选，缺失归属时不猜测', async () => {
+    const { root, entry, output, draft, results } = await setup()
+    draft.config.scenario.phases = [
+      { id: 'PH-1', name: '前段', startTimeS: 0, endTimeS: 5 },
+      { id: 'PH-2', name: '后段', startTimeS: 5, endTimeS: 10 },
+    ]
+    const mappingPath = join(entry, 'mapping.json')
+    const mapping = JSON.parse(await readFile(mappingPath, 'utf8'))
+    mapping.devices.push({ linkId: 'L-OTHER', source: { platformId: 'B', deviceId: 'other-tx' }, target: { platformId: 'B', deviceId: 'other-rx' }, relay: null })
+    await writeFile(mappingPath, JSON.stringify(mapping))
+    const eventPath = join(output, 'scenario_events.csv')
+    await writeFile(eventPath, '! LINK_SWITCH,time<time>,event<string>,source_platform<string>,link_id<string>\n'
+      + REPORT_EVENT_CSV.replace('5,LINK_ADDED_TO_MANAGER', '2,LINK_SWITCH,B,L-OTHER\n3,LINK_SWITCH,B,\n5,LINK_ADDED_TO_MANAGER') + '\n')
+    const parsedLog: Pick<AfsimEventLog, 'events'> = await readAfsimLogFile(eventPath)
+    const indexedSwitches = parsedLog.events.filter(event => event.type === 'LINK_SWITCH')
+    await results.capture(entry, draft, start, end)
+    const [record] = await results.list()
+    const snapshotPath = join(root, 'results', `${record!.resultId}.json`)
+    const stored = JSON.parse(await readFile(snapshotPath, 'utf8')) as { payload: string }
+    const snapshot = JSON.parse(stored.payload) as MissionResultSnapshot
+    const reportId = snapshot.report.reportId
+    expect((await results.filter(record!.resultId, reportId, {})).report.localEvidence).not.toHaveProperty('switchEvents')
+
+    const savedSwitch = (eventId: string, time: number, fromLinkId: string | null = null, toLinkId: string | null = null): LocalSwitchEvent =>
+      ({ eventId, time, demandId: 'D-1', ruleId: null, fromDeviceId: 'old-device', toDeviceId: 'new-device', fromLinkId, toLinkId, stableChecks: null })
+    const switches = [
+      savedSwitch('SW-EXPLICIT', 1, 'L-FILE', 'L-OTHER'),
+      savedSwitch(indexedSwitches[0]!.id, 2),
+      savedSwitch(indexedSwitches[1]!.id, 3, 'L-FILE'),
+      savedSwitch('SW-BOUNDARY', 5, 'L-OTHER'),
+      savedSwitch('SW-UNKNOWN', 10),
+    ]
+    snapshot.report.localEvidence!.switchEvents = switches
+    const payload = JSON.stringify(snapshot)
+    await writeFile(snapshotPath, JSON.stringify({ sha256: createHash('sha256').update(payload).digest('hex'), payload }))
+
+    const reopened = new LocalMissionResults(join(root, 'results'))
+    const filter = (input: LocalReportFilter): Promise<LocalReportFilterResult> => reopened.filter(record!.resultId, reportId, input)
+    const cases: Array<[LocalReportFilter, LocalSwitchEvent[]]> = [
+      [{}, switches],
+      [{ from: 5, to: 5 }, [switches[3]!]],
+      [{ stage: 'PH-1' }, switches.slice(0, 3)],
+      [{ stage: 'PH-2' }, switches.slice(3)],
+      [{ linkId: 'L-OTHER' }, [switches[0]!, switches[1]!, switches[3]!]],
+      [{ nodeId: 'A' }, [switches[0]!, switches[2]!]],
+      [{ from: 9, to: 9 }, []],
+    ]
+    for (const [input, expected] of cases) {
+      expect((await filter(input)).report.localEvidence?.switchEvents).toEqual(expected)
+    }
+    const combined = await filter({ nodeId: 'A', linkId: 'L-FILE' })
+    expect(combined.report.localEvidence?.switchEvents).toEqual([switches[0]!, switches[2]!])
+    expect(combined.timeline.filter(event => event.type === 'LINK_SWITCH').map(event => event.id)).toEqual([indexedSwitches[1]!.id])
+  })
+
   it('完成时冻结已保存参数；旧三字段快照仍可读且不补造参数', async () => {
     const { root, entry, draft, results } = await setup()
     await results.capture(entry, draft, start, end)
@@ -395,5 +451,69 @@ describe('真实仿真结果闭环', () => {
     const download = await api.post(`/api/v1/reports/${snapshot.report.reportId}/export?resultId=${records[0].resultId}&download=1`).set(headers).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(200)
     expect(download.text).toContain(records[0].resultId)
     expect(download.text).toContain('CMD-01')
+  })
+
+  it('report 视图响应省略 replay 并预载空筛选；磁盘结果变更时立即失效缓存并校验完整性', async () => {
+    const { root, entry, draft, results } = await setup()
+    await results.capture(entry, draft, start, end)
+    const record = (await results.list())[0]!
+    const fullSnapshot = (await results.get(record.resultId))!
+    expect(await results.get(record.resultId)).toEqual(fullSnapshot)
+    const server = createMockServer({ port: 0, missionResults: results })
+    cleanup.push(() => server.close())
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const api = request(server.httpServer)
+    const reportRes = await api.get(`/api/v1/mission-results/${record.resultId}`)
+      .set({ ...headers, 'X-Mission-Result-View': 'report' }).expect(200)
+    expect(reportRes.body.data.replay).toBeUndefined()
+    expect(reportRes.body.data.record).toEqual(record)
+    expect(reportRes.body.data.initialFilter).toMatchObject({ filter: {}, links: ['L-FILE'] })
+    expect(reportRes.body.data.report.localEvidence.connections.length).toBeGreaterThan(0)
+    const fullRes = await api.get(`/api/v1/mission-results/${record.resultId}`).set(headers).expect(200)
+    expect(fullRes.body.data.replay).toEqual(fullSnapshot.replay)
+    await writeFile(join(root, 'results', `${record.resultId}.json`), '{}')
+    await expect(results.get(record.resultId)).rejects.toThrow('完整性')
+  })
+
+  it('列表读取轻量记录索引且不依赖完整快照；历史结果自动回填索引', async () => {
+    const { root, entry, draft, results } = await setup()
+    await results.capture(entry, draft, start, end)
+    const id = (await results.list())[0]!.resultId
+    const recordFile = join(root, 'results', `${id}.record.json`)
+    expect(JSON.parse(await readFile(recordFile, 'utf8'))).toMatchObject({ resultId: id, scenarioId: draft.config.scenario.id })
+
+    // 模拟升级前发布、没有记录索引的历史结果：新实例列表应从完整快照补出并回填索引。
+    await rm(recordFile)
+    const reopened = new LocalMissionResults(join(root, 'results'))
+    const records = await reopened.list()
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ resultId: id, scenarioId: draft.config.scenario.id })
+    expect(JSON.parse(await readFile(recordFile, 'utf8'))).toMatchObject({ resultId: id })
+    // 索引存在时列表不再要求快照可读，打开具体结果仍做完整性校验。
+    await writeFile(join(root, 'results', `${id}.json`), '{}')
+    expect(await new LocalMissionResults(join(root, 'results')).list()).toHaveLength(1)
+    await expect(new LocalMissionResults(join(root, 'results')).get(id)).rejects.toThrow('完整性')
+  })
+
+  it('报告视图读取轻量快照，可从完整快照回填且不回读回放', async () => {
+    const { root, entry, draft, results } = await setup()
+    await results.capture(entry, draft, start, end)
+    const id = (await results.list())[0]!.resultId
+    const reportFile = join(root, 'results', `${id}.report-view.json`)
+    const view = await results.getReportView(id)
+    expect(view?.record.resultId).toBe(id)
+    expect(view?.report.reportId).toBeTruthy()
+    expect((await readFile(reportFile, 'utf8')).length).toBeGreaterThan(0)
+
+    // 删除报告视图后由完整快照重建并回填。
+    await rm(reportFile)
+    const reopened = new LocalMissionResults(join(root, 'results'))
+    const rebuilt = await reopened.getReportView(id)
+    expect(rebuilt?.report.reportId).toBe(view?.report.reportId)
+    expect((await readFile(reportFile, 'utf8')).length).toBeGreaterThan(0)
+
+    // 报告视图不依赖回放：移除完整快照后仍可读取报告视图。
+    await rm(join(root, 'results', `${id}.json`))
+    expect((await new LocalMissionResults(join(root, 'results')).getReportView(id))?.record.resultId).toBe(id)
   })
 })

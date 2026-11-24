@@ -6,7 +6,7 @@ export type LinkMasterDataPreparation =
   | { ok: true; link: Link; fields: LinkParameterField[]; skipped: Array<{ key: string; reason: string }> }
   | { ok: false; fieldPath: string; message: string; skipped?: Array<{ key: string; reason: string }> }
 
-type NumberMapping = { field: Exclude<LinkParameterField, 'modulation' | 'coding' | 'txPolarization' | 'rxPolarization'>; unit?: 'MHz' | 'W' | 'Mbps' | 'dBi' | 'dB' }
+type NumberMapping = { field: Exclude<LinkParameterField, 'modulation' | 'txPolarization' | 'rxPolarization'>; unit?: 'MHz' | 'W' | 'Mbps' | 'dBi' | 'dB' }
 
 export const NUMBER_MAPPINGS: Readonly<Record<string, NumberMapping>> = {
   frequency: { field: 'frequency', unit: 'MHz' }, frequencyMHz: { field: 'frequency', unit: 'MHz' },
@@ -33,7 +33,7 @@ export const PUBLIC_LINK_PARAMETER_OPTIONS = ([
   const mapping = NUMBER_MAPPINGS[key]!
   return { key, label, kind, unit: mapping.unit, aliases: Object.keys(NUMBER_MAPPINGS).filter(alias => NUMBER_MAPPINGS[alias]!.field === mapping.field) }
 })
-const ENUM_FIELDS = new Set(['modulation', 'coding', 'txPolarization', 'rxPolarization'] as const)
+const ENUM_FIELDS = new Set(['modulation', 'txPolarization', 'rxPolarization'] as const)
 
 function failure(fieldPath: string, message: string): LinkMasterDataPreparation { return { ok: false, fieldPath, message } }
 function skip(skipped: Array<{ key: string; reason: string }>, key: string, reason: string): void { skipped.push({ key, reason }) }
@@ -86,7 +86,6 @@ export function prepareLinkMasterData(link: Link, data: MasterData, platforms: r
       if (next.type === 'LASER' && selected.field === 'modulation') { skip(skipped, entry.key, '激光链路不映射射频调制方式。'); continue }
       if (fields.includes(selected.field)) { skip(skipped, entry.key, '同一链路字段已由先前条目设置。'); continue }
       if (selected.field === 'modulation') next.modulation = selected.value as Link['modulation']
-      else if (selected.field === 'coding') next.coding = selected.value
       else if (selected.field === 'txPolarization') next.txPolarization = selected.value as Link['txPolarization']
       else next.rxPolarization = selected.value as Link['rxPolarization']
       fields.push(selected.field)

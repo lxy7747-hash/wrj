@@ -2,7 +2,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { ScenarioDraft, ScriptContract } from '../../src/contracts/domain-models'
+import type { Permission, ScenarioDraft, ScriptContract } from '../../src/contracts/domain-models'
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useAuthStore } from '../../src/stores/auth'
@@ -23,7 +23,8 @@ const path = 'H:\\output\\scripts\\script-test\\comm_SimSetup.txt'
 async function setup(preview?: () => Promise<Response>, write?: () => Promise<Response>, warnings = false) {
   const pinia = createPinia()
   setActivePinia(pinia)
-  useAuthStore().$patch({ principal: { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] }, role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] })
+  const permissions: Permission[] = ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE', 'SIMULATION_CONTROL']
+  useAuthStore().$patch({ principal: { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions }, role: 'OPERATOR', permissions })
   // 1112 固定模板只接受模板实例范围内的场景；页面流程用例使用模板兼容配置。
   let persisted = createTemplateScenario()
   persisted.config.scenario.id = 'SCN-001'
@@ -60,31 +61,31 @@ async function setup(preview?: () => Promise<Response>, write?: () => Promise<Re
 }
 
 describe('保存后由 Node 写入 TXT', () => {
-  it('保存、生成、落盘依次请求，不触发浏览器下载', async () => {
+  it('有仿真控制权限时，保存只提交场景、生成并写入 TXT', async () => {
     const { wrapper, store, fetchSpy, alert, click, save } = await setup()
+    const success = vi.spyOn(ElMessage, 'success')
     const warning = vi.spyOn(ElMessage, 'warning')
+    expect(useAuthStore().authorize('SIMULATION_CONTROL').allowed).toBe(true)
     await save()
     expect(fetchSpy.mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${String(url).split('/api/v1/')[1]}`))
       .toEqual(['GET scenarios/SCN-001', 'PUT scenarios/SCN-001', 'POST scenarios/SCN-001/validate', 'POST scripts/preview', 'POST scripts/SCRIPT-P2-001/local-file'])
     expect(JSON.parse(String(fetchSpy.mock.calls.at(-1)![1]?.body))).toEqual({ checksum: store.script!.checksum })
     expect(alert).not.toHaveBeenCalled()
-    expect(warning).toHaveBeenCalledExactlyOnceWith('场景已保存，但未自动运行：当前账号没有仿真控制权限。')
+    expect(success).toHaveBeenCalledExactlyOnceWith('场景已保存，TXT 已生成。')
+    expect(warning).not.toHaveBeenCalled()
     expect(click).not.toHaveBeenCalled()
-    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect(wrapper.emitted('saved')).toHaveLength(1)
   })
 
-  it('移除独立生成入口，再次保存仍生成 TXT 并展示路径、日志及同修订预览', async () => {
+  it('再次保存仍生成 TXT 并展示路径、日志及同修订预览', async () => {
     const { wrapper, fetchSpy, save } = await setup(undefined, undefined, true)
-    expect(wrapper.find('[data-testid="generate-scenario-script"]').exists()).toBe(false)
     await save()
     fetchSpy.mockClear()
     await save()
     expect(wrapper.get('[data-testid="script-preview-panel"]').text()).toContain('scenario.txt')
-    expect(wrapper.find('[data-testid="generate-script"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(path)
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(`已生成脚本入口：${path}`)
-    // 1112 固定模板：开始时间/时长/平台航线只保留快照，不再声称写入执行；link_calc 仍写入。
-    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[仅保留快照] scenario.startTime')
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[已写入执行] scenario.startTime')
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[已写入执行] linkSettings.linkCalc')
     // F09：三种天线已定义，不再作为“依赖待确认”记录。
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).not.toContain('definitions.antennaPatterns.MICRO_REAR_PLATFORM_DIR_ANTENNA')
@@ -157,6 +158,7 @@ describe('保存后由 Node 写入 TXT', () => {
       ? { ok: false, json: async () => ({ ok: false, error: { code: 'CONFIRMATION_REQUIRED', message: '存在警告。' } }) } as Response
       : reply(new ScriptProjection().preview(persisted())), undefined, true)
     const warning = vi.spyOn(ElMessage, 'warning')
+    const success = vi.spyOn(ElMessage, 'success')
     vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValueOnce('confirm' as never)
     await save()
     expect(alert).not.toHaveBeenCalled()
@@ -166,6 +168,7 @@ describe('保存后由 Node 写入 TXT', () => {
     expect(fetchSpy.mock.calls.slice(-4).map(([url]) => String(url).split('/api/v1/')[1]))
       .toEqual(['confirmations', 'confirmations/CONF-TXT', 'scripts/preview', 'scripts/SCRIPT-P2-001/local-file'])
     expect(alert).not.toHaveBeenCalled()
-    expect(warning).toHaveBeenCalledExactlyOnceWith('场景已保存，但未自动运行：当前账号没有仿真控制权限。')
+    expect(warning).not.toHaveBeenCalled()
+    expect(success).toHaveBeenCalledExactlyOnceWith('场景已保存，TXT 已生成。')
   })
 })

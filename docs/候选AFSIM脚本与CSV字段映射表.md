@@ -12,7 +12,7 @@
 
 2026-10-27 激光接入以第 23 节为准：本机已确认内置 `WSF_LASER_TRANSCEIVER`，并用生成器输出完成隔离的双端消息收发验证。后文“激光仅有天线图形／继续阻断”描述保留为此前的候选脚本结论；本次不再适用。现行执行器先探测 `WSF_LINK_CALC_PROCESSOR`，引擎明确缺失时只在本次运行包移除该段，不将探测失败当作所有场景可原样执行的证据。
 
-以下按现行生成器、包内 `mapping.json` 与列明的真实引擎测试判定。后文第 1～22 节记录历次候选、实现和历史缺口，出现矛盾时以本节及第 23 节为准。2026-10-08 起生成包按对接示例拆分文件，入口为 `comm_SimSetup.txt`，并新增 `link_calc`、时延处理器、阶段切换规则与海面区域框选。**写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应日志和实际 CSV 为证。第 22.5 节的本机插件缺失仍是安装事实，现行执行器按前述探测结果处理本次运行包，不假定外部质量计算插件支持光学参数。
+以下按现行生成器、包内 `mapping.json` 与列明的真实引擎测试判定。后文第 1～22 节记录历次候选、实现和历史缺口，出现矛盾时以本节及第 23 节为准。2026-10-08 起生成包按对接示例拆分文件，入口为 `comm_SimSetup.txt`，并新增 `link_calc`、时延处理器与海面区域框选。阶段切换规则已从界面、合同和生成器删除。**写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应日志和实际 CSV 为证。第 22.5 节的本机插件缺失仍是安装事实，现行执行器按前述探测结果处理本次运行包，不假定外部质量计算插件支持光学参数。
 
 | 参数或能力 | 当前分类 | 具体边界与证据 |
 |---|---|---|
@@ -20,7 +20,7 @@
 | 微波、数传、卫星、光纤通信设备，业务周期发送，多目标与同目标备选链路，高空/卫星单跳转发 | 真实引擎已验证的有限样例 | 生成设备与消息脚本；实机用例核对收发、两跳转发与目标接收。频率、带宽、功率、速率、天线增益写入设备参数；这些用例不证明物理层质量、BER 或任意组合的性能。优先级在生成期选择主链路，不是运行时质量选路。 |
 | 雷达侦测候选、干扰设备、定时启停与距离门控、海况和降雨 | 写入脚本；部分实机样例验证 | 生成 `WSF_RADAR_SENSOR`、干扰 weapon/processor、`global_environment` 等。实机已核对定时启停和部分事件；没有验证所有天气/干扰参数的物理效果、探测概率或真实 SNR/BER。 |
 | `scenario.timeStep`、`output.writeInterval`、`environment.simClockSpeed` | 写入脚本，但效果边界受限 | `scenario.timeStep` 映射为 mover `update_interval`；`position.csv` 由 `MOVER_UPDATED` 触发写入。`output.writeInterval` 当前写入业务发送处理器的 `update_interval`，**不独立控制位置采样周期**。位置记录实际间隔须以 AFSIM 2.9.0 的同平台 CSV 实测为准，不能据配置值推断。`clock_rate` 虽写入，在当前 mission `-es` 模式下不改变墙钟倍速。 |
-| 场景编号/名称/描述、修订号、配置快照；链路调制、BER 阈值、业务 QoS、ESM 扩展方向/概率（冷却时间自 2026-10-08 起用于阶段切换规则，见第 22 节） | 仅元数据或项目侧规则 | `input.json`、`mapping.json` 保存身份与配置；部分字段用于生成前选择或校验，但无已确认的同名引擎参数或效果证据。不能把配置误码概率充作测量 BER，也不能把保存成功充作引擎生效。 |
+| 场景编号/名称/描述、修订号、配置快照；链路调制、BER 阈值、业务 QoS、ESM 扩展方向/概率 | 仅元数据或项目侧规则 | `input.json`、`mapping.json` 保存身份与配置；部分字段用于生成前选择或校验，但无已确认的同名引擎参数或效果证据。不能把配置误码概率充作测量 BER，也不能把保存成功充作引擎生效。冷却时间用于链路优选，不再用于已删除的阶段切换规则。 |
 | 激光通信 | 真正激光收发器已接入，有限样例实机验证 | 使用 `WSF_LASER_TRANSCEIVER`；用户必须提供光学口径、脉宽和 OOK 光调制，频率换算为光波长；不使用射频或有线收发器替代。光学端口未纳入对接方 `link_calc` 的质量统计合同；具体边界见第 23 节。 |
 | 链路质量 CSV、链路切换 CSV；信道编码及非零增益修正等 | 当前不支持或明确阻断 | 缺完整真实测量时，开启 `output.linkQualityEnabled` 或 `output.linkSwitchEnabled` 即按字段路径拒绝生成；不输出伪造的规范 CSV。其他未核实的设备/参数按生成器字段级校验拒绝，不静默改写成替代模型。 |
 
@@ -567,15 +567,8 @@
 | `scenario.environment.cloudAltitudeMinM/cloudAltitudeMaxM/cloudWaterDensityGM3` | 场景环境：云层下限/上限高度、云中液态水密度；缺省 500 m / 2000 m / 0.5 g/m³；上限须高于下限 | `cloud_altitude_limits`、`cloud_water_density` 及 `link_calc` 的 `cloud` |
 | `scenario.environment.seaPolygon` | 见 22.7 | `link_calc` 的 `sea_polygon` |
 | `links[].band`（`C`/`L`，仅 `DATALINK`） | 链路编辑：数传波段；旧链路缺省 C | C/L 天线与下倾差异，见 22.2 |
-| `linkSettings.switchRules[]` | 链路设置：阶段切换规则 | 见下 |
 
-阶段切换规则（D-05）：每条规则含 `trigger`（`DISTANCE_ABOVE`/`DISTANCE_BELOW`/`JAMMING_ACTIVE`/`JAMMING_STOPPED`）、源/目标平台、`toLinkId`（须连接同一对平台，且与该端点业务方向一致）、`distanceThresholdM` 或 `jammerId`、`enabled`。
-
-- 业务处理器为有规则的目标保存当前发送设备，每 3 s（示例周期）按列表顺序判断，第一条成立的规则决定当前链路；与当前不同且距上次切换不少于 `switchCooldownS` 时切换，并 `writeln("LINK_SWITCH time=… business=… rule=… from=… to=…")`。
-- 干扰条件读取对应干扰 weapon 的 `IsTurnedOn()`；“干扰关闭”只在该设备开启过之后成立。
-- 目标链路停用或未参与本次场景时阻断生成，错误定位到 `linkSettings.switchRules[i].toLinkId`。
-- 规则只作用于同方向业务：前向业务只能切到前向链路，返向同理。共享校验在该端点有启用业务、却没有与目标链路同方向的业务时报 `SWITCH_RULE_DIRECTION_MISMATCH`（定位 `toLinkId`；停用规则和未设方向的旧业务不阻断）；生成器只把规则挂到方向与主链路一致的路由上，未设方向的旧业务也不会被切到反向链路。
-- 规则字段与执行方式由项目侧拟定，尚待对接方确认；`mapping.json` 的 `routePlans[].switchRuleIds`、`failoverEnabled` 记录绑定关系。
+阶段切换规则已删除：界面不再提供距离大于/小于、干扰启停后切到指定链路；旧场景里的 `linkSettings.switchRules` 在读取和保存前丢弃，不参与校验，也不写入脚本。链路优先级、冷却时间、质量门限和热链仍保留。
 
 ### 22.7 海面区域框选
 
@@ -585,10 +578,10 @@
 
 ### 22.8 合同与校验
 
-- `src/contracts/domain-models.ts` 与 `frontend-technical-design-v1/contracts/domain-models.ts` 同步新增 `GeoPoint`、`DatalinkBand`、`LinkSwitchTrigger`、`LinkSwitchRule` 及上述可选字段（两份保持逐字节一致）。
-- `mock-api.openapi.yaml` 新增对应 schema 与 `LinkSwitchRule` 组件；`scripts/contracts/openapi-schema.snapshot.ts` 按新 schema 重新生成（仅新增，另有 4 行等值格式变化）；`contract-documents.ts` 登记 `band`、`trigger` 枚举字面量。
-- 共享校验 `scenario-validation.ts` 覆盖云层范围、`seaPolygon` 顶点数与经纬度、`band` 只用于数传、规则引用闭合、条件参数互斥与业务方向一致；全部为可选字段，旧场景不受影响。
-- OpenAPI 升至 1.8.8：`Link.band` 仅 `DATALINK` 可带；`LinkSwitchRule` 按触发类型条件约束（距离条件必带 `distanceThresholdM`、不得带 `jammerId`，干扰条件反之），与运行时校验一致并补合同负例。方向一致性涉及跨对象引用，只由共享校验执行。冻结哈希见 `frontend-technical-design-v1/README.md`。
+- `src/contracts/domain-models.ts` 与 `frontend-technical-design-v1/contracts/domain-models.ts` 同步新增 `GeoPoint`、`DatalinkBand` 及云层、海面区域、数传波段字段（两份保持逐字节一致）。阶段切换规则类型已删除。
+- `mock-api.openapi.yaml` 不再包含 `LinkSwitchRule`；`scripts/contracts/openapi-schema.snapshot.ts` 与之同步。`contract-documents.ts` 仍登记 `band` 枚举字面量。
+- 共享校验 `scenario-validation.ts` 覆盖云层范围、`seaPolygon` 顶点数与经纬度、`band` 只用于数传；这些字段均可缺省，旧场景不受影响。残留的 `linkSettings.switchRules` 只丢弃，不再校验。
+- OpenAPI 1.8.8 曾增加 `LinkSwitchRule`。该组件已删除；`Link.band` 仍仅 `DATALINK` 可带。冻结哈希见 `frontend-technical-design-v1/README.md` 的历史记录，不以当时哈希代表当前文件。
 
 ### 22.9 对示例文件本身的修改
 
@@ -627,11 +620,10 @@
 
 文档示例的热链是跨多条链路的端到端路径（任务机 →C 下行→ 指挥车 →光纤→ 后方车），不能按单条链路生成，因此改为可配置：
 
-- `linkSettings.hotLinks = { forward: 链路编号[][], reverse: 链路编号[][], endPlatformType }`，界面在“链路设置 → 热链配置（全局）”按顺序选择链路。
-- 未自定义时按已启用链路首尾相接自动串联：从没有上游的链路出发，沿“目标平台 = 下一条源平台”延伸，分支按链路优先级取第一条，未覆盖的链路各自起头；可“恢复自动串联”。
+- `linkSettings.hotLinks = { forward: 链路编号[][], reverse: 链路编号[][] }`，界面在“链路设置 → 热链配置（全局）”按顺序选择链路。
+- 热链由用户在“链路设置 → 热链配置（全局）”显式配置，不再按已启用链路自动串联；未配置时热链为空，需逐条添加并按路径顺序选择链路。
 - 生成 `hot_link_fw/ret` 时逐跳写 `{platform, inPort, outPort}`：衔接平台以上一条的目标设备为入端口、下一条的源设备为出端口，中继链路插入中继入/出端口；首跳入端口、末跳出端口为空。
 - 共享校验要求每条热链非空、不重复、方向与列表一致、首尾相接（`HOT_LINK_CHAIN_INVALID`）；自定义热链引用停用或未参与本次场景的链路时阻断生成，定位 `linkSettings.hotLinks.reverse[i]`。
-- `end_platform_type`：热链终点的平台类型，全局一个值，写参考模型名（已确认），默认后方指挥节点 `REAR_COMM_PLATFORM`，可选指挥车 `COMMAND_VEHICLE_PLATFORM`、任务机 `MISSION_UAV_PLATFORM`。
 
 待对接方确认：`jamming_range` 是否接受 `km` 单位后缀；`port_params` 新增的 `polarization` 键、`rain.rain_attenuation_db` 是否被读取。
 
@@ -710,7 +702,7 @@
 
 ### 24.5 D1 保留项与本机运行补丁
 
-（航点加速度、航向、到达时间与干扰方位角按 V1.2 测试大纲 GNZB-08 / GNZB-15 于 2026-11-03 恢复（保留配置、记录到 mapping.json、不写入 TXT，界面不加脚本提示）；平台初始航向、干扰持续时间、自动检测、温湿度、雨衰（dB/km）仍删除。）激光通信设备、侦测/ESM 扩展、链路调制/BER/编码/增益修正、链路切换规则与优先级、`timeStep` 和业务 QoS 等旧配置继续保存，但不按旧生成器方式写入当前模板。全局 `link_calc.channel_encoding_scheme` 等仍受控生效，不能与被保留的逐链路字段混淆。仅能经激光到达的目标以可定位警告列入 `mapping.json.retainedButNotEmitted`；不改成微波或光纤，不误删同业务其他可用目标。
+（航点加速度、航向、到达时间与干扰方位角按 V1.2 测试大纲 GNZB-08 / GNZB-15 于 2026-11-03 恢复（保留配置、记录到 mapping.json、不写入 TXT，界面不加脚本提示）；平台初始航向、干扰持续时间、自动检测、温湿度、雨衰（dB/km）仍删除。）激光通信设备、侦测/ESM 扩展、链路调制/BER/编码/增益修正、链路优先级、`timeStep` 和业务 QoS 等旧配置继续保存，但不按旧生成器方式写入当前模板。阶段切换规则已从界面和数据合同删除，旧数据读取时丢弃。全局 `link_calc.channel_encoding_scheme` 等仍受控生效，不能与被保留的逐链路字段混淆。仅能经激光到达的目标以可定位警告列入 `mapping.json.retainedButNotEmitted`；不改成微波或光纤，不误删同业务其他可用目标。
 
 激光链路、ESM 传感器、干扰触发时间按 2026-11-02 用户裁定保留配置、不写入脚本，界面不显示提示（C-1～C-3）。激光独占目标由生成器直接识别，仍在对接文件中记录，不再依赖界面校验警告。新增前出中继预填模板起飞点、中继点和 3 个盘旋点，不预填返航路线（C-4）。
 

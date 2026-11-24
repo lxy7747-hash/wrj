@@ -24,11 +24,11 @@ const OPERATOR_PERMISSIONS: readonly Permission[] = [
   'SCENARIO_DRAFT_WRITE',
   'SIMULATION_CONTROL',
   'ORDINARY_REPORT_EXPORT',
+  'OFFICIAL_TEMPLATE_MAINTAIN',
 ]
 
 const ADMIN_PERMISSIONS: readonly Permission[] = [
   ...OPERATOR_PERMISSIONS,
-  'OFFICIAL_TEMPLATE_MAINTAIN',
   'MASTER_DATA_MAINTAIN',
   'USER_ROLE_MAINTAIN',
   'BACKUP_RESTORE',
@@ -45,6 +45,7 @@ export interface AuthStorage {
   list(): User[]
   verify(username: string, password: string): Promise<boolean>
   save(user: User, password?: string): void
+  resetPassword?(userId: string, password: string): void
   recordLogin(userId: string, at: string): void
   delete(id: string): void
   time(): string
@@ -57,8 +58,9 @@ export interface AuthStorage {
 export interface ProjectionFailure {
   ok: false
   code: ApiErrorCode
-  status: 400 | 401 | 404 | 409 | 423
+  status: 400 | 401 | 403 | 404 | 409 | 423
   fieldPath?: string
+  message?: string
 }
 
 export interface ProjectionSuccess<T> {
@@ -404,6 +406,34 @@ export class AuthProjection {
     this.runtimeState.users.splice(index, 1)
     this.appendAudit(actor, 'ADMIN', 'USER_DELETE', userId, 'SUCCESS')
     return { ok: true, data: { deleted: true, objectId: userId } }
+  }
+
+  /**
+   * Resets another account's password to the default password (123456) and revokes its sessions.
+   *
+   * @param userId - Identifier of the target account whose password will be reset.
+   * @returns A typed reset result or a not-found/permission-denied failure.
+   * @remarks Blocks self-reset for the currently authenticated administrator and records audit.
+   */
+  resetPassword(
+    userId: string,
+    actor = 'admin',
+    actorId = CURRENT_ADMIN_ID,
+  ): ProjectionResult<{ reset: boolean; objectId: string }> {
+    this.refreshUsers()
+    const current = this.runtimeState.users.find((candidate) => candidate.userId === userId)
+    if (current === undefined) {
+      this.appendAudit(actor, 'ADMIN', 'USER_PASSWORD_RESET', userId, 'ERROR')
+      return { ok: false, code: 'NOT_FOUND', status: 404 }
+    }
+    if (current.userId === actorId) {
+      this.appendAudit(actor, 'ADMIN', 'USER_PASSWORD_RESET', userId, 'DENIED')
+      return { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '当前登录账号不能重置自己的密码。' }
+    }
+
+    this.storage?.resetPassword?.(userId, DEFAULT_LOGIN_PASSWORD)
+    this.appendAudit(actor, 'ADMIN', 'USER_PASSWORD_RESET', userId, 'SUCCESS')
+    return { ok: true, data: { reset: true, objectId: userId } }
   }
 
   /**

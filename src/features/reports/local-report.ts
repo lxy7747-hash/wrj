@@ -1,7 +1,10 @@
-import type { LocalQualityKpis, LocalReportEvidence, LocalReportExportResult, LocalReportFilter, LocalSwitchEvent, Report, TaskPhase } from '../../contracts/domain-models'
+import type { EnginePathNode, LocalQualityKpis, LocalReportEvidence, LocalReportExportResult, LocalReportFilter, LocalSwitchEvent, Report, TaskPhase } from '../../contracts/domain-models'
+import { MAX_LOCAL_REPORT_TREND_POINTS } from '../../contracts/domain-models'
 import { isQualityDatasetProjection } from '../data-exchange/quality-records'
 import { isEngineFrameId, isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
 import { isDetectionEvent } from './detection-events'
+
+export const LOCAL_REPORT_TRENDS_ACCEPT = 'application/json; report-trends=1'
 
 /** 共享纯校验，Mock 服务无需导入本机文件索引适配器。 */
 export function parseLocalReportFilter(value: unknown): LocalReportFilter | null {
@@ -69,7 +72,7 @@ export function isLocalReport(value: unknown): value is Report & { localEvidence
     || !text(value.generatedTime) || !Number.isFinite(Date.parse(value.generatedTime))) return false
   const e = value.localEvidence as Partial<LocalReportEvidence>
   const evidenceKeys = ['eventFile', 'positionFile', 'startTimeS', 'endTimeS', 'simulationComplete', 'positionCount', 'positionIssueCount', 'waitingForPositionLine', 'eventCount', 'eventWarningCount', 'nodes', 'eventCounts', 'connections', 'deviceEvents']
-  const optionalEvidenceKeys = ['messageDetailsComplete', 'messageDetailEventCount', 'relatedNodeIds', 'detectionEvents', 'switchEvents', 'qualityKpis', 'quality', 'qualityConnectivityRates', 'engineFrameArchive', 'engineCsv']
+  const optionalEvidenceKeys = ['messageDetailsComplete', 'messageDetailEventCount', 'relatedNodeIds', 'detectionEvents', 'switchEvents', 'qualityKpis', 'qualityJammingDurationTrend', 'quality', 'qualityConnectivityRates', 'engineFrameArchive', 'engineCsv']
   if (!e || typeof e !== 'object' || Array.isArray(e) || !evidenceKeys.every(key => Object.hasOwn(e, key))
     || !Object.keys(e).every(key => evidenceKeys.includes(key) || optionalEvidenceKeys.includes(key))
     || ![e.eventFile, e.positionFile].every(file => object(file, ['fileName', 'sha256']) && text(file.fileName) && hash(file.sha256))
@@ -133,6 +136,8 @@ export function isLocalReport(value: unknown): value is Report & { localEvidence
     }
   }
   if (e.qualityKpis !== undefined && !isQualityKpis(e.qualityKpis)) return false
+  if (e.qualityJammingDurationTrend !== undefined
+    && (!time(e.qualityKpis?.jammingDurationS) || !isAggregateTrend(e.qualityJammingDurationTrend, e.qualityKpis.jammingDurationS, false))) return false
   if (e.quality !== undefined && (!isQualityDatasetProjection(e.quality) || (value.reportId.includes('-Q-') && !value.reportId.endsWith(`-Q-${e.quality.source.sha256}`)))) return false
   if (e.quality === undefined && value.reportId.includes('-Q-')) return false
   if (e.qualityConnectivityRates !== undefined && (!e.quality || !isQualityConnectivityRates(e.qualityConnectivityRates))) return false
@@ -141,19 +146,25 @@ export function isLocalReport(value: unknown): value is Report & { localEvidence
   return true
 }
 
-function isEngineFrameArchive(value: unknown): boolean {
+/** 校验引擎帧归档摘要对象结构，供报告整体校验与局部附加校验复用。 */
+export function isEngineFrameArchive(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const archive = value as Record<string, unknown>
   const aggregate = archive.aggregate as Record<string, unknown> | undefined
-  const allowed = ['sourceSha256', 'frameCount', 'firstSimulationTime', 'lastSimulationTime', 'missingFieldNames', 'segmentRows', 'switchRows', 'eventRows', 'detailTruncated', 'retainedDetailRows', 'aggregate']
+  const allowed = ['sourceSha256', 'frameCount', 'firstSimulationTime', 'lastSimulationTime', 'missingFieldNames', 'segmentRows', 'switchRows', 'eventRows', 'detailTruncated', 'retainedDetailRows', 'detailDeferred', 'aggregate']
   if (!Object.keys(archive).every(key => allowed.includes(key)) || !hash(archive.sourceSha256) || !count(archive.frameCount)
     || ![archive.firstSimulationTime, archive.lastSimulationTime].every(value => value === null || time(value))
     || !Array.isArray(archive.missingFieldNames) || archive.missingFieldNames.some(field => !text(field))
     || !Array.isArray(archive.segmentRows) || !Array.isArray(archive.switchRows) || !Array.isArray(archive.eventRows)
     || (archive.detailTruncated !== undefined && typeof archive.detailTruncated !== 'boolean')
     || (archive.retainedDetailRows !== undefined && !count(archive.retainedDetailRows))
-    || (aggregate !== undefined && (!aggregate || typeof aggregate !== 'object' || Array.isArray(aggregate) || !Object.keys(aggregate).every(key => ['uniqueSingleSegmentCount', 'switchCount', 'missing', 'averageGxbDb', 'averageBer'].includes(key)) || !count(aggregate.uniqueSingleSegmentCount) || !count(aggregate.switchCount) || !Array.isArray(aggregate.missing) || aggregate.missing.some((item: unknown) => !text(item))
-      || (aggregate.averageGxbDb !== undefined && (typeof aggregate.averageGxbDb !== 'number' || !Number.isFinite(aggregate.averageGxbDb))) || (aggregate.averageBer !== undefined && (typeof aggregate.averageBer !== 'number' || !Number.isFinite(aggregate.averageBer) || aggregate.averageBer < 0 || aggregate.averageBer > 1))))
+    || (archive.detailDeferred !== undefined && typeof archive.detailDeferred !== 'boolean')
+    || (aggregate !== undefined && (!aggregate || typeof aggregate !== 'object' || Array.isArray(aggregate) || !Object.keys(aggregate).every(key => ['uniqueSingleSegmentCount', 'switchCount', 'missing', 'averageGxbDb', 'averageBer', 'averageConnectedDurationS', 'jammingDurationS', 'switchCountTrend', 'jammingDurationTrend'].includes(key)) || !count(aggregate.uniqueSingleSegmentCount) || !count(aggregate.switchCount) || !Array.isArray(aggregate.missing) || aggregate.missing.some((item: unknown) => !text(item))
+      || (aggregate.averageGxbDb !== undefined && (typeof aggregate.averageGxbDb !== 'number' || !Number.isFinite(aggregate.averageGxbDb))) || (aggregate.averageBer !== undefined && (typeof aggregate.averageBer !== 'number' || !Number.isFinite(aggregate.averageBer) || aggregate.averageBer < 0 || aggregate.averageBer > 1))
+      || (aggregate.averageConnectedDurationS !== undefined && (typeof aggregate.averageConnectedDurationS !== 'number' || !Number.isFinite(aggregate.averageConnectedDurationS) || aggregate.averageConnectedDurationS < 0))
+      || (aggregate.jammingDurationS !== undefined && !time(aggregate.jammingDurationS))
+      || (aggregate.switchCountTrend !== undefined && !isAggregateTrend(aggregate.switchCountTrend, aggregate.switchCount, true))
+      || (aggregate.jammingDurationTrend !== undefined && (!time(aggregate.jammingDurationS) || !isAggregateTrend(aggregate.jammingDurationTrend, aggregate.jammingDurationS, false)))))
     || (archive.detailTruncated === true && archive.retainedDetailRows === undefined)) return false
   const row = (item: unknown, field: 'segment' | 'value', kind: 'segment' | 'switch' | 'event') => {
     if (!object(item, ['engineEpoch', 'frameId', 'simulationTime', field]) || !count(item.engineEpoch) || !isEngineFrameId(item.frameId) || !time(item.simulationTime)) return false
@@ -163,6 +174,21 @@ function isEngineFrameArchive(value: unknown): boolean {
     return isEngineFrameSnapshot(candidate)
   }
   return archive.segmentRows.every(item => row(item, 'segment', 'segment')) && archive.switchRows.every(item => row(item, 'value', 'switch')) && archive.eventRows.every(item => row(item, 'value', 'event'))
+}
+
+function isAggregateTrend(value: unknown, total: number, integer: boolean): boolean {
+  if (!Array.isArray(value) || !value.length || value.length > MAX_LOCAL_REPORT_TREND_POINTS) return false
+  let previousTime = 0
+  let previousValue = 0
+  for (const point of value) {
+    const keys = point?.breakBefore === undefined ? ['time', 'value'] : ['time', 'value', 'breakBefore']
+    if (!object(point, keys) || !time(point.time) || !time(point.value) || (integer && !count(point.value))
+      || (point.breakBefore !== undefined && typeof point.breakBefore !== 'boolean')
+      || point.time < previousTime || point.value < previousValue) return false
+    previousTime = point.time
+    previousValue = point.value
+  }
+  return integer ? previousValue === total : Math.abs(previousValue - total) <= 1e-9
 }
 function isEngineCsv(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -234,11 +260,51 @@ function detectionBand(min: number | null, max: number | null): string {
   return `${mhz(min)}～${mhz(max)} MHz`
 }
 
+const SWITCH_REASON_LABELS: Record<string, string> = {
+  beyond_weitch: '超视距切换', bey_switch: '超视距切换', ber_switch: '链路劣化切换',
+  alarm_switch: '链路告警切换', into_detect: '进入探测圈', release_detect: '离开探测圈',
+  into_jamm: '进入干扰圈', release_jamm: '离开干扰圈',
+}
+const switchReasonText = (reasons: readonly string[]): string => reasons.map(reason => SWITCH_REASON_LABELS[reason] ?? reason).join('、') || NO_DATA
+
+function switchPathLabel(nodes: readonly EnginePathNode[] | undefined, names: ReadonlyMap<string, string>, fallback: string | null): string {
+  if (!nodes?.length) return fallback ?? NO_DATA
+  return nodes.map(node => names.get(node.platformId ?? '') ?? node.platformName ?? node.platformId ?? NO_DATA).join(' → ')
+}
+
+function localReportSwitchCount(evidence: LocalReportEvidence): number | undefined {
+  if (evidence.engineFrameArchive?.aggregate) return evidence.engineFrameArchive.aggregate.switchCount
+  const quality = evidence.quality
+  if (quality && (quality.source.switchEventsProvided === true || quality.switchEvents.length > 0)) {
+    return quality.switchEvents.filter(row => row.decision === 'ACCEPTED').length
+  }
+  return evidence.switchEvents?.length
+}
+
+export function localReportMetrics(evidence: LocalReportEvidence) {
+  const quality = evidence.qualityKpis
+  const engine = evidence.engineFrameArchive?.aggregate
+  const connected = quality?.averageConnectedDurationS ?? engine?.averageConnectedDurationS
+  const switches = localReportSwitchCount(evidence)
+  const jsr = quality?.averageJsrDb ?? engine?.averageGxbDb
+  const ber = quality?.averageBer ?? engine?.averageBer
+  const jamming = quality?.jammingDurationS ?? engine?.jammingDurationS
+  return [
+    { key: 'connected', label: '平均连通时长', unit: '秒', value: connected, display: kpi(connected, reportTime) },
+    { key: 'switches', label: '切换次数', unit: '次', value: switches,
+      display: kpi(switches, value => String(value) + (engine ? '（引擎实际记录）' : '')) },
+    { key: 'jsr', label: '平均干信比', unit: 'dB', value: jsr, display: kpi(jsr, value => `${value.toFixed(2)} dB`) },
+    { key: 'ber', label: '平均误码率', unit: '比率', value: ber, display: kpi(ber, value => value.toExponential(2)) },
+    { key: 'jamming', label: '干扰持续时长', unit: '秒', value: jamming, display: kpi(jamming, reportTime) },
+  ] as const
+}
+
 /** 展示和导出使用同一组表格，避免导出重新计算或混入其他报告。 */
-export function localReportTables(e: LocalReportEvidence): Array<{ title: string; columns: string[]; rows: string[][] }> {
+export function localReportTables(e: LocalReportEvidence, keepCsvLabels = false): Array<{ title: string; columns: string[]; rows: string[][] }> {
   const names = new Map(e.nodes.map(node => [node.platformId, node.name]))
   const name = (id: string) => `${names.get(id) ?? id}（${id}）`
   const events = new Map(e.eventCounts.map(row => [row.type, row.count]))
+  const nativeSwitches = e.engineFrameArchive?.switchRows ?? []
   return [
     { title: '汇总', columns: ['统计项', '结果'], rows: [
       ['统计范围', `${reportTime(e.startTimeS)}～${reportTime(e.endTimeS)}`], ['结束事件', e.simulationComplete ? '已记录' : '未记录（当前快照）'],
@@ -248,14 +314,8 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
       ['通信关联登记明细（包含平台内部关联）', String(e.connections.length)],
       ['消息发送记录', String(events.get('MESSAGE_TRANSMITTED') ?? 0)], ['消息接收记录', String(events.get('MESSAGE_RECEIVED') ?? 0)],
       ['通信设备关闭记录', String(events.get('COMM_TURNED_OFF') ?? 0)], ['干扰请求发起记录', String(events.get('JAMMING_REQUEST_INITIATED') ?? 0)],
-      // 大纲评估指标：有引擎质量/干扰输出时填写，缺省显示“暂无数据”。切换次数来自切换事件，未解析到时同样显示暂无数据。
-      ['平均连通时长', kpi(e.qualityKpis?.averageConnectedDurationS, value => reportTime(value))],
-      ['切换次数', e.engineFrameArchive?.aggregate ? `${e.engineFrameArchive.aggregate.switchCount}（引擎实际记录）` : e.quality === undefined ? (e.switchEvents === undefined ? NO_DATA : String(e.switchEvents.length)) : (e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length > 0 ? String(e.quality.switchEvents.filter(row => row.decision === 'ACCEPTED').length) : NO_DATA)],
-      ['平均GXB', kpi(e.engineFrameArchive?.aggregate?.averageGxbDb, value => `${value.toFixed(2)} dB（唯一单段实测）`)],
-      ['平均干信比', kpi(e.qualityKpis?.averageJsrDb, value => `${value.toFixed(2)} dB`)],
-      ['平均误码率', kpi(e.qualityKpis?.averageBer ?? e.engineFrameArchive?.aggregate?.averageBer, value => value.toExponential(2))],
-      ['干扰持续时长', kpi(e.qualityKpis?.jammingDurationS, value => reportTime(value))],
-      ...engineAggregateSummary(e),
+      ...localReportMetrics(e).map(metric => [metric.label, metric.display]),
+      ...engineAggregateSummary(e, keepCsvLabels),
     ] },
     { title: '节点与位置', columns: ['节点', '类型', '阵营原值', '位置记录数', '首条位置时刻', '末条位置时刻'], rows: e.nodes.map(node => [name(node.platformId), node.type, node.side, String(node.positionCount), node.positionCount ? reportTime(node.firstTimeS) : '无位置记录', node.positionCount ? reportTime(node.lastTimeS) : '无位置记录']) },
     { title: '通信关联登记', columns: ['事件编号', '登记时刻', '范围', '发送端', '发送设备', '接收端', '接收设备'], rows: e.connections.map(row => [row.eventId, reportTime(row.time), row.scope === 'INTERNAL' ? '平台内部' : '跨平台', name(row.sourcePlatformId), row.sourceDeviceId, name(row.targetPlatformId), row.targetDeviceId]) },
@@ -265,9 +325,22 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
       rows: (e.detectionEvents ?? []).map(row => [row.eventId, reportTime(row.time), EVENT_LABELS[row.type] ?? row.type, name(row.platformId), row.sensorId,
         row.targetPlatformId === null ? NO_DATA : name(row.targetPlatformId), detectionBand(row.frequencyMinHz, row.frequencyMaxHz),
         row.probability === null ? NO_DATA : row.probability.toFixed(3), row.detected === null ? NO_DATA : row.detected ? '侦测到目标' : '未侦测到目标']) },
-    { title: '链路切换事件', columns: ['事件编号', '时刻', '业务', '规则', '原链路', '新链路', '稳定次数'],
-      rows: (e.switchEvents ?? []).map(row => [row.eventId, reportTime(row.time), row.demandId, row.ruleId ?? NO_DATA,
-        row.fromLinkId ?? row.fromDeviceId, row.toLinkId ?? row.toDeviceId, row.stableChecks === null ? NO_DATA : String(row.stableChecks)]) },
+    { title: '链路切换事件', columns: ['事件编号', '时刻', '业务', '切换原因', '原路径', '新路径'],
+      rows: e.switchEvents !== undefined && e.switchEvents.length > 0
+        ? e.switchEvents.map(row => [row.eventId, reportTime(row.time), row.demandId, row.ruleId ?? NO_DATA,
+          row.fromLinkId ?? row.fromDeviceId, row.toLinkId ?? row.toDeviceId])
+        // 引擎帧归档的 routing.switches 是实际切换记录；没有运行日志切换事件时不能留空表。
+        : nativeSwitches.length ? nativeSwitches.map((row, index) => [
+          // 对用户展示稳定序号，不把引擎内部 epoch/frame/序号拼成难读的事件号。
+          `切换-${String(index + 1).padStart(3, '0')}`, reportTime(row.simulationTime),
+          row.value.direction === 'FORWARD' ? '前向' : '反向',
+          switchReasonText([...new Set(row.value.reasons.flatMap(reason => reason.reasons))]),
+          switchPathLabel(row.value.oldNodes, names, row.value.oldPathId),
+          switchPathLabel(row.value.nodes, names, row.value.pathId),
+        ]) : (e.quality?.switchEvents ?? []).filter(row => row.decision === 'ACCEPTED').map(row => [
+          row.eventId, reportTime(row.time), row.direction === 'FORWARD' ? '前向' : '反向',
+          switchReasonText([row.reason]), row.oldLinkId, row.newLinkId,
+        ]) },
     ...(e.quality === undefined ? [] : [
       { title: '质量数据来源', columns: ['项目', '值'], rows: [
         ['来源文件', e.quality.source.fileName], ['来源 SHA-256', e.quality.source.sha256], ['导入时刻', e.quality.source.importedAt],
@@ -275,11 +348,11 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
         ['质量样本数', String(e.quality.samples.length)], ['源文件切换事件集合', e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length ? '已提供' : '未提供'], ['源文件切换事件数', e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length ? String(e.quality.switchEvents.length) : NO_DATA],
         ['已接受切换事件数', String(e.quality.switchEvents.filter(row => row.decision === 'ACCEPTED').length)], ['已拒绝切换事件数', String(e.quality.switchEvents.filter(row => row.decision === 'REJECTED').length)],
       ] },
-      { title: '链路质量测量', columns: ['时刻', '帧', '链路', '发送节点', '接收节点', '状态', 'GXB', 'BER', '干扰活动'], rows: e.quality.samples.map(row => [
+      { title: '链路质量测量', columns: ['时刻', '帧', '链路', '发送节点', '接收节点', '状态', 'GXB', keepCsvLabels ? 'BER' : '误码率', '干扰活动'], rows: e.quality.samples.map(row => [
         reportTime(row.time), String(row.frameId), row.linkId, name(row.sourcePlatform), name(row.destPlatform), row.linkStatus,
         row.jsrDb.toFixed(3), row.ber.toExponential(3), row.interferenceActive === undefined ? NO_DATA : row.interferenceActive ? '是' : '否',
       ]) },
-      { title: '质量源文件切换事件', columns: ['事件编号', '时刻', '原链路', '新链路', '旧 BER', '新 BER', '稳定帧', '决策', '原因'], rows: e.quality.switchEvents.map(row => [
+      { title: '质量源文件切换事件', columns: ['事件编号', '时刻', '原链路', '新链路', ...(keepCsvLabels ? ['旧 BER', '新 BER'] : ['原误码率', '新误码率']), '稳定帧', '决策', '原因'], rows: e.quality.switchEvents.map(row => [
         row.eventId, reportTime(row.time), row.oldLinkId, row.newLinkId, row.oldBer.toExponential(3), row.newBer.toExponential(3), String(row.stabilityFrames), row.decision === 'ACCEPTED' ? '接受' : '拒绝', row.reason,
       ]) },
     ]),
@@ -291,13 +364,13 @@ function kpi(value: number | undefined, format: (value: number) => string): stri
 }
 
 /** Complete-archive engine metrics have their own labels so they are never confused with quality-file KPIs. */
-export function engineAggregateSummary(evidence: LocalReportEvidence): string[][] {
+export function engineAggregateSummary(evidence: LocalReportEvidence, keepCsvLabels = false): string[][] {
   const aggregate = evidence.engineFrameArchive?.aggregate
   if (!aggregate) return []
   return [
     ['引擎完整流唯一单段有效样本', `${aggregate.uniqueSingleSegmentCount} 条`],
     ['引擎完整流平均GXB', kpi(aggregate.averageGxbDb, value => `${value.toFixed(2)} dB（唯一单段实测）`)],
-    ['引擎完整流平均BER', kpi(aggregate.averageBer, value => value.toExponential(2))],
+    [keepCsvLabels ? '引擎完整流平均BER' : '引擎完整流平均误码率', kpi(aggregate.averageBer, value => value.toExponential(2))],
     ['引擎路由切换记录', `${aggregate.switchCount} 条（引擎实际记录，不代表成功率）`],
   ]
 }

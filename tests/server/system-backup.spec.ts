@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, expect, it, vi } from 'vitest'
+import type { User } from '../../src/contracts/domain-models'
 import { createBackupFixture } from '../fixtures/system-backup'
 const { DatabaseSync } = await import('node:' + 'sqlite')
 const { join } = await import('node:' + 'path')
@@ -8,6 +9,7 @@ const { createHash } = await import('node:' + 'crypto')
 const { Worker } = await import('node:' + 'worker_threads')
 const { RuntimeConfigSqliteStorage } = await import('../../server/local/' + 'runtime-config-sqlite.js')
 const { SystemBackupSqliteStorage } = await import('../../server/local/' + 'system-backup-sqlite.js')
+const { SYSTEM_TABLES } = await import('../../server/local/' + 'system-backup-validation.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
 const { once } = await import('node:' + 'events')
@@ -15,6 +17,45 @@ const { once } = await import('node:' + 'events')
 let fixture: ReturnType<typeof createBackupFixture> | undefined
 afterEach(() => { fixture?.close(); fixture = undefined; vi.restoreAllMocks(); vi.useRealTimers() })
 const setup = () => (fixture = createBackupFixture())
+
+type SnapshotTable = { scope: string; table: string; sql: string; rows: Record<string, unknown>[] }
+
+function readPackage(f: ReturnType<typeof setup>, id: string) {
+  const db = new DatabaseSync(join(f.backup.directory, `${id}.system.db`), { readOnly: true })
+  try {
+    const row = db.prepare('SELECT format, payload FROM snapshot').get()!
+    return { format: row.format, tables: JSON.parse(String(row.payload)) as SnapshotTable[] }
+  } finally { db.close() }
+}
+
+function expectScopedPackage(f: ReturnType<typeof setup>, id: string) {
+  const { format, tables } = readPackage(f, id)
+  expect(format).toBe('SYSTEM_SQLITE_V2')
+  expect(new Set(tables.map(({ scope }) => scope))).toEqual(new Set(['main', 'access', 'archives', 'settings']))
+}
+
+function createLegacyPackage(f: ReturnType<typeof setup>, id: string) {
+  expect(f.backup.backup(id).ok).toBe(true)
+  const { tables } = readPackage(f, id)
+  for (const [scope, filename] of [['equipment', 'equipment.db'], ['master', 'master-data.db']] as const) {
+    const db = new DatabaseSync(join(f.directory, filename), { readOnly: true })
+    try {
+      for (const table of SYSTEM_TABLES[scope]) {
+        const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table)
+        tables.push({ scope, table, sql: String(schema?.sql), rows: db.prepare(`SELECT * FROM ${table}`).all() })
+      }
+    } finally { db.close() }
+  }
+  const path = join(f.backup.directory, `${id}.system.db`)
+  const snapshot = new DatabaseSync(path)
+  try { snapshot.prepare("UPDATE snapshot SET format='SYSTEM_SQLITE_V1', payload=?").run(JSON.stringify(tables)) }
+  finally { snapshot.close() }
+  const checksum = createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase()
+  const catalog = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
+  try { catalog.prepare("UPDATE system_backups SET format='SYSTEM_SQLITE_V1', checksum=? WHERE backup_id=?").run(checksum, id) }
+  finally { catalog.close() }
+  return path
+}
 
 it('账号关联事务与完整系统备份恢复兼容，恢复后仍可同步删除绑定', () => {
   const f = setup()
@@ -33,9 +74,10 @@ it('账号关联事务与完整系统备份恢复兼容，恢复后仍可同步�
   expect(f.access.load().assignments).toEqual([])
 })
 
-it('六库备份恢复真实内容、历史、引用、归档和白名单配置，现有连接可重载；审计不回退', () => {
+it('系统备份和恢复前预备份排除装备及基础数据，恢复归档和白名单配置并保留审计', () => {
   const f = setup()
-  expect(f.backup.backup('ALL', '全部业务备份')).toMatchObject({ ok: true, data: { name: '全部业务备份', format: 'SYSTEM_SQLITE_V1' } })
+  expect(f.backup.backup('SCOPED', '系统备份')).toMatchObject({ ok: true, data: { name: '系统备份', format: 'SYSTEM_SQLITE_V2' } })
+  expectScopedPackage(f, 'SCOPED')
   const master = f.master.load()[0]!
   expect(f.master.save({ ...master, version: 2, content: { ...master.content!, name: '新名称' } }, 1)).toBe(true)
   const radio = f.equipment.load()[0]!
@@ -49,11 +91,15 @@ it('六库备份恢复真实内容、历史、引用、归档和白名单配置�
   archiveDb.exec('DELETE FROM local_archives'); archiveDb.close()
   f.auth.appendAudit({ actor: 'admin', role: 'ADMIN', module: 'BACKUP_RESTORE', action: 'AFTER', result: 'SUCCESS', occurredAt: f.auth.time(), immutableFixture: true })
   const audit = f.auth.readAudit()
-  expect(f.backup.restore('ALL')).toMatchObject({ ok: true, data: { result: 'SUCCESS', generated: true, integrityValid: true, progress: 100 } })
-  expect(f.master.load()[0]?.version).toBe(1)
-  expect(f.master.details('DICT-TEST').history).toHaveLength(1)
+  const restored = f.backup.restore('SCOPED')
+  expect(restored).toMatchObject({ ok: true, data: { result: 'SUCCESS', generated: true, integrityValid: true, progress: 100 } })
+  if (!restored.ok) throw new Error('恢复失败。')
+  expectScopedPackage(f, restored.data.prebackupId)
+  expect(f.master.load()[0]).toMatchObject({ version: 2, content: { name: '新名称' } })
+  expect(f.master.details('DICT-TEST').history).toHaveLength(2)
   expect(f.master.details('DICT-TEST').references).toHaveLength(1)
-  expect(f.equipment.load()[0]?.version).toBe(1)
+  expect(f.equipment.load()[0]).toMatchObject({ version: 2, modulation: 'QPSK' })
+  expect(f.auth.list().some((user: User) => user.userId === 'USER-LATER')).toBe(false)
   expect(f.archive.get(f.archived.archiveId)?.record.name).toBe('测试归档')
   expect(f.settings.load()).toEqual(originalConfig)
   expect(f.auth.readAudit()).toEqual(audit)
@@ -87,6 +133,7 @@ it('目录登记失败补偿本次文件，解锁后同编号重试成功', () =
 
 it('同一事务捕获多库快照后释放写锁，再做校验和文件写入', async () => {
   const f = setup()
+  const expected = f.settings.load()
   const marker = join(f.directory, 'snapshot-captured')
   const worker = new Worker(`
     const { parentPort, workerData } = require('node:worker_threads')
@@ -97,26 +144,26 @@ it('同一事务捕获多库快照后释放写锁，再做校验和文件写入'
     const db = new DatabaseSync(workerData.path)
     try {
       db.exec('PRAGMA busy_timeout=1000')
-      db.prepare("UPDATE master_data SET data_json=json_set(data_json, '$.content.name', '并发新值')").run()
+      db.prepare("UPDATE runtime_config SET value=json_set(value, '$.eventPath', NULL)").run()
       parentPort.postMessage({ ok: true, elapsedMs: performance.now() - start })
     } catch (error) {
       parentPort.postMessage({ ok: false, elapsedMs: performance.now() - start, message: String(error) })
     } finally { db.close() }
-  `, { eval: true, workerData: { marker, path: join(f.directory, 'master-data.db') } })
+  `, { eval: true, workerData: { marker, path: join(f.directory, 'runtime-config.db') } })
   const completed = new Promise<{ ok: boolean; elapsedMs: number; message?: string }>((resolve, reject) => {
     worker.once('message', resolve)
     worker.once('error', reject)
   })
-  const backup = f.backup as unknown as { validate(tables: unknown): void }
+  const backup = f.backup as unknown as { validate(tables: unknown, mode?: string, format?: string): SnapshotTable[] }
   const validate = backup.validate.bind(backup)
   let delayed = false
-  vi.spyOn(backup, 'validate').mockImplementation(tables => {
+  vi.spyOn(backup, 'validate').mockImplementation((tables, mode, format) => {
     if (!delayed) {
       delayed = true
       writeFileSync(marker, 'captured')
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300)
     }
-    validate(tables)
+    return validate(tables, mode, format)
   })
   try {
     expect(f.backup.backup('CONCURRENT')).toMatchObject({ ok: true, data: { status: 'VALID' } })
@@ -124,19 +171,16 @@ it('同一事务捕获多库快照后释放写锁，再做校验和文件写入'
     console.info(`备份快照后并发写入耗时 ${write.elapsedMs.toFixed(1)} ms`)
     expect(write).toMatchObject({ ok: true })
     expect(write.elapsedMs).toBeLessThan(500)
-    expect(f.master.load()[0]?.content?.name).toBe('并发新值')
-    const snapshot = new DatabaseSync(join(f.backup.directory, 'CONCURRENT.system.db'), { readOnly: true })
-    try {
-      const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()?.payload)) as Array<{ table: string; rows: Array<{ data_json: string }> }>
-      const saved = tables.find(table => table.table === 'master_data')?.rows[0]
-      expect(saved?.data_json).toContain('测试字典')
-      expect(saved?.data_json).not.toContain('并发新值')
-    } finally { snapshot.close() }
+    expect(f.settings.load().eventPath).toBeNull()
+    const saved = readPackage(f, 'CONCURRENT').tables.find(table => table.table === 'runtime_config')?.rows[0]?.value
+    expect(JSON.parse(String(saved))).toEqual(expected)
   } finally { await worker.terminate() }
 })
 
 it('多库捕获期间并发写入等待同一快照事务，随后成功提交', async () => {
   const f = setup()
+  const admin = f.auth.list()[0]!
+  f.auth.save({ ...admin, displayName: '原显示名' })
   const gate = new Int32Array(new SharedArrayBuffer(4))
   const worker = new Worker(`
     const { parentPort, workerData } = require('node:worker_threads')
@@ -146,19 +190,19 @@ it('多库捕获期间并发写入等待同一快照事务，随后成功提交'
     const start = performance.now()
     Atomics.store(gate, 0, 2)
     Atomics.notify(gate, 0)
-    const db = new DatabaseSync(workerData.master)
+    const db = new DatabaseSync(workerData.main)
     try {
       db.exec('PRAGMA busy_timeout=2000')
       db.prepare('ATTACH DATABASE ? AS settings').run(workerData.settings)
       db.exec('BEGIN IMMEDIATE')
-      db.prepare("UPDATE master_data SET data_json=json_set(data_json, '$.content.name', '事务后新值')").run()
+      db.prepare("UPDATE users SET display_name='事务后新值' WHERE user_id=?").run(workerData.userId)
       db.prepare('UPDATE settings.runtime_config SET environment=environment').run()
       db.exec('COMMIT')
       parentPort.postMessage({ ok: true, elapsedMs: performance.now() - start })
     } catch (error) {
       parentPort.postMessage({ ok: false, elapsedMs: performance.now() - start, message: String(error) })
     } finally { db.close() }
-  `, { eval: true, workerData: { gate: gate.buffer, master: join(f.directory, 'master-data.db'), settings: join(f.directory, 'runtime-config.db') } })
+  `, { eval: true, workerData: { gate: gate.buffer, main: f.path, userId: admin.userId, settings: join(f.directory, 'runtime-config.db') } })
   const completed = new Promise<{ ok: boolean; elapsedMs: number; message?: string }>((resolve, reject) => {
     worker.once('message', resolve)
     worker.once('error', reject)
@@ -178,12 +222,9 @@ it('多库捕获期间并发写入等待同一快照事务，随后成功提交'
     console.info(`备份捕获期间并发写锁等待 ${write.elapsedMs.toFixed(1)} ms`)
     expect(write).toMatchObject({ ok: true })
     expect(write.elapsedMs).toBeGreaterThan(150)
-    expect(f.master.load()[0]?.content?.name).toBe('事务后新值')
-    const snapshot = new DatabaseSync(join(f.backup.directory, 'LOCK-WAIT.system.db'), { readOnly: true })
-    try {
-      const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()?.payload)) as Array<{ table: string; rows: Array<{ data_json: string }> }>
-      expect(tables.find(table => table.table === 'master_data')?.rows[0]?.data_json).toContain('测试字典')
-    } finally { snapshot.close() }
+    expect(f.auth.list().find((user: User) => user.userId === admin.userId)?.displayName).toBe('事务后新值')
+    const saved = readPackage(f, 'LOCK-WAIT').tables.find(table => table.table === 'users')?.rows.find(row => row.user_id === admin.userId)
+    expect(saved?.display_name).toBe('原显示名')
   } finally { await worker.terminate() }
 })
 
@@ -241,40 +282,37 @@ it('损坏备份不可恢复，保留恢复前备份和当前数据；未知编�
 
 it('当前库业务不合规仍保存原始预备份并恢复有效来源，原始预备份不能作为有效来源', () => {
   const f = setup()
+  const expected = f.settings.load()
   expect(f.backup.backup('VALID-SOURCE').ok).toBe(true)
-  const db = new DatabaseSync(join(f.directory, 'master-data.db'))
+  const db = new DatabaseSync(join(f.directory, 'runtime-config.db'))
   try {
-    db.exec("UPDATE master_data SET data_json='{}'")
+    db.exec("UPDATE runtime_config SET value='{}'")
     const restored = f.backup.restore('VALID-SOURCE')
     expect(restored).toMatchObject({ ok: true, data: { result: 'SUCCESS', integrityValid: true } })
     if (!restored.ok) throw new Error('恢复失败。')
-    expect(f.master.load()[0]?.content?.name).toBe('测试字典')
+    expect(f.settings.load()).toEqual(expected)
     const raw = f.backup.listBackups().find((row: { backupId: string }) => row.backupId === restored.data.prebackupId)!
     expect(raw.status).toBe('INVALID')
-    const snapshot = new DatabaseSync(join(f.backup.directory, `${raw.backupId}.system.db`), { readOnly: true })
-    try {
-      const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()?.payload))
-      expect(tables.find((table: { table: string }) => table.table === 'master_data').rows[0].data_json).toBe('{}')
-    } finally { snapshot.close() }
+    const settings = readPackage(f, raw.backupId).tables.find(table => table.table === 'runtime_config')
+    expect(settings?.rows[0]?.value).toBe('{}')
     expect(f.backup.restore(raw.backupId)).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false } })
-    expect(f.master.load()[0]?.content?.name).toBe('测试字典')
+    expect(f.settings.load()).toEqual(expected)
   } finally { db.close() }
 })
 
 it.each(['source', 'write'])('当前库业务不合规且 %s 失败时保留当前原始内容', mode => {
   const f = setup()
   expect(f.backup.backup('SOURCE').ok).toBe(true)
-  const master = new DatabaseSync(join(f.directory, 'master-data.db'))
   const settings = new DatabaseSync(join(f.directory, 'runtime-config.db'))
   try {
-    master.exec("UPDATE master_data SET data_json='{}'")
-    const before = master.prepare('SELECT * FROM master_data').all()
+    settings.exec("UPDATE runtime_config SET value='{}'")
+    const before = settings.prepare('SELECT * FROM runtime_config').all()
     if (mode === 'source') writeFileSync(join(f.backup.directory, 'SOURCE.system.db'), 'broken')
     else settings.exec("CREATE TRIGGER fail_restore BEFORE INSERT ON runtime_config BEGIN SELECT RAISE(ABORT, 'test-only'); END")
     expect(f.backup.restore('SOURCE')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: mode === 'write', rolledBack: mode === 'write' } })
-    expect(master.prepare('SELECT * FROM master_data').all()).toEqual(before)
+    expect(settings.prepare('SELECT * FROM runtime_config').all()).toEqual(before)
     expect(f.backup.listBackups().find((row: { backupId: string }) => row.backupId.startsWith('PREBACKUP-'))?.status).toBe('INVALID')
-  } finally { settings.close(); master.close() }
+  } finally { settings.close() }
 })
 
 it('完整系统列表沿用登记校验结果、重启后不重算，文件变化立即失效；恢复不复用列表结果', () => {
@@ -333,19 +371,33 @@ it('有效备份首次校验遇到独占锁只本次不可用，不登记失败�
   try { expect(reopened.listBackups().find((row: { backupId: string }) => row.backupId === 'LOCKED')?.status).toBe('VALID') } finally { reopened.close() }
 })
 
-it('旧备份目录自动补登记列，已有备份首次列出完整校验一次后沿用', () => {
+it('旧备份目录自动补登记列，首次完整校验后可恢复且保留当前装备和基础数据', () => {
   const f = setup()
-  expect(f.backup.backup('OLD').ok).toBe(true)
+  const path = createLegacyPackage(f, 'OLD')
+  const original = readFileSync(path)
+  const equipment = f.equipment.load()[0]!
+  const master = f.master.load()[0]!
+  const admin = f.auth.list()[0]!
+  expect(f.equipment.save({ ...equipment, version: 2, modulation: 'QPSK' }, 1)).toBe(true)
+  expect(f.master.save({ ...master, version: 2, content: { ...master.content!, name: '当前字典' } }, 1)).toBe(true)
+  f.auth.save({ ...admin, displayName: '当前显示名' })
   const catalog = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
-  try { for (const column of ['valid', 'validation_key', 'fingerprint']) catalog.exec(`ALTER TABLE system_backups DROP COLUMN ${column}`) }
+  try { for (const column of ['valid', 'validation_key', 'fingerprint', 'format']) catalog.exec(`ALTER TABLE system_backups DROP COLUMN ${column}`) }
   finally { catalog.close() }
   const reopened = new SystemBackupSqliteStorage(f.path)
   try {
     const checksum = vi.spyOn(reopened as unknown as { checksum(path: string): string }, 'checksum')
-    expect(reopened.listBackups()[0]?.status).toBe('VALID')
+    expect(reopened.listBackups()[0]).toMatchObject({ format: 'SYSTEM_SQLITE_V1', status: 'VALID' })
     reopened.listBackups()
     expect(checksum).toHaveBeenCalledTimes(1)
-    expect(reopened.backup('NEW').ok).toBe(true)
+    const restored = reopened.restore('OLD')
+    expect(restored).toMatchObject({ ok: true, data: { result: 'SUCCESS', integrityValid: true } })
+    if (!restored.ok) throw new Error('恢复失败。')
+    expectScopedPackage(f, restored.data.prebackupId)
+    expect(f.equipment.load()[0]).toMatchObject({ version: 2, modulation: 'QPSK' })
+    expect(f.master.load()[0]).toMatchObject({ version: 2, content: { name: '当前字典' } })
+    expect(f.auth.list()[0]?.displayName).toBe(admin.displayName)
+    expect(readFileSync(path)).toEqual(original)
   } finally { reopened.close() }
 })
 
@@ -370,20 +422,21 @@ it('直接 HTTP 请求无效正式来源返回原有 FAILURE 和预备份，不�
 
 it('恢复中后序库插入失败，前序库修改一起回滚', () => {
   const f = setup()
-  f.backup.backup('ROLLBACK')
-  const master = f.master.load()[0]!
-  f.master.save({ ...master, version: 2 }, 1)
+  expect(f.backup.backup('ROLLBACK').ok).toBe(true)
+  const admin = f.auth.list()[0]!
+  f.auth.save({ ...admin, displayName: '恢复前显示名' })
   const db = new DatabaseSync(join(f.directory, 'runtime-config.db'))
   db.exec("CREATE TRIGGER fail_restore BEFORE INSERT ON runtime_config BEGIN SELECT RAISE(ABORT, 'test-only'); END")
   try { expect(f.backup.restore('ROLLBACK')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: true, rolledBack: true } }) }
   finally { db.exec('DROP TRIGGER fail_restore'); db.close() }
-  expect(f.master.load()[0]?.version).toBe(2)
+  expect(f.auth.list()[0]?.displayName).toBe('恢复前显示名')
   expect(f.backup.restore('ROLLBACK')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+  expect(f.auth.list()[0]?.displayName).toBe(admin.displayName)
 })
 
 it('WAL 数据可以一致性备份，但拒绝无跨库断电保证的恢复；占用时不假成功', () => {
   const f = setup()
-  const db = new DatabaseSync(join(f.directory, 'equipment.db'))
+  const db = new DatabaseSync(join(f.directory, 'runtime-config.db'))
   db.exec('PRAGMA journal_mode=WAL')
   expect(f.backup.backup('WAL').ok).toBe(true)
   expect(f.backup.restore('WAL')).toMatchObject({ ok: false, status: 503, message: expect.stringContaining('WAL') })
@@ -394,7 +447,8 @@ it('WAL 数据可以一致性备份，但拒绝无跨库断电保证的恢复；
 
 it.each(['missing', 'schema', 'master', 'access', 'secret', 'archive', 'equipment', 'scenario', 'account'])('摘要合法但业务内容 %s 损坏也拒绝恢复', mode => {
   const f = setup()
-  f.backup.backup('EDITED')
+  if (mode === 'master' || mode === 'equipment') createLegacyPackage(f, 'EDITED')
+  else expect(f.backup.backup('EDITED').ok).toBe(true)
   const path = join(f.backup.directory, 'EDITED.system.db')
   const snapshot = new DatabaseSync(path)
   const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()?.payload))
@@ -414,15 +468,15 @@ it.each(['missing', 'schema', 'master', 'access', 'secret', 'archive', 'equipmen
   expect(f.master.load()).toHaveLength(1)
 })
 
-it('装备历史引用及账号角色分配随完整备份恢复，不接受孤立角色分配', () => {
+it('恢复保留当前装备引用并恢复账号角色分配，拒绝孤立角色分配', () => {
   const f = setup()
   const equipment = f.equipment.load()[0]!
-  f.equipment.setReference({ equipmentId: equipment.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId: 'L-MW-01' }, false)
+  const linkId = f.scenario.load('SCN-001')!.config.links[0]!.id
   f.auth.save({ userId: 'TEST-USER', username: 'testuser', role: 'OPERATOR', status: 'ACTIVE' }, '123456')
   const access = { version: 2, profiles: [{ profileId: 'TEST-ROLE', name: '测试角色', baseRole: 'OPERATOR', permissions: ['BUSINESS_READ'], menuPaths: ['/situation'] }], assignments: [{ userId: 'TEST-USER', profileId: 'TEST-ROLE' }] }
   expect(f.access.save(access, 1)).toBe(true)
   expect(f.backup.backup('REFERENCES').ok).toBe(true)
-  f.equipment.setReference({ equipmentId: equipment.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId: 'L-MW-01' }, true)
+  f.equipment.setReference({ equipmentId: equipment.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId }, false)
   f.access.save({ version: 3, profiles: [], assignments: [] }, 2)
   expect(f.backup.restore('REFERENCES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
   expect(f.equipment.details(equipment.equipmentId).references).toHaveLength(1)
@@ -430,6 +484,25 @@ it('装备历史引用及账号角色分配随完整备份恢复，不接受孤�
   f.access.save({ ...access, version: 3, assignments: [{ userId: 'MISSING', profileId: 'TEST-ROLE' }] }, 2)
   expect(f.backup.backup('ORPHAN')).toMatchObject({ ok: false, status: 503 })
   expect(existsSync(join(f.backup.directory, 'ORPHAN.system.db'))).toBe(false)
+})
+
+it('恢复会使现有装备引用失去目标时拒绝恢复并保留当前数据', () => {
+  const f = setup()
+  expect(f.backup.backup('BEFORE-REFERENCE').ok).toBe(true)
+  const draft = f.scenario.load('SCN-001')!
+  const scenarioId = 'SCN-LATER'
+  draft.config.scenario.id = scenarioId
+  expect(f.scenario.save(draft, undefined)).toBe(true)
+  const equipment = f.equipment.load()[0]!
+  const reference = { equipmentId: equipment.equipmentId, equipmentVersion: equipment.version, scenarioId, linkId: draft.config.links[0]!.id }
+  f.equipment.setReference(reference, false)
+  const admin = f.auth.list()[0]!
+  f.auth.save({ ...admin, displayName: '当前显示名' })
+
+  expect(f.backup.restore('BEFORE-REFERENCE')).toMatchObject({ ok: false, code: 'CONFLICT', status: 409, fieldPath: 'backupId', message: expect.stringContaining(scenarioId) })
+  expect(f.equipment.details(equipment.equipmentId).references).toContainEqual(reference)
+  expect(f.scenario.load(scenarioId)?.config.scenario.id).toBe(scenarioId)
+  expect(f.auth.list()[0]?.displayName).toBe('当前显示名')
 })
 
 it('计划默认关闭，启用后按间隔执行，重启补一次、失败可见、停用不删除历史', () => {
@@ -445,11 +518,11 @@ it('计划默认关闭，启用后按间隔执行，重启补一次、失败可�
   f.advance(4 * 3600000); f.backup.tick(); f.backup.tick()
   expect(f.backup.listBackups()).toHaveLength(1)
   expect(f.backup.planStatus().executions[0]?.result).toBe('SUCCESS')
-  const db = new DatabaseSync(join(f.directory, 'master-data.db'))
-  db.exec("UPDATE master_data SET data_json='{}'")
+  expectScopedPackage(f, f.backup.listBackups()[0]!.backupId)
+  const db = new DatabaseSync(join(f.directory, 'runtime-config.db'))
+  try { db.exec("UPDATE runtime_config SET value='{}'") } finally { db.close() }
   f.advance(3600000); f.backup.tick()
   expect(f.backup.planStatus().executions[0]).toMatchObject({ result: 'FAILURE', backupId: null })
-  db.close()
   expect(f.backup.savePlan({ ...f.backup.planStatus().plan, enabled: false }).ok).toBe(true)
   f.advance(3600000); f.backup.tick()
   expect(f.backup.planStatus().executions).toHaveLength(2)
@@ -508,7 +581,7 @@ it('正式计划 API 校验权限、参数、版本和存储故障', async () =>
   } finally { await server.close() }
 })
 
-it('D1 六库备份兼容旧运动字段，恢复原始行并在读取时补全，快照不改写', () => {
+it('D1 系统备份兼容旧运动字段，恢复原始行并在读取时补全，快照不改写', () => {
   const f = setup()
   const db = new DatabaseSync(f.path)
   try {
@@ -543,7 +616,7 @@ it('D1 六库备份兼容旧运动字段，恢复原始行并在读取时补全�
   } finally { db.close() }
 })
 
-it.each(['platforms', 'speed'])('D1 六库兼容仍拒绝 %s 结构错误，保留场景内容无效报错', field => {
+it.each(['platforms', 'speed'])('D1 兼容旧运动字段时仍拒绝 %s 结构错误，保留场景内容无效报错', field => {
   const f = setup()
   expect(f.backup.backup('INVALID-MOTION').ok).toBe(true)
   const file = join(f.backup.directory, 'INVALID-MOTION.system.db')
@@ -590,20 +663,30 @@ it('D1 校验版本更新后重新校验旧版本登记的 INVALID，不沿用�
 })
 
 
-it('独立用户名随完整备份恢复；缺少显示名列的旧备份仍有效且文件不改写', () => {
+it('完整备份恢复显示名和场景创建时间；缺少新增列的旧备份仍有效且文件不改写', () => {
   const f = setup()
   const admin = f.auth.list()[0]!
   f.auth.save({ ...admin, displayName: '原显示名' })
-  expect(f.backup.backup('NAMES').ok).toBe(true)
+  const createdAt = '2026-11-17T06:30:45.123Z'
+  const scenarios = new DatabaseSync(f.path)
+  try {
+    scenarios.prepare('UPDATE scenarios SET created_at=?').run(createdAt)
+    expect(f.backup.backup('NAMES').ok).toBe(true)
+    scenarios.exec('UPDATE scenarios SET created_at=NULL')
+  } finally { scenarios.close() }
   f.auth.save({ ...admin, displayName: '改后显示名' })
   expect(f.backup.restore('NAMES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
   expect(f.auth.list()[0]!.displayName).toBe('原显示名')
+  expect(f.scenario.load()?.createdAt).toBe(createdAt)
   const file = join(f.backup.directory, 'NAMES.system.db')
   const snapshot = new DatabaseSync(file)
   const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()!.payload))
   const users = tables.find((table: { scope: string; table: string }) => table.scope === 'main' && table.table === 'users')
   users.sql = users.sql.replace(', display_name TEXT)', ')')
   for (const row of users.rows) delete row.display_name
+  const scenes = tables.find((table: { scope: string; table: string }) => table.scope === 'main' && table.table === 'scenarios')
+  scenes.sql = scenes.sql.replace(', created_at TEXT)', ')')
+  for (const row of scenes.rows) delete row.created_at
   snapshot.prepare('UPDATE snapshot SET payload=?').run(JSON.stringify(tables))
   snapshot.close()
   const before = readFileSync(file)
@@ -613,5 +696,36 @@ it('独立用户名随完整备份恢复；缺少显示名列的旧备份仍有�
   expect(f.backup.listBackups().find((row: { backupId: string; status: string }) => row.backupId === 'NAMES')?.status).toBe('VALID')
   expect(f.backup.restore('NAMES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
   expect(f.auth.list()[0]!.displayName).toBe(admin.username)
+  expect(f.scenario.load()).not.toHaveProperty('createdAt')
   expect(readFileSync(file)).toEqual(before)
+})
+
+it('管理员可删除有效或损坏备份并清理磁盘快照，非管理员拒绝、不存在返回 404', async () => {
+  const f = setup()
+  expect(f.backup.backup('DEL-VALID', '可删备份').ok).toBe(true)
+  expect(f.backup.backup('DEL-BROKEN', '损坏待删').ok).toBe(true)
+  const validPath = join(f.backup.directory, 'DEL-VALID.system.db')
+  const brokenPath = join(f.backup.directory, 'DEL-BROKEN.system.db')
+  writeFileSync(brokenPath, 'corrupted')
+  const server = createMockServer({ port: 0, backupStorage: f.backup })
+  try {
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
+    const admin = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'ADMIN' }
+    const operator = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
+
+    await api.delete('/api/v1/admin/backups/DEL-VALID').set(operator).expect(403)
+    await api.delete('/api/v1/admin/backups/NO-SUCH-BACKUP').set(admin).expect(404)
+
+    const delValid = await api.delete('/api/v1/admin/backups/DEL-VALID').set(admin).expect(200)
+    expect(delValid.body.data).toEqual({ deleted: true, objectId: 'DEL-VALID' })
+    const delBroken = await api.delete('/api/v1/admin/backups/DEL-BROKEN').set(admin).expect(200)
+    expect(delBroken.body.data).toEqual({ deleted: true, objectId: 'DEL-BROKEN' })
+
+    expect(f.backup.listBackups().some((row: { backupId: string }) => ['DEL-VALID', 'DEL-BROKEN'].includes(row.backupId))).toBe(false)
+    expect(() => readFileSync(validPath)).toThrow()
+    expect(() => readFileSync(brokenPath)).toThrow()
+    expect(server.auditSnapshot().some((row: { action: string; objectId?: string; result: string }) =>
+      row.action === 'BACKUP_DELETE' && row.objectId === 'DEL-BROKEN' && row.result === 'SUCCESS')).toBe(true)
+  } finally { await server.close() }
 })

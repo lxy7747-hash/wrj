@@ -68,7 +68,10 @@ describe('D1 旧场景运动字段兼容', () => {
     restoreRequiredMotionFields(value.config, value.uiExtensions)
     expect(value.waypoints[0]!.arrivalTime).toBeNull()
     expect(inspectScenarioConfig(value.config).result.valid).toBe(false)
-    expect(inspectScenarioUiExtensions(value.uiExtensions, value.config.jammers.map(item => item.id), value.config.sensors.map(item => item.id)).result.valid).toBe(false)
+    // 干扰指向不参与仿真，值非法只给警告、不阻断保存（2026-11-24）。
+    const hidden = inspectScenarioUiExtensions(value.uiExtensions, value.config.jammers.map(item => item.id), value.config.sensors.map(item => item.id)).result
+    expect(hidden.valid).toBe(true)
+    expect(hidden.warnings).toContainEqual(expect.objectContaining({ severity: 'WARNING', code: 'JAMMER_UI_EXTENSION_DIRECTION_INVALID', fieldPath: 'uiExtensions.jammers[0].direction' }))
     for (const value of [null, 1, [], {}, { platforms: [null, {}, { waypoints: [null, 1, []] }] }]) {
       expect(() => restoreRequiredMotionFields(value, value)).not.toThrow()
     }
@@ -101,7 +104,7 @@ describe('D1 旧场景运动字段兼容', () => {
   it('不经过读取兼容的写入仍拒绝缺失必填字段', () => {
     const value = legacy()
     expect(inspectScenarioConfig(value.config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'ARRIVAL_TIME_INVALID', fieldPath: 'platforms[3].waypoints[0].arrivalTime' }))
-    expect(inspectScenarioUiExtensions(value.uiExtensions, value.config.jammers.map(item => item.id), value.config.sensors.map(item => item.id)).result.errors)
+    expect(inspectScenarioUiExtensions(value.uiExtensions, value.config.jammers.map(item => item.id), value.config.sensors.map(item => item.id)).result.warnings)
       .toContainEqual(expect.objectContaining({ code: 'JAMMER_UI_EXTENSION_DIRECTION_INVALID', fieldPath: 'uiExtensions.jammers[0].direction' }))
   })
 })

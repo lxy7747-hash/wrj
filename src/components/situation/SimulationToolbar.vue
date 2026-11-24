@@ -10,11 +10,12 @@ const props = defineProps<{
   capabilityState: CapabilityState
   pending: boolean
   feedback: string
+  sceneName?: string
   /** 只读初始位置尚未接入运行引擎，禁止调用 Mock 控制命令。 */
   readOnly?: boolean
   /** 文件播放只推进 CSV 游标，不启动仿真引擎。 */
   filePlayback?: boolean
-  /** 未配置引擎 WebSocket 时真实 mission 保持本机开始/停止能力。 */
+  /** 本机 Mission 的暂停和继续使用已验证归属的引擎连接。 */
   realMission?: boolean
   remoteEngine?: boolean
   receptionActive?: boolean
@@ -24,9 +25,18 @@ const props = defineProps<{
 }>()
 
 const combined = computed(() => props.filePlayback && props.remoteEngine)
-const wsControl = computed(() => (props.remoteEngine || props.realMission && !props.filePlayback) && (!props.remoteEngine || props.receptionActive) ? props.engineControl : undefined)
+const sceneLabel = computed(() => {
+  if (!props.sceneName) return ''
+  return props.filePlayback ? `文件数据 · 已选场景：${props.sceneName}` : `当前场景：${props.sceneName}`
+})
+const wsControl = computed(() => props.realMission || (props.remoteEngine && props.receptionActive) ? props.engineControl : undefined)
 const canControl = (action: EngineControlAction) => Boolean(wsControl.value
   && ['RUNNING', 'PAUSED'].includes(props.status) && canSendEngineControl(wsControl.value, action))
+const startLabel = computed(() => {
+  if (props.remoteEngine) return '播放'
+  if (props.realMission) return wsControl.value?.action === 'pause' ? '继续' : '开始'
+  return props.status === 'PAUSED' ? '继续' : props.filePlayback ? '播放' : '开始'
+})
 
 const controlSummary = computed(() => {
   const state = wsControl.value
@@ -50,7 +60,7 @@ defineEmits<{
   <header class="simulation-toolbar" aria-label="仿真控制">
     <div class="simulation-toolbar__title">
       <strong>态势主界面</strong>
-      <span>跨海区域 · 多异构链路协同通联</span>
+      <span v-if="sceneLabel" :title="sceneLabel">{{ sceneLabel }}</span>
     </div>
 
     <div class="simulation-toolbar__controls">
@@ -64,14 +74,14 @@ defineEmits<{
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
-        {{ remoteEngine ? '播放' : wsControl?.action === 'pause' ? '恢复' : status === 'PAUSED' ? '继续' : filePlayback ? '播放' : '开始' }}
+        {{ startLabel }}
       </el-button>
       <el-button
         type="warning"
         size="small"
         data-testid="simulation-pause"
         :disabled="readOnly || pending || runtimeUnknown || (combined ? status !== 'RUNNING' || engineControl?.delivery === 'SENDING' : wsControl ? !canControl('pause') : realMission || remoteEngine || status !== 'RUNNING')"
-        :title="wsControl ? '发送暂停请求，执行结果待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '当前模式不支持暂停。' : undefined"
+        :title="wsControl ? '发送暂停请求，执行结果待确认。' : realMission ? '本机仿真控制连接尚未就绪。' : runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : undefined"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
       <el-button
@@ -79,16 +89,15 @@ defineEmits<{
         plain
         size="small"
         data-testid="simulation-stop"
-        :disabled="readOnly || pending || (remoteEngine ? !receptionActive || engineControl?.delivery === 'SENDING' : (status !== 'RUNNING' && status !== 'PAUSED') || (wsControl && !canControl('stop')))"
+        :disabled="readOnly || pending || (remoteEngine ? !receptionActive || engineControl?.delivery === 'SENDING' : status !== 'RUNNING' && status !== 'PAUSED')"
         @click="$emit('stop')"
       ><span aria-hidden="true">■</span> 停止</el-button>
 
-      <label class="simulation-toolbar__select">
+      <label v-if="filePlayback && !remoteEngine" class="simulation-toolbar__select">
         <select
           :value="speed"
-          aria-label="仿真倍速"
-          :disabled="readOnly || pending || realMission || remoteEngine || runtimeUnknown || (filePlayback && status === 'STOPPED')"
-          :title="runtimeUnknown ? '运行模式尚未确认，暂不开放倍速控制。' : realMission ? '当前模式不支持调整倍速。' : undefined"
+          aria-label="文件回放倍速"
+          :disabled="readOnly || pending || status === 'STOPPED'"
           @change="$emit('update:speed', Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="1">倍速 ×1</option>
@@ -118,7 +127,7 @@ defineEmits<{
       <small class="simulation-toolbar__error">{{ feedback || '运行控制异常' }}</small>
     </div>
     <div v-else-if="runtimeUnknown" class="simulation-toolbar__runtime" aria-live="polite">
-      <small>运行模式尚未确认，暂不开放暂停、继续及倍速控制。</small>
+      <small>运行模式尚未确认，暂不开放暂停和继续。</small>
     </div>
     <MissionRecovery v-if="realMission" class="simulation-toolbar__recovery" :refresh-key="feedback" @resolved="$emit('recovered')" />
   </header>
@@ -232,10 +241,6 @@ defineEmits<{
 @media (max-width: 1500px) {
   .simulation-toolbar {
     grid-template-columns: 11rem 1fr 10.5rem;
-  }
-
-  .simulation-toolbar__title span {
-    display: none;
   }
 
   .simulation-toolbar__controls :deep(.el-button),

@@ -53,12 +53,16 @@ export const MAP_CONFIG = {
     zoom: 10,
     /** 是否默认显示经纬网，关闭后仍可通过图层按钮手动开启。 */
     gridVisible: false,
+    /** 是否默认显示节点运动轨迹，关闭后仍可通过图层按钮手动开启。 */
+    trailsVisible: false,
   },
   /** Leaflet 允许的最小/最大缩放级别，以及滚轮等交互吸附到的缩放步长。 */
   zoom: {
     min: 1,
-    max: 14,
-    snap: 0.25,
+    max: 18,
+    snap: 1,
+    /** 聚合作业无人机标记的最高缩放级别（含）。 */
+    uavClusterMax: 10,
   },
   /** 任务区域的西南、东北边界；Leaflet 坐标顺序为 [纬度, 经度]。 */
   taskBounds: [[21.8, 117.0], [26.4, 123.0]],
@@ -79,6 +83,8 @@ export const MAP_CONFIG = {
     jammer_station_01: 50_000,
     jammer_airborne_01: 50_000,
   } as Readonly<Record<string, number>>,
+  /** 缺少探测范围配置或引擎探测距离时，默认探测范围相对干扰范围增加的余量（10 海里）。 */
+  defaultDetectionMarginMeters: 10 * 1852,
   /** 单颗流星的尾迹占链路长度的比例，不随缩放增加流星数量。 */
   linkFlowTrailRatio: 0.12,
   /** 单颗流星的现实展示时长，不随播放倍速变化；不是发送周期或真实传输时延。 */
@@ -139,6 +145,15 @@ export const MAP_CONFIG = {
     TIANTONG: new URL('../../scripts/icons/Material/top_view_transparent_7_png/tiantong_sat.png', import.meta.url).href,
     SHENTONG: new URL('../../scripts/icons/Material/top_view_transparent_7_png/shentong_sat.png', import.meta.url).href,
   } as Readonly<Record<string, string>>,
+  // 俯视图素材的机头或车头相对地图正北的角度。
+  nodeImageHeadings: {
+    REAR_COMMAND_NODE: -90,
+    GROUND_CLUSTER_COMMAND_NODE: 90,
+    FORWARD_RELAY_NODE: 90,
+    AIRBORNE_MISSION_CLUSTER: 90,
+    GROUND_JAMMER_DETECTION_STATION: 90,
+    AIRBORNE_JAMMER_PLATFORM: -90,
+  } as Readonly<Partial<Record<string, number>>>,
   nodeFallbackGlyph: '○',
 } as const
 

@@ -56,7 +56,7 @@ async function databasePath() {
 
 async function start(path: string) {
   const storage = new ScenarioSqliteStorage(path)
-  const server = createMockServer({ scenarioStorage: storage })
+  const server = createMockServer({ scenarioStorage: storage, scenarioNow: () => new Date().toISOString() })
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
   const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
   let stopped = false
@@ -252,14 +252,22 @@ describe('SQLite 场景开发持久化', () => {
     const b = draft()
     b.config.scenario.id = 'SCN-SECOND'
     b.config.scenario.name = '第二个场景'
+    const beforeCreate = Date.now()
     const savedA = (await first.api.post('/api/v1/scenarios').set(headers).send(update(a)).expect(201)).body.data
     const savedB = (await first.api.post('/api/v1/scenarios').set(headers).send(update(b)).expect(201)).body.data
     expect(savedA.revision).toBe(savedB.revision)
+    for (const saved of [savedA, savedB]) {
+      const createdAt = new Date(saved.createdAt)
+      expect(createdAt.toISOString()).toBe(saved.createdAt)
+      expect(createdAt.getTime()).toBeGreaterThanOrEqual(beforeCreate)
+      expect(createdAt.getTime()).toBeLessThanOrEqual(Date.now())
+    }
     await first.api.post('/api/v1/scenarios').set(headers).send(update(a)).expect(409)
-    expect((await first.api.get('/api/v1/scenarios').set(headers).expect(200)).body.data).toHaveLength(2)
+    expect((await first.api.get('/api/v1/scenarios').set(headers).expect(200)).body.data).toEqual([savedA, savedB])
     const renamed = structuredClone(savedA)
     renamed.config.scenario.name = '只修改第一个'
     const changedA = (await first.api.put(endpoint).set(headers).send({ ...update(renamed), expectedRevision: savedA.revision }).expect(200)).body.data
+    expect(changedA.createdAt).toBe(savedA.createdAt)
     expect(first.storage.load('SCN-SECOND')).toEqual(savedB)
     await first.stop()
     const second = await start(path)
@@ -271,6 +279,25 @@ describe('SQLite 场景开发持久化', () => {
     await second.api.delete(`${endpoint}?expectedRevision=${changedA.revision}`).set(headers).expect(200)
     await second.api.get(endpoint).set(headers).expect(404)
     expect((await second.api.get('/api/v1/scenarios').set(headers).expect(200)).body.data).toEqual([savedB])
+  })
+
+  it('已有旧库自动补列，保留原始数据且场景改名不补造创建时间', async () => {
+    const path = await databasePath()
+    const old = new ScenarioSqliteStorage(path)
+    try { expect(old.save(draft(), undefined)).toBe(true) } finally { old.close() }
+    const db = new DatabaseSync(path)
+    try {
+      db.exec('ALTER TABLE scenarios DROP COLUMN created_at')
+      const before = db.prepare('SELECT * FROM scenarios').get()
+      const { api } = await start(path)
+      expect(db.prepare('SELECT * FROM scenarios').get()).toEqual({ ...before, created_at: null })
+      const existing = (await api.get(endpoint).set(headers).expect(200)).body.data
+      expect(existing).not.toHaveProperty('createdAt')
+      existing.config.scenario.name = '旧场景改名'
+      const saved = (await api.put(endpoint).set(headers).send(update(existing, existing.revision)).expect(200)).body.data
+      expect(saved).not.toHaveProperty('createdAt')
+      expect(db.prepare('SELECT created_at FROM scenarios').get()?.created_at).toBeNull()
+    } finally { db.close() }
   })
 
   it('运行锁只作用于对应场景，禁止删除或写入；模板按新编号创建不覆盖来源', async () => {
@@ -373,6 +400,7 @@ describe('SQLite 场景开发持久化', () => {
     const saved = (await first.api.put(endpoint).set(headers).send(update(original)).expect(200)).body.data
     original.config.scenario.id = 'SCN-IMPORTED'
     const imported = (await first.api.post('/api/v1/scenarios/import').set(headers).send({ items: [original.config] }).expect(200)).body.data.drafts[0]
+    expect(imported.createdAt).toMatch(/Z$/)
     expect((await first.api.get(endpoint).set(headers).expect(200)).body.data).toEqual(saved)
     await first.stop()
     const second = await start(path)
@@ -386,11 +414,14 @@ describe('SQLite 场景开发持久化', () => {
     const { api, storage } = await start(await databasePath())
     const template = (await api.post('/api/v1/templates').set(headers).send({ name: '持久化模板', config: draft().config }).expect(201)).body.data
     const copied = await api.post(`/api/v1/templates/${template.templateId}/copy`).set(headers).send({ name: '模板应用' }).expect(201)
+    expect(copied.body.data.createdAt).toMatch(/Z$/)
     expect(storage.load().config.scenario.name).toBe('模板应用')
     const reset = (await api.post(`${endpoint}/reset`).set(headers).send({ expectedRevision: copied.body.data.revision }).expect(200)).body.data
+    expect(reset.createdAt).toBe(copied.body.data.createdAt)
     expect(storage.load()).toEqual(reset)
     const undone = (await api.post(`${endpoint}/undo`).set(headers).send({ expectedRevision: reset.revision }).expect(200)).body.data
     expect(undone.config.scenario.name).toBe('模板应用')
+    expect(undone.createdAt).toBe(copied.body.data.createdAt)
     await api.post('/api/v1/reset').set(headers).send({ confirm: true }).expect(200)
     expect((await api.get(endpoint).set(headers).expect(200)).body.data).toEqual(undone)
     expect(storage.load()).toEqual(undone)
@@ -445,7 +476,7 @@ describe('SQLite 场景开发持久化', () => {
     try {
       if (mutation === 'identity') db.exec("UPDATE scenarios SET name = '不匹配名称'")
       if (mutation === 'extensions') db.exec("UPDATE scenarios SET ui_extensions_json = '{}'")
-      if (mutation === 'tie') db.exec("INSERT INTO scenarios SELECT 'SCN-OTHER', name, config_json, ui_extensions_json, revision FROM scenarios")
+      if (mutation === 'tie') db.exec("INSERT INTO scenarios (id, name, config_json, ui_extensions_json, revision) SELECT 'SCN-OTHER', name, config_json, ui_extensions_json, revision FROM scenarios")
     } finally { db.close() }
     expect(() => storage.list()).toThrow()
   })
@@ -552,16 +583,16 @@ it('旧库缺失必填运动字段读取补齐但不写库，再次保存完整�
   expect(versionedRejected.body.error.fieldPath).toMatch(/^items\[0\]\.config\.platforms\[\d+\]\.waypoints\[0\]\.arrivalTime$/)
 })
 
-it.each(['arrivalTime', 'direction', 'both'] as const)('版本1快照缺 %s 原始必填字段导入返回422且不写入', async (field) => {
+it.each(['arrivalTime', 'both'] as const)('版本1快照缺 %s 原始必填字段导入返回422且不写入', async (field) => {
   const { api, storage } = await start(await databasePath())
   const source = draft()
   if (field === 'arrivalTime' || field === 'both') for (const platform of source.config.platforms) for (const point of platform.waypoints) Reflect.deleteProperty(point, 'arrivalTime')
-  if (field === 'direction' || field === 'both') for (const extension of source.uiExtensions.jammers) Reflect.deleteProperty(extension, 'direction')
+  // 干扰 direction 已非必填，同时缺失也不应改变 arrivalTime 的拒绝结果。
+  if (field === 'both') for (const extension of source.uiExtensions.jammers) Reflect.deleteProperty(extension, 'direction')
   const result = await api.post('/api/v1/scenarios/import').set(headers)
     .send({ items: [{ format: 'wrj.scenario.snapshot', version: 1, config: source.config, uiExtensions: source.uiExtensions }] }).expect(422)
   expect(result.body.error.code).toBe('VALIDATION_FAILED')
-  if (field === 'direction') expect(result.body.error.fieldPath).toBe('items[0].uiExtensions.jammers[0].direction')
-  else expect(result.body.error.fieldPath).toMatch(/^items\[0\]\.config\.platforms\[\d+\]\.waypoints\[0\]\.arrivalTime$/)
+  expect(result.body.error.fieldPath).toMatch(/^items\[0\]\.config\.platforms\[\d+\]\.waypoints\[0\]\.arrivalTime$/)
   expect(storage.load()).toBeUndefined()
   expect(storage.load('SCN-001')).toBeUndefined()
 })
@@ -576,14 +607,29 @@ it('合法版本1快照往返保持已设值时不被清空', async () => {
   expect(imported.uiExtensions.jammers[0]!.direction).toBe(source.uiExtensions.jammers[0]!.direction)
 })
 
-it.each(['arrivalTime', 'direction'] as const)('PUT 缺失 %s 返回字段错误，不补默认值、不写入', async (field) => {
+it('PUT 缺失 arrivalTime 返回字段错误，不补默认值、不写入', async () => {
   const { api, storage } = await start(await databasePath())
   const value = draft()
-  if (field === 'arrivalTime') Reflect.deleteProperty(value.config.platforms[3]!.waypoints[0]!, field)
-  else Reflect.deleteProperty(value.uiExtensions.jammers[0]!, field)
+  Reflect.deleteProperty(value.config.platforms[3]!.waypoints[0]!, 'arrivalTime')
   const result = await api.put(endpoint).set(headers).send(update(value)).expect(422)
-  expect(result.body.error.fieldPath).toBe(field === 'arrivalTime' ? 'platforms[3].waypoints[0].arrivalTime' : 'uiExtensions.jammers[0].direction')
+  expect(result.body.error.fieldPath).toBe('platforms[3].waypoints[0].arrivalTime')
   expect(storage.load('SCN-001')).toBeUndefined()
+})
+
+// 干扰指向不参与仿真，不再是必填字段（2026-11-24）。
+it('版本1快照缺干扰 direction 仍可导入', async () => {
+  const { api } = await start(await databasePath())
+  const source = draft()
+  for (const extension of source.uiExtensions.jammers) Reflect.deleteProperty(extension, 'direction')
+  await api.post('/api/v1/scenarios/import').set(headers)
+    .send({ items: [{ format: 'wrj.scenario.snapshot', version: 1, config: source.config, uiExtensions: source.uiExtensions }] }).expect(200)
+})
+
+it('PUT 缺干扰 direction 仍可保存', async () => {
+  const { api } = await start(await databasePath())
+  const value = draft()
+  Reflect.deleteProperty(value.uiExtensions.jammers[0]!, 'direction')
+  await api.put(endpoint).set(headers).send(update(value)).expect(200)
 })
 
 it('激光 EIRP/G-T/噪声经场景保存链路写入后关闭重建数据库仍一致，不被模板默认值覆盖', async () => {

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ScenarioDraft } from '../../contracts/domain-models'
 import { createScenarioSnapshot, scenarioSnapshotId, scenarioImportMigrationNotes } from '../../features/scenarios/scenario-snapshot'
 import { saveScriptText } from '../../features/scenarios/script-file'
+import { formatDateTime } from '../../features/shared/date-time'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
 import { useSimulationStore } from '../../stores/simulation'
@@ -22,6 +23,38 @@ const templateId = ref('')
 const templateName = ref('')
 const busy = computed(() => selecting.value || ['LOADING', 'VALIDATING', 'EXECUTING'].includes(store.listState))
 const canWrite = computed(() => auth.authorize('SCENARIO_DRAFT_WRITE').allowed)
+const selectedScenes = ref<ScenarioDraft[]>([])
+watch(() => store.scenes, () => { selectedScenes.value = [] })
+
+type CreatedAtSortOrder = 'ascending' | 'descending'
+
+function createdAtTimestamp(createdAt: ScenarioDraft['createdAt']): number | null {
+  if (!createdAt) return null
+  const timestamp = Date.parse(createdAt)
+  return Number.isFinite(timestamp) ? timestamp : null
+}
+
+function sortScenariosByCreatedAt(scenes: readonly ScenarioDraft[], order: CreatedAtSortOrder): ScenarioDraft[] {
+  return [...scenes].sort((left, right) => {
+    const leftTime = createdAtTimestamp(left.createdAt)
+    const rightTime = createdAtTimestamp(right.createdAt)
+    if (leftTime === null && rightTime === null) return 0
+    if (leftTime === null) return 1
+    if (rightTime === null) return -1
+    if (leftTime !== rightTime) return order === 'ascending' ? leftTime - rightTime : rightTime - leftTime
+    return 0
+  })
+}
+
+const createdAtSortOrder = ref<CreatedAtSortOrder>('descending')
+const displayedScenes = computed(() => sortScenariosByCreatedAt(store.scenes, createdAtSortOrder.value))
+const tableDefaultSort = computed(() => ({ prop: 'createdAt', order: createdAtSortOrder.value }))
+
+function handleSortChange({ prop, order }: { prop?: string | null; order?: CreatedAtSortOrder | null }): void {
+  if (prop !== 'createdAt') return
+  createdAtSortOrder.value = order === 'ascending' ? 'ascending' : 'descending'
+}
+const canSelectForDeletion = (scene: ScenarioDraft) => canWrite.value && !busy.value && !scene.locked
 const sceneSelectionDisabled = computed(() => busy.value || simulationStore.pending || simulationStore.selectingScene
   || simulationStore.run?.configLocked || ['RUNNING', 'PAUSED'].includes(simulationStore.uiStatus))
 let active = true
@@ -99,13 +132,30 @@ async function selectScene(scene: ScenarioDraft): Promise<void> {
   } finally { selecting.value = false }
 }
 
-async function remove(scene: ScenarioDraft): Promise<void> {
+async function remove(scenes: readonly ScenarioDraft[], batch = false): Promise<void> {
+  const first = scenes[0]
+  if (!first || busy.value || !canWrite.value || scenes.some(scene => scene.locked)) return
   const epoch = store.requestEpoch
+  selecting.value = true
   try {
-    await ElMessageBox.confirm(`确认删除场景“${scene.config.scenario.name}”？此操作不可撤销，场景模板不会删除。`, '删除场景', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+    const message = batch ? `确认删除选中的 ${scenes.length} 个场景？删除后无法恢复。`
+      : `确认删除场景“${first.config.scenario.name}”？此操作不可撤销，场景模板不会删除。`
+    await ElMessageBox.confirm(message, batch ? '批量删除场景' : '删除场景', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
     if (!active || epoch !== store.requestEpoch || !canWrite.value) return
-    if (await store.deleteScene(scene)) ElMessage.success('场景已删除。')
+    if (!batch) {
+      if (await store.deleteScene(first) && active) ElMessage.success('场景已删除。')
+      return
+    }
+    const result = await store.deleteScenes(scenes)
+    if (!active || !result) return
+    selectedScenes.value = []
+    if (!result.failures.length) ElMessage.success(`已删除 ${result.deleted} 个场景。`)
+    else {
+      const failure = result.failures[0]!
+      ElMessage.warning(`已删除 ${result.deleted} 个场景，${result.failures.length} 个未删除。“${failure.name}”${failure.message}`)
+    }
   } catch { /* 取消不删除。 */ }
+  finally { selecting.value = false }
 }
 
 const jsonFile = ref<HTMLInputElement | null>(null)
@@ -244,6 +294,7 @@ onMounted(() => { void refreshScenes() })
   <section v-else class="page scene-list" aria-label="场景配置" data-testid="scene-list">
     <header class="scene-list__toolbar">
       <h2>场景列表</h2>
+      <el-button v-if="canWrite" type="danger" plain :disabled="busy || !selectedScenes.length" data-testid="scene-bulk-delete" @click="remove(selectedScenes, true)">批量删除</el-button>
       <el-button :disabled="busy" @click="refreshScenes">刷新</el-button>
       <el-button :disabled="busy || !canWrite" data-testid="scene-import-json" @click="jsonFile?.click()">导入 JSON 文件</el-button>
       <input ref="jsonFile" type="file" accept=".json,application/json" hidden aria-label="选择场景 JSON 文件" data-testid="scene-import-file" @change="importJson">
@@ -255,9 +306,11 @@ onMounted(() => { void refreshScenes() })
     <el-alert v-if="importError" type="error" :title="`场景 JSON 导入失败：${importError}`" show-icon data-testid="scene-import-error" @close="importError = ''" />
     <p v-if="store.listState === 'LOADING'" role="status">正在加载场景列表…</p>
     <el-empty v-else-if="store.listState === 'EMPTY'" description="暂无场景，请新建场景或从模板创建。" />
-    <el-table v-else :data="store.scenes" stripe row-key="config.scenario.id" data-testid="scene-table">
+    <el-table v-else :data="displayedScenes" stripe row-key="config.scenario.id" :default-sort="tableDefaultSort" data-testid="scene-table" @selection-change="selectedScenes = $event" @sort-change="handleSortChange">
+      <el-table-column v-if="canWrite" type="selection" width="48" :selectable="canSelectForDeletion" />
       <el-table-column type="index" label="序号" width="70" />
       <el-table-column prop="config.scenario.name" label="场景名称" min-width="220" />
+      <el-table-column prop="createdAt" label="创建时间" width="190" sortable="custom" :sort-orders="['descending', 'ascending']"><template #default="{ row }">{{ row.createdAt ? formatDateTime(row.createdAt) : '暂无数据' }}</template></el-table-column>
       <el-table-column prop="revision" label="修订" width="90" />
       <el-table-column label="节点 / 链路" width="140"><template #default="{ row }">{{ row.config.platforms.length }} / {{ row.config.links.length }}</template></el-table-column>
       <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag :type="row.locked ? 'warning' : 'success'">{{ row.locked ? '运行中 · 已锁定' : '已保存' }}</el-tag></template></el-table-column>
@@ -266,7 +319,7 @@ onMounted(() => { void refreshScenes() })
         <el-button link type="primary" :disabled="busy" :data-testid="`scene-edit-${row.config.scenario.id}`" @click="open(row)">{{ row.locked ? '查看' : '编辑' }}</el-button>
         <el-button link type="primary" :disabled="busy || !canWrite" :data-testid="`scene-copy-${row.config.scenario.id}`" @click="open(row, true)">复制</el-button>
         <el-button link type="primary" :disabled="busy" :data-testid="`scene-export-${row.config.scenario.id}`" @click="exportJson(row)">导出</el-button>
-        <el-button link type="danger" :disabled="busy || row.locked || !canWrite" :data-testid="`scene-delete-${row.config.scenario.id}`" @click="remove(row)">删除</el-button>
+        <el-button link type="danger" :disabled="busy || row.locked || !canWrite" :data-testid="`scene-delete-${row.config.scenario.id}`" @click="remove([row])">删除</el-button>
       </template></el-table-column>
     </el-table>
     <el-dialog v-model="templateDialog" class="scenario-dialog" title="从模板创建场景" width="min(480px, calc(100vw - 2rem))" :close-on-click-modal="!selecting" :show-close="!selecting">

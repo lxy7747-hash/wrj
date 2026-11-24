@@ -261,6 +261,124 @@ it('删除取消不发请求，确认删除刷新列表；存储失败保留场�
   expect(success).toHaveBeenCalledWith('场景已删除。')
 })
 
+it('列表按北京时间显示创建时间到秒，旧场景没有时间时显示暂无数据', async () => {
+  const { wrapper, scenes, store, fetchSpy } = await setup()
+  const { createdAt: _unused, ...legacy } = scenes.list()[0]!
+  const recent = structuredClone(legacy)
+  recent.config.scenario.id = 'SCN-TIMED'
+  recent.config.scenario.name = '带创建时间的场景'
+  fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: [
+    legacy, { ...recent, createdAt: '2026-11-17T05:14:09.123Z' },
+  ] }), { status: 200 }))
+  expect(await store.loadScenes()).toBe(true)
+  await flushPromises()
+  expect(wrapper.findAll('th').some(header => header.text() === '创建时间')).toBe(true)
+  expect(wrapper.text()).toContain('2026-11-17 13:14:09')
+  expect(wrapper.text()).toContain('暂无数据')
+})
+
+it('默认按创建时间降序排列，支持表头升序/降序切换，无时间旧场景始终排在末尾且刷新/返回不丢失', async () => {
+  const { wrapper, scenes, store, fetchSpy } = await setup()
+  const { createdAt: _unused, ...legacy } = scenes.list()[0]!
+  const makeScene = (id: `SCN-${string}`, name: string, createdAt?: string): ScenarioDraft => {
+    const draft = structuredClone(legacy) as ScenarioDraft
+    draft.config.scenario.id = id
+    draft.config.scenario.name = name
+    if (createdAt !== undefined) draft.createdAt = createdAt
+    return draft
+  }
+  const older = makeScene('SCN-OLDER', '最早创建场景', '2026-11-16T08:00:00Z')
+  const sameA = makeScene('SCN-SAME-A', '同时刻场景甲', '2026-11-17T05:14:09.123Z')
+  const newer = makeScene('SCN-NEWER', '最新创建场景', '2026-11-18T12:30:00.000Z')
+  const sameB = makeScene('SCN-SAME-B', '同时刻场景乙', '2026-11-17T05:14:09.123Z')
+  const payload = [legacy, older, sameA, newer, sameB]
+
+  const originalFetch = fetchSpy.getMockImplementation()!
+  fetchSpy.mockImplementation(async (url: string, init?: RequestInit) => new URL(url).pathname === '/api/v1/scenarios'
+    ? new Response(JSON.stringify({ ok: true, data: payload }), { status: 200 })
+    : originalFetch(url, init))
+
+  expect(await store.loadScenes()).toBe(true)
+  await flushPromises()
+
+  const rowNames = () => wrapper.findAll('[data-testid="scene-table"] .el-table__body-wrapper tbody tr')
+    .map(row => row.findAll('td')[2]!.text())
+  const createdAtHeader = () => wrapper.findAll('[data-testid="scene-table"] th')
+    .find(header => header.text() === '创建时间')!
+
+  // 默认按创建时间降序排列（最新在前，同时刻保持相对顺序，无创建时间排末尾）
+  expect(createdAtHeader().classes()).toContain('descending')
+  expect(rowNames()).toEqual(['最新创建场景', '同时刻场景甲', '同时刻场景乙', '最早创建场景', '跨海通联演示'])
+
+  // 列表刷新后仍保持降序排列
+  await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
+  await flushPromises()
+  expect(rowNames()).toEqual(['最新创建场景', '同时刻场景甲', '同时刻场景乙', '最早创建场景', '跨海通联演示'])
+
+  // 排序后点击行操作仍对应正确的场景，返回列表后保持降序与指示器高亮
+  await wrapper.get('[data-testid="scene-edit-SCN-001"]').trigger('click')
+  await flushPromises()
+  expect(store.draft?.config.scenario.id).toBe('SCN-001')
+  await wrapper.get('[data-testid="editor"]').findAll('button').find(b => b.text() === '返回')!.trigger('click')
+  await flushPromises()
+  expect(createdAtHeader().classes()).toContain('descending')
+  expect(rowNames()).toEqual(['最新创建场景', '同时刻场景甲', '同时刻场景乙', '最早创建场景', '跨海通联演示'])
+
+  // 第 1 次点击：切换为按创建时间升序（最早在前，无创建时间仍排末尾）
+  await createdAtHeader().trigger('click')
+  await flushPromises()
+  expect(createdAtHeader().classes()).toContain('ascending')
+  expect(rowNames()).toEqual(['最早创建场景', '同时刻场景甲', '同时刻场景乙', '最新创建场景', '跨海通联演示'])
+
+  // 第 2 次点击：切回降序（最新在前）
+  await createdAtHeader().trigger('click')
+  await flushPromises()
+  expect(createdAtHeader().classes()).toContain('descending')
+  expect(rowNames()).toEqual(['最新创建场景', '同时刻场景甲', '同时刻场景乙', '最早创建场景', '跨海通联演示'])
+})
+
+it.each([false, true])('批量删除跳过锁定场景、只刷新一次并报告结果（部分失败 %s）', async partialFailure => {
+  const { wrapper, scenes, store, templates, fetchSpy } = await setup()
+  const template = templates.list()[0]!
+  expect(scenes.copyTemplate(template.config, '第二个可选场景', undefined, 'SCN-BATCH-B').ok).toBe(true)
+  expect(scenes.copyTemplate(template.config, '锁定场景', undefined, 'SCN-BATCH-LOCKED').ok).toBe(true)
+  expect(scenes.setLocked('SCN-BATCH-LOCKED', true).ok).toBe(true)
+  expect(await store.loadScenes()).toBe(true)
+  await flushPromises()
+
+  const batch = () => wrapper.get('[data-testid="scene-bulk-delete"]')
+  const rows = () => wrapper.findAll<HTMLInputElement>('.el-table__body-wrapper input[type="checkbox"]')
+  expect(batch().attributes('disabled')).toBeDefined()
+  expect(rows().filter(input => input.element.disabled)).toHaveLength(1)
+  await wrapper.get('.el-table__header-wrapper input[type="checkbox"]').setValue(true)
+  await vi.waitFor(() => expect(rows().filter(input => input.element.checked)).toHaveLength(2))
+  expect(batch().attributes('disabled')).toBeUndefined()
+  vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+  const success = vi.spyOn(ElMessage, 'success')
+  const warning = vi.spyOn(ElMessage, 'warning')
+  fetchSpy.mockClear()
+  await batch().trigger('click')
+  await flushPromises()
+  expect(fetchSpy).not.toHaveBeenCalled()
+
+  // 列表快照之后另一客户端可能先启动场景，必须由原删除接口拒绝。
+  if (partialFailure) expect(scenes.setLocked('SCN-BATCH-B', true).ok).toBe(true)
+  const revisions = new Map(store.scenes.map(scene => [scene.config.scenario.id, scene.revision]))
+  await batch().trigger('click')
+  await flushPromises()
+  const deletes = fetchSpy.mock.calls.filter(([, init]) => init?.method === 'DELETE').map(([url]) => new URL(url))
+  expect(deletes.map(url => [url.pathname.split('/').at(-1), url.searchParams.get('expectedRevision')])).toEqual([
+    ['SCN-BATCH-B', String(revisions.get('SCN-BATCH-B'))], ['SCN-001', String(revisions.get('SCN-001'))],
+  ])
+  expect(fetchSpy.mock.calls.filter(([url]) => new URL(url).pathname === '/api/v1/scenarios')).toHaveLength(1)
+  expect(scenes.list().map((scene: ScenarioDraft) => scene.config.scenario.id)).toEqual(
+    partialFailure ? ['SCN-BATCH-B', 'SCN-BATCH-LOCKED'] : ['SCN-BATCH-LOCKED'],
+  )
+  if (partialFailure) expect(warning).toHaveBeenCalledWith(expect.stringContaining('已删除 1 个场景，1 个未删除。'))
+  else expect(success).toHaveBeenCalledWith('已删除 2 个场景。')
+  expect(batch().attributes('disabled')).toBeDefined()
+})
+
 it('加载场景失败返回列表，锁定场景只能查看且禁止删除，无权限不能新建', async () => {
   const { wrapper, scenes, fetchSpy } = await setup()
   const error = vi.spyOn(ElMessage, 'error')
@@ -277,6 +395,7 @@ it('加载场景失败返回列表，锁定场景只能查看且禁止删除，�
   useAuthStore().permissions = []
   await flushPromises()
   expect(wrapper.get('[data-testid="scene-create"]').attributes('disabled')).toBeDefined()
+  expect(wrapper.find('[data-testid="scene-bulk-delete"]').exists()).toBe(false)
 })
 
 it('从模板创建独立场景并返回列表，取消模板对话框不创建', async () => {

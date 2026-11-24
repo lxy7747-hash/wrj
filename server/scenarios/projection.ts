@@ -142,7 +142,7 @@ class ScenarioDocument {
   private history: ScenarioDraft[] = []
   private persisted: { id: string; revision: number } | undefined
 
-  constructor(private readonly storage?: Pick<ScenarioStorage, 'load' | 'save'>, initial: ScenarioDraft | null = null,
+  constructor(private readonly now: () => string, private readonly storage?: Pick<ScenarioStorage, 'load' | 'save'>, initial: ScenarioDraft | null = null,
     private readonly sourceCoordinator?: ScenarioParameterSourceCoordinator) {
     const loaded = storage ? storage.load() ?? null : initial
     this.draft = loaded ? { ...loaded, config: withScenarioBasicDefaults(loaded.config) } : null
@@ -152,6 +152,9 @@ class ScenarioDocument {
   // 先提交数据库再更新内存和撤销栈，落盘失败不能留下“保存成功”的半成品。
   private commit(draft: ScenarioDraft, undo = false): ScenarioProjectionResult<ScenarioDraft> {
     draft = { ...draft, config: withScenarioBasicDefaults(draft.config) }
+    const createdAt = this.draft === null ? this.now() : this.draft.createdAt
+    if (createdAt === undefined) delete draft.createdAt
+    else draft.createdAt = createdAt
     const previous = this.draft?.config
     if (!this.storage && !this.sourceCoordinator && draft.config.links.some(link => readLinkParameterSource(link) !== undefined)) {
       return { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, fieldPath: 'links', message: '参数来源需要可原子登记的来源存储。' }
@@ -436,7 +439,7 @@ class ScenarioDocument {
 
     const saved = this.commit(draft)
     if (!saved.ok) return saved
-    return { ok: true, data: { imported: 1, rejected: 0, drafts: [structuredClone(draft)] } }
+    return { ok: true, data: { imported: 1, rejected: 0, drafts: [saved.data] } }
   }
 
   /**
@@ -481,18 +484,22 @@ class ScenarioDocument {
 export class ScenarioProjection {
   private documents = new Map<string, ScenarioDocument>()
 
-  constructor(private readonly storage?: ScenarioStorage, private readonly sourceCoordinator?: ScenarioParameterSourceCoordinator) { this.reset() }
+  constructor(
+    private readonly storage?: ScenarioStorage,
+    private readonly sourceCoordinator?: ScenarioParameterSourceCoordinator,
+    private readonly now: () => string = () => '2026-08-06T08:00:00Z',
+  ) { this.reset() }
 
   /** 仅纯内存模式使用；持久化模式由装备库跨库事务提交，再由 get 按修订号重载。 */
   applyEquipmentScenes(updates: { after: ScenarioDraft }[]): void {
     if (this.storage) throw new Error('持久化场景必须在装备保存事务中更新。')
-    for (const { after } of updates) this.documents.set(after.config.scenario.id, new ScenarioDocument(undefined, structuredClone(after), this.sourceCoordinator))
+    for (const { after } of updates) this.documents.set(after.config.scenario.id, new ScenarioDocument(this.now, undefined, structuredClone(after), this.sourceCoordinator))
   }
 
   private document(id: string): ScenarioDocument {
     let document = this.documents.get(id)
     if (!document) {
-      document = new ScenarioDocument(this.storage ? {
+      document = new ScenarioDocument(this.now, this.storage ? {
         load: () => this.storage!.load(id),
         save: (draft, expected) => this.storage!.save(draft, expected),
       } : undefined, null, this.sourceCoordinator)
@@ -578,7 +585,7 @@ export class ScenarioProjection {
     this.documents.clear()
     if (!this.storage) {
       const initial = createDraft()
-      this.documents.set(initial.config.scenario.id, new ScenarioDocument(undefined, initial, this.sourceCoordinator))
+      this.documents.set(initial.config.scenario.id, new ScenarioDocument(this.now, undefined, initial, this.sourceCoordinator))
     }
   }
 }

@@ -1,19 +1,26 @@
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import 'leaflet.vectorgrid'
 
-import { MAP_CONFIG, isSatellitePlatform, nodeGlyph, nodeIconUrl, resolvePlatformCoordinates } from '../../config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, nodeIconUrl, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
-import type { EngineFrameSnapshot, Link, TelemetryFrame, UiLinkStatus } from '../../contracts/domain-models'
+import type { EngineFrameSnapshot, Environment, Link, LinkDirection, TelemetryFrame, UiLinkStatus } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink, type FileCommunicationType } from '../../features/situation/file-communication-links'
 import { fileLinkDeviceStatus, type FileDeviceEvent } from '../../features/situation/file-device-events'
-import { engineJammerNodes, interferenceRangeSource, selectInterferenceRanges, type ConfiguredJammerRange } from '../../features/situation/interference-ranges'
+import { engineJammerNodes, interferenceRangeSource, selectDetectionRanges, selectInterferenceRanges, type ConfiguredJammerRange } from '../../features/situation/interference-ranges'
+import { extractActiveJammingOverlay } from '../../features/situation/engine-narrative'
 import type { NodeTrail } from '../../features/situation/node-trails'
-import type { FileMessageLink } from '../../features/situation/file-message-links'
-import { FILE_MESSAGE_DIRECTION_LABELS } from '../../features/situation/file-message-links'
+import type { FileMessageDirection, FileMessageLink } from '../../features/situation/file-message-links'
+import {
+  FILE_MESSAGE_DIRECTION_LABELS,
+  readSingleMessageDirection,
+} from '../../features/situation/file-message-links'
+import type { LiveMessageFlowLane } from '../../features/situation/live-message-flows'
+import type { EngineLinkHover } from '../../features/situation/engine-link-hover'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
-import { bindVectorTileSource, createVectorTileSource } from './vector-tile-source'
+import { createOfflineVectorBasemap, createVectorTileStyles } from './offline-vector-basemap'
+import { createVectorTileSource } from './vector-tile-source'
+import { createLiveFlowLayer, type LiveFlowPath } from './live-flow-layer'
 import {
   LINK_TYPE_LABELS,
   PLATFORM_TYPE_LABELS,
@@ -21,6 +28,9 @@ import {
 } from '../../features/situation/situation-model'
 
 export type MapLayer = 'nodes' | 'links' | 'flow' | 'potential' | 'interference' | 'grid' | 'detection' | 'trails'
+
+/** 场景链路在地图上的投影，距离仅来自已关联的运行数据。 */
+export type SituationMapLink = Link & { distanceM?: number; hover?: EngineLinkHover }
 
 /** 文件播放时钟；定位/换源必须更新 key，不把跳过的消息补播。 */
 export interface FileLinkPlayback {
@@ -52,10 +62,16 @@ export interface SituationMapControllerOptions {
   /** 由消息收发证据推导的业务链路，是地图上链路图层的实际内容。 */
   fileMessageLinks?: FileMessageLink[]
   fileDeviceStates?: FileDeviceEvent[]
-  configuredLinks?: Link[]
+  configuredLinks?: SituationMapLink[]
+  /** 场景里可定位的链路，含当前未画到地图上的；只用于点击定位，不参与绘制。 */
+  focusLinks?: Link[]
   configuredLinkStatuses?: ReadonlyMap<string, UiLinkStatus>
   configuredLinkSwitches?: ReadonlyMap<string, ConfiguredLinkSwitchState>
   configuredJammers?: ConfiguredJammerRange[]
+  configuredEnvironment?: Environment
+  liveMessageFlows?: LiveMessageFlowLane[]
+  liveFlowPlaying?: boolean
+  liveFlowKey?: string
   onSelectConfiguredLink?: (link: Link) => void
   onSelectFileLink?: (link: FileCommunicationLink) => void
   onSelectFileMessageLink?: (link: FileMessageLink) => void
@@ -69,10 +85,12 @@ export interface SituationMapControllerOptions {
 export interface SituationMapController {
   setEngineFrame: (frame: EngineFrameSnapshot | null) => void
   setNodeTrails: (trails: NodeTrail[]) => void
-  setConfiguredLinks: (links: Link[] | undefined) => void
+  setConfiguredLinks: (links: SituationMapLink[] | undefined) => void
   setConfiguredLinkStatuses: (statuses: ReadonlyMap<string, UiLinkStatus> | undefined) => void
   setConfiguredLinkSwitches: (switches: ReadonlyMap<string, ConfiguredLinkSwitchState> | undefined) => void
   setConfiguredJammers: (jammers: ConfiguredJammerRange[] | undefined) => void
+  setConfiguredEnvironment: (environment: Environment | undefined) => void
+  setLiveMessageFlows?: (flows: LiveMessageFlowLane[], options?: { playing: boolean; runKey: string }) => void
   /**
    * 替换地图当前展示的链路集合。
    * @param links 新的链路视图列表。
@@ -97,6 +115,8 @@ export interface SituationMapController {
 
   /** 更新文件关联；与完整遥测链路分开，不补造质量或状态字段。 */
   setFileLinks: (links: FileCommunicationLink[]) => void
+  /** 更新可定位的场景链路；不改变当前绘制的链路图层。 */
+  setFocusLinks: (links: Link[]) => void
   /** 更新由消息证据推导的业务链路；与登记关联使用不同图层。 */
   setFileMessageLinks: (links: FileMessageLink[]) => void
   setFilePlayback: (playback: FileLinkPlayback, evidence?: readonly FileMessageLink[]) => void
@@ -174,178 +194,9 @@ export interface SituationMapController {
 
 type SituationPlatform = SituationMapNode
 
-interface VectorTilePathOptions extends L.PathOptions {
-  radius?: number
-}
-
-type VectorTileStyle = VectorTilePathOptions
-  | ((properties: Record<string, unknown>, zoom: number) => VectorTilePathOptions)
-
-interface VectorGridOptions extends L.GridLayerOptions {
-  rendererFactory: unknown
-  vectorTileLayerStyles: Record<string, VectorTileStyle>
-  maxNativeZoom: number
-  maxZoom: number
-  attribution: string
-  interactive: boolean
-}
-
-interface LeafletVectorGridApi {
-  protobuf: (url: string, options: VectorGridOptions) => SituationVectorGridLayer
-}
-
-/** 仅暴露换肤需要的 VectorGrid 可变样式选项与原地重绘能力。 */
-interface SituationVectorGridLayer extends L.Layer {
-  options: VectorGridOptions
-  redraw: () => SituationVectorGridLayer
-}
-
-type LeafletWithVectorGrid = typeof L & {
-  vectorGrid: LeafletVectorGridApi
-  canvas: typeof L.canvas & { tile: unknown }
-}
-
 const taskBounds = L.latLngBounds(
   MAP_CONFIG.taskBounds.map(([latitude, longitude]) => [latitude, longitude] as L.LatLngTuple),
 )
-
-const HIDDEN_VECTOR_TILE_STYLE: VectorTilePathOptions = {
-  stroke: false,
-  color: 'transparent',
-  weight: 0,
-  opacity: 0,
-  fill: false,
-  fillColor: 'transparent',
-  fillOpacity: 0,
-  radius: 0,
-}
-
-/**
- * 为指定地图主题创建一份独立的 VectorGrid 样式表。
- * @param theme 深色或浅色地图主题。
- * @returns 可直接替换到既有 VectorGrid 实例的图层样式。
- * @sideeffect 无副作用；每次调用都返回新对象，避免主题间共享可变样式。
- */
-function createVectorTileStyles(theme: MapTheme): Record<string, VectorTileStyle> {
-  const hiddenStyles = {
-    addresses: HIDDEN_VECTOR_TILE_STYLE,
-    aerialways: HIDDEN_VECTOR_TILE_STYLE,
-    boundary_labels: HIDDEN_VECTOR_TILE_STYLE,
-    bridges: HIDDEN_VECTOR_TILE_STYLE,
-    dam_lines: HIDDEN_VECTOR_TILE_STYLE,
-    dam_polygons: HIDDEN_VECTOR_TILE_STYLE,
-    ferries: HIDDEN_VECTOR_TILE_STYLE,
-    pier_lines: HIDDEN_VECTOR_TILE_STYLE,
-    pier_polygons: HIDDEN_VECTOR_TILE_STYLE,
-    place_labels: HIDDEN_VECTOR_TILE_STYLE,
-    pois: HIDDEN_VECTOR_TILE_STYLE,
-    public_transport: HIDDEN_VECTOR_TILE_STYLE,
-    sites: HIDDEN_VECTOR_TILE_STYLE,
-    street_labels: HIDDEN_VECTOR_TILE_STYLE,
-    street_labels_points: HIDDEN_VECTOR_TILE_STYLE,
-    streets_polygons_labels: HIDDEN_VECTOR_TILE_STYLE,
-    water_lines_labels: HIDDEN_VECTOR_TILE_STYLE,
-    water_polygons_labels: HIDDEN_VECTOR_TILE_STYLE,
-  }
-
-  if (theme === 'light') {
-    return {
-      ...hiddenStyles,
-      ocean: { fill: true, fillColor: '#cfe8f3', fillOpacity: 1, stroke: false },
-      land: {
-        fill: true,
-        fillColor: '#eee7d6',
-        fillOpacity: 1,
-        color: '#c7c0b2',
-        weight: 0.5,
-      },
-      water_polygons: {
-        fill: true,
-        fillColor: '#c6e2ef',
-        fillOpacity: 1,
-        color: '#8fb9cc',
-        weight: 0.7,
-      },
-      water_lines: { color: '#73a9c0', weight: 1, opacity: 0.9 },
-      boundaries: {
-        color: '#718899',
-        weight: 1,
-        opacity: 0.85,
-        dashArray: '5 4',
-      },
-      streets: (properties, zoom) => {
-        const kind = typeof properties.kind === 'string' ? properties.kind : ''
-        const arterialColors: Readonly<Record<string, string>> = {
-          motorway: '#d98b18',
-          trunk: '#e5a536',
-          primary: '#efbd63',
-        }
-        return {
-          color: arterialColors[kind] ?? (zoom >= 12 ? '#8d969b' : '#a7adb0'),
-          weight: zoom >= 12 ? 1.35 : 0.75,
-          opacity: zoom >= 10 ? 0.9 : 0.7,
-        }
-      },
-      street_polygons: {
-        fill: true,
-        fillColor: '#d6d7d5',
-        fillOpacity: 0.65,
-        stroke: false,
-      },
-      buildings: {
-        fill: true,
-        fillColor: '#c8cac8',
-        fillOpacity: 0.75,
-        color: '#afb3b2',
-        weight: 0.5,
-      },
-    }
-  }
-
-  return {
-    ...hiddenStyles,
-    ocean: { fill: true, fillColor: '#06111d', fillOpacity: 1, stroke: false },
-    land: {
-      fill: true,
-      fillColor: '#10283a',
-      fillOpacity: 1,
-      color: '#1a3b51',
-      weight: 0.5,
-    },
-    water_polygons: {
-      fill: true,
-      fillColor: '#092034',
-      fillOpacity: 1,
-      color: '#16445f',
-      weight: 0.7,
-    },
-    water_lines: { color: '#1e5571', weight: 1, opacity: 0.85 },
-    boundaries: {
-      color: '#54728a',
-      weight: 1,
-      opacity: 0.75,
-      dashArray: '5 4',
-    },
-    streets: (_properties, zoom) => ({
-      color: zoom >= 12 ? '#496579' : '#354f63',
-      weight: zoom >= 12 ? 1.35 : 0.75,
-      opacity: zoom >= 10 ? 0.8 : 0.55,
-    }),
-    street_polygons: {
-      fill: true,
-      fillColor: '#324b5d',
-      fillOpacity: 0.55,
-      stroke: false,
-    },
-    buildings: {
-      fill: true,
-      fillColor: '#3b5363',
-      fillOpacity: 0.7,
-      color: '#4d6879',
-      weight: 0.5,
-    },
-  }
-}
 
 const LINK_TYPE_STYLES: Record<SituationLinkView['type'], L.PathOptions> = {
   SAT: {
@@ -380,6 +231,12 @@ const LINK_TYPE_STYLES: Record<SituationLinkView['type'], L.PathOptions> = {
 
 const UNAVAILABLE_LINK_STYLE: L.PathOptions = {
   color: '#f56c6c',
+  weight: 3,
+  opacity: 0.95,
+}
+/** 中断比劣化更深，避免和劣化的浅红混成同一种线。 */
+const DOWN_LINK_STYLE: L.PathOptions = {
+  color: '#8b1515',
   weight: 3,
   opacity: 0.95,
 }
@@ -437,10 +294,11 @@ const LINK_STATUS_LABELS: Record<SituationLinkView['status'], string> = {
 /**
  * 根据链路类型与运行状态生成地图线型。
  * @param link 当前帧链路视图。
- * @returns 正常链路使用类型配色，劣化或中断链路使用红色异常配色。
+ * @returns 正常链路使用类型配色，劣化使用浅红，中断使用深红。
  * @sideeffect 无副作用。
  */
 function linkStyle(link: SituationLinkView): L.PathOptions {
+  if (link.status === 'DOWN') return DOWN_LINK_STYLE
   return link.status === 'UP' ? LINK_TYPE_STYLES[link.type] : UNAVAILABLE_LINK_STYLE
 }
 
@@ -463,6 +321,12 @@ export function createSituationMapController(options: SituationMapControllerOpti
   const flowPane = map.createPane('linkFlowPane')
   flowPane.style.zIndex = '450'
   flowPane.style.pointerEvents = 'none'
+  const liveFlowLayer = createLiveFlowLayer(map, flowPane)
+  const livePathCache = new Map<string, { geometry: string; points: L.LatLngTuple[] }>()
+  const seaPane = map.createPane('scenario-sea')
+  seaPane.style.zIndex = '315'
+  seaPane.style.pointerEvents = 'none'
+  let seaArea: L.Polygon | undefined
   let currentLinks = [...options.links]
   let currentFrame = options.frame
   let engineFrame = options.engineFrame
@@ -474,14 +338,19 @@ export function createSituationMapController(options: SituationMapControllerOpti
   const filePulses = new Map<string, FileMessagePulse>()
   let fileDeviceStates = options.fileDeviceStates ?? []
   let configuredLinks = options.configuredLinks
+  let focusLinks = options.focusLinks ?? []
   let configuredLinkStatuses = options.configuredLinkStatuses
   let configuredLinkSwitches = options.configuredLinkSwitches
   let configuredJammers = options.configuredJammers
+  let liveMessageFlows = options.liveMessageFlows ?? []
+  let liveFlowPlaying = options.liveFlowPlaying ?? true
+  let liveFlowKey = options.liveFlowKey ?? ''
   let currentNodes = engineJammerNodes(currentFrame?.platforms ?? fileNodes, engineFrame)
   let selectedNodeId = options.selectedNodeId
   let focusedTarget: SituationMapFocusTarget | null = null
   let currentTheme: MapTheme = MAP_CONFIG.defaults.theme
   let currentBasemap: MapBasemap = MAP_CONFIG.defaults.basemap
+  let collapseUavMarkers = false
 
   const layerGroups: Record<MapLayer, L.LayerGroup> = {
     nodes: L.layerGroup(),
@@ -493,6 +362,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     detection: L.layerGroup(),
     trails: L.layerGroup(),
   }
+  const jammingEffectsGroup = L.layerGroup()
   const layerVisibility: Record<MapLayer, boolean> = {
     nodes: true,
     links: true,
@@ -503,7 +373,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     interference: true,
     grid: MAP_CONFIG.defaults.gridVisible,
     detection: true,
-    trails: true,
+    trails: MAP_CONFIG.defaults.trailsVisible,
   }
   const trailLines = new Map<string, L.Polyline>()
   function renderTrails(): void {
@@ -519,6 +389,15 @@ export function createSituationMapController(options: SituationMapControllerOpti
         color: '#48a9e8', weight: 2, opacity: 0.8, interactive: false, className: 'situation-map-node-trail',
       }).addTo(layerGroups.trails))
     }
+  }
+
+  function renderSceneLiveFlows(): void {
+    if (currentFrame || !configuredLinks) {
+      liveFlowLayer.clear()
+      livePathCache.clear()
+      return
+    }
+    liveFlowLayer.update(collectLiveFlowPaths(currentNodes, liveMessageFlows, livePathCache), liveFlowPlaying)
   }
 
   /**
@@ -546,11 +425,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     options.onSelectLink(link)
   }
 
-  /** 根据当前联动目标重绘节点、链路和干扰范围的唯一高亮态。 */
-  const renderBusinessLayers = (): void => {
-    renderFileDetection(layerGroups.detection, currentFrame || configuredLinks ? [] : currentNodes)
-    // 底图复用后，切到场景或遥测源必须同步移除文件专属的登记关联和流向动画。
-    if (currentFrame || configuredLinks) renderConnections(layerGroups.potential, [], layerGroups.flow)
+  function renderNodeLayer(): void {
     let highlightedNodeId = selectedNodeId
     if (focusedTarget?.kind === 'link') highlightedNodeId = ''
     if (focusedTarget?.kind === 'node') highlightedNodeId = focusedTarget.targetId
@@ -559,8 +434,19 @@ export function createSituationMapController(options: SituationMapControllerOpti
         platform.jammers.some((jammer) => jammer.jammerId === focusedTarget?.targetId)
       ))?.platformId ?? selectedNodeId
     }
+    renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect, collapseUavMarkers, point => {
+      map?.setView(point, MAP_CONFIG.zoom.uavClusterMax + 1)
+    })
+    renderNodeHeadings(layerGroups.nodes, nodeTrails, currentFrame?.simulationTime)
+  }
 
+  /** 根据当前联动目标重绘节点、链路和干扰范围的唯一高亮态。 */
+  const renderBusinessLayers = (): void => {
+    renderDetection(layerGroups.detection, currentFrame, currentNodes, configuredJammers, engineFrame, configuredLinks)
+    // 底图复用后，切到场景或遥测源必须移除文件专属登记关联；实时场景叠加自身真实报文流向。
+    if (currentFrame || configuredLinks) renderConnections(layerGroups.potential, [])
     if (currentFrame) {
+      renderFlowSpecs(layerGroups.flow, [])
       renderInterference(
         layerGroups.interference,
         currentFrame,
@@ -575,6 +461,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         handleMapLinkSelect,
       )
     } else if (configuredLinks) {
+      renderFlowSpecs(layerGroups.flow, [])
       renderConfiguredLinks(layerGroups.links, currentNodes, configuredLinks, focusedTarget?.targetId ?? '', link => {
         focusedTarget = { kind: 'link', targetId: link.id }
         renderBusinessLayers()
@@ -595,28 +482,17 @@ export function createSituationMapController(options: SituationMapControllerOpti
       })
       renderInterference(layerGroups.interference, null, '', currentNodes, configuredJammers, fileDeviceStates, engineFrame)
     }
-    renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect)
+    renderNodeLayer()
+    renderJammingEffects(jammingEffectsGroup, currentNodes, engineFrame)
     renderTrails()
   }
 
-  const leaflet = L as LeafletWithVectorGrid
   const offlineLabelPane = map.createPane('offline-label-pane')
   offlineLabelPane.style.zIndex = '350'
   offlineLabelPane.style.pointerEvents = 'none'
 
-  const vectorGrid = leaflet.vectorGrid.protobuf(MAP_CONFIG.resources.vector.tileUrl, {
-    bounds: L.latLngBounds([...MAP_CONFIG.resources.vector.bounds[0]], [...MAP_CONFIG.resources.vector.bounds[1]]),
-    rendererFactory: leaflet.canvas.tile,
-    vectorTileLayerStyles: createVectorTileStyles(currentTheme),
-    maxNativeZoom: MAP_CONFIG.resources.vector.maxNativeZoom,
-    maxZoom: MAP_CONFIG.zoom.max,
-    attribution: MAP_CONFIG.resources.vector.attribution,
-    interactive: false,
-    pane: 'tilePane',
-  })
   const tileSource = createVectorTileSource()
-  bindVectorTileSource(vectorGrid, tileSource)
-  vectorGrid.addTo(map)
+  const vectorGrid = createOfflineVectorBasemap(currentTheme, tileSource).addTo(map)
   const offlineLabelLayer = MAP_CONFIG.defaults.basemapLabelsVisible
     ? createOfflineVectorLabelLayer(currentTheme, tileSource) : null
   offlineLabelLayer?.addTo(map)
@@ -636,12 +512,43 @@ export function createSituationMapController(options: SituationMapControllerOpti
   layerOrder.forEach((layer) => {
     if (layerVisibility[layer]) layerGroups[layer].addTo(map as L.Map)
   })
+  if (layerVisibility.interference) jammingEffectsGroup.addTo(map as L.Map)
 
   const handleZoomEnd = (): void => {
-    if (map) options.onZoomChange(map.getZoom())
+    if (!map) return
+    const zoom = map.getZoom()
+    const collapse = zoom <= MAP_CONFIG.zoom.uavClusterMax
+    if (collapse !== collapseUavMarkers) {
+      collapseUavMarkers = collapse
+      renderNodeLayer()
+    }
+    options.onZoomChange(zoom)
   }
   map.on('zoomend', handleZoomEnd)
   map.fitBounds(taskBounds, { padding: [...MAP_CONFIG.fitPadding], animate: false })
+  renderSceneLiveFlows()
+
+  const setConfiguredEnvironment = (environment: Environment | undefined): void => {
+    if (!map) return
+    const polygon = environment?.multipathEnabled ? environment.seaPolygon : undefined
+    if (!polygon || polygon.length < 3) {
+      seaArea?.remove()
+      seaArea = undefined
+      return
+    }
+    const points = polygon.map(({ latitude, longitude }): L.LatLngTuple => [latitude, longitude])
+    if (seaArea) {
+      seaArea.setLatLngs(points)
+      seaArea.getTooltip()?.setLatLng(seaArea.getCenter())
+      return
+    }
+    seaArea = L.polygon(points, {
+      pane: 'scenario-sea', color: '#39cfc8', weight: 1.5, opacity: 0.65, fillOpacity: 0.12, interactive: false,
+    }).bindTooltip('海面多径区域', {
+      pane: 'scenario-sea', permanent: true, direction: 'center', className: 'scenario-sea-label',
+    }).addTo(map)
+  }
+  setConfiguredEnvironment(options.configuredEnvironment)
 
   const handleResize = (): void => {
     if (map) map.invalidateSize({ pan: false })
@@ -658,26 +565,48 @@ export function createSituationMapController(options: SituationMapControllerOpti
   }
 
   return {
+    setConfiguredEnvironment,
     setEngineFrame(frame): void {
       if (!map) return
       engineFrame = frame
       currentNodes = engineJammerNodes(currentFrame?.platforms ?? fileNodes, engineFrame)
       renderBusinessLayers()
+      renderSceneLiveFlows()
     },
     setNodeTrails(trails): void {
       if (!map) return
       nodeTrails = trails
       renderTrails()
+      renderNodeHeadings(layerGroups.nodes, nodeTrails, currentFrame?.simulationTime)
     },
     setConfiguredJammers(jammers): void {
       if (!map) return
       configuredJammers = jammers
       renderBusinessLayers()
     },
+    setLiveMessageFlows(flows, opts): void {
+      if (!map) return
+      const nextKey = opts?.runKey ?? liveFlowKey
+      if (nextKey !== liveFlowKey) {
+        liveFlowLayer.clear()
+        livePathCache.clear()
+      }
+      liveMessageFlows = flows
+      if (opts) {
+        liveFlowPlaying = opts.playing
+        liveFlowKey = opts.runKey
+      }
+      renderSceneLiveFlows()
+    },
     setConfiguredLinks(links): void {
       if (!map) return
+      const sourceChanged = Boolean(configuredLinks) !== Boolean(links)
       configuredLinks = links
       if (!currentFrame) renderBusinessLayers()
+      if (sourceChanged) renderSceneLiveFlows()
+    },
+    setFocusLinks(links): void {
+      focusLinks = links
     },
     setConfiguredLinkStatuses(statuses): void {
       if (!map) return
@@ -710,6 +639,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         selectedNodeId = currentNodes[0]?.platformId ?? ''
       }
       renderBusinessLayers()
+      renderSceneLiveFlows()
     },
 
     setNodes(nodes): void {
@@ -722,6 +652,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         focusedTarget = null
       }
       renderBusinessLayers()
+      renderSceneLiveFlows()
     },
 
     setFileLinks(links): void {
@@ -739,6 +670,12 @@ export function createSituationMapController(options: SituationMapControllerOpti
     setFilePlayback(playback, evidence = fileMessageLinks): void {
       if (!map) return
       const previous = filePlayback
+      const validKeys = new Set<string>()
+      const collectDirectionBuckets = (link: FileMessageLink) => {
+        const buckets = new Set<FileMessageDirection | 'UNKNOWN'>()
+        for (const record of link.records) buckets.add(readSingleMessageDirection(record.messageType) ?? 'UNKNOWN')
+        return buckets
+      }
       if (!previous || previous.key !== playback.key || playback.time < previous.time
         || (playback.time !== previous.time && !playback.playing)) {
         filePulses.clear()
@@ -746,19 +683,38 @@ export function createSituationMapController(options: SituationMapControllerOpti
         || (!previous.playing && playback.time === 0))) {
         const from = previous.time === 0 ? -Number.EPSILON : previous.time
         for (const link of evidence) {
-          // 原始配对证据包含发送时刻（接收时刻减时延）。不依赖当前详情里已截断的记录。
-          let latest: FileMessagePulse | undefined
-          for (const record of link.records) {
-            const sentAt = record.time - record.delayS
-            if (sentAt > from && sentAt <= playback.time && (!latest || sentAt > latest.time)) {
-              latest = { eventId: record.transmitEventId, time: sentAt }
+          const buckets = collectDirectionBuckets(link)
+          if (buckets.size <= 1) {
+            let latest: FileMessagePulse | undefined
+            for (const record of link.records) {
+              const sentAt = record.time - record.delayS
+              if (sentAt > from && sentAt <= playback.time && (!latest || sentAt > latest.time)) {
+                latest = { eventId: record.transmitEventId, time: sentAt }
+              }
             }
+            if (latest) filePulses.set(link.id, latest)
+            continue
           }
-          if (latest) filePulses.set(link.id, latest)
+          for (const dirKey of buckets) {
+            let latest: FileMessagePulse | undefined
+            for (const record of link.records) {
+              const recordDir = readSingleMessageDirection(record.messageType)
+              if ((recordDir ?? 'UNKNOWN') !== dirKey) continue
+              const sentAt = record.time - record.delayS
+              if (sentAt > from && sentAt <= playback.time && (!latest || sentAt > latest.time)) {
+              latest = { eventId: record.transmitEventId, time: sentAt }
+              }
+            }
+            if (latest) filePulses.set(`${link.id}|${dirKey}`, latest)
+          }
         }
       }
-      const ids = new Set(evidence.map(link => link.id))
-      for (const id of filePulses.keys()) if (!ids.has(id)) filePulses.delete(id)
+      for (const link of evidence) {
+        const buckets = collectDirectionBuckets(link)
+        if (buckets.size <= 1) validKeys.add(link.id)
+        else for (const dirKey of buckets) validKeys.add(`${link.id}|${dirKey}`)
+      }
+      for (const id of filePulses.keys()) if (!validKeys.has(id)) filePulses.delete(id)
       filePlayback = { ...playback }
       if (!currentFrame && !configuredLinks) renderBusinessLayers()
     },
@@ -794,20 +750,25 @@ export function createSituationMapController(options: SituationMapControllerOpti
         return
       }
 
-      if (!currentFrame && target.kind === 'link') {
-        const configured = (configuredLinks ?? []).find(candidate => candidate.id === target.targetId)
+      if (target.kind === 'link') {
+        const drawn = configuredLinks ?? []
+        const configured = drawn.find(candidate => candidate.id === target.targetId)
+          ?? focusLinks.find(candidate => candidate.id === target.targetId)
         if (configured) {
           const platforms = new Map(currentNodes.map(node => [node.platformId, node]))
-          const path = configuredConnectionPath(configured, currentNodes, configuredLinks ?? [], platforms)
+          const path = configuredConnectionPath(configured, currentNodes, drawn.some(candidate => candidate.id === configured.id) ? drawn : focusLinks, platforms)
           if (path) {
             focusedTarget = target
-            renderBusinessLayers()
-            map.fitBounds(L.latLngBounds(path.points), {
+            if (drawn.some(candidate => candidate.id === configured.id)) renderBusinessLayers()
+            map.fitBounds(L.latLngBounds(path.legs.flatMap(leg => leg.points)), {
               padding: [...MAP_CONFIG.fitPadding], maxZoom: focusZoom, ...animation,
             })
+            return
           }
-          return
         }
+      }
+
+      if (!currentFrame && target.kind === 'link') {
         const link = fileLinks.find(candidate => candidate.id === target.targetId)
         const source = currentNodes.find(node => node.platformId === link?.sourcePlatformId)
         const destination = currentNodes.find(node => node.platformId === link?.targetPlatformId)
@@ -875,10 +836,13 @@ export function createSituationMapController(options: SituationMapControllerOpti
     setLayerVisible(layer, visible): void {
       if (!map || layerVisibility[layer] === visible) return
       layerVisibility[layer] = visible
+      if (layer === 'flow') liveFlowLayer.setVisible(visible)
       if (visible) {
         layerGroups[layer].addTo(map)
+        if (layer === 'interference') jammingEffectsGroup.addTo(map)
       } else {
         layerGroups[layer].removeFrom(map)
+        if (layer === 'interference') jammingEffectsGroup.removeFrom(map)
       }
     },
 
@@ -938,7 +902,10 @@ export function createSituationMapController(options: SituationMapControllerOpti
       removeResizeFallback?.()
       removeResizeFallback = null
       map.off('zoomend', handleZoomEnd)
+      seaArea?.remove()
       offlineLabelLayer?.remove()
+      liveFlowLayer.destroy()
+      renderFlowSpecs(layerGroups.flow, [])
       map.remove()
       map = null
       Object.values(layerGroups).forEach((group) => {
@@ -949,6 +916,9 @@ export function createSituationMapController(options: SituationMapControllerOpti
         interferenceLayers.delete(group)
         detectionLayers.delete(group)
       })
+      jammingEffectsGroup.clearLayers()
+      jammingPulseLayers.delete(jammingEffectsGroup)
+      jammingBeamLayers.delete(jammingEffectsGroup)
       currentLinks = []
       trailLines.clear()
       nodeTrails = []
@@ -1000,11 +970,13 @@ function bindMarkerKeyboardSelection(marker: L.Marker, onSelect: () => void): vo
  * 构造节点安全图标内容。
  * @param platform 固定帧中的平台状态。
  * @param selected 节点是否处于选中状态。
+ * @param count 标记所代表的节点数量。
+ * @param label 地图上显示的节点名称。
  * @returns 只通过 textContent 写入名称和标识的 DOM 元素。
  * @sideeffect 创建新的 DOM 节点，不修改传入平台数据。
  */
-function createNodeIconContent(platform: SituationPlatform, selected: boolean): HTMLElement {
-  const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
+function createNodeIconContent(platform: SituationPlatform, selected: boolean, count: number, label: string): HTMLElement {
+  const compact = count > 1 || platform.type === 'AIRBORNE_MISSION_CLUSTER'
   const isSat = isSatellitePlatform(platform)
   const root = document.createElement('div')
   const imageUrl = nodeIconUrl(platform)
@@ -1034,9 +1006,7 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
 
   const name = document.createElement('span')
   name.className = 'situation-map-node__name'
-  name.textContent = isSat
-    ? `${platform.name}（轨道示意）`
-    : platform.name
+  name.textContent = isSat ? `${label}（轨道示意）` : label
   name.style.display = compact ? 'none' : 'block'
   name.style.marginTop = '3px'
   name.style.color = '#d7e8f3'
@@ -1047,8 +1017,8 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
 
   const id = document.createElement('span')
   id.className = 'situation-map-node__id'
-  id.textContent = compact ? platform.platformId.replace('AIR-', 'U') : platform.platformId
-  if (!compact && platform.name === platform.platformId) id.style.display = 'none'
+  id.textContent = count > 1 ? `×${count}` : compact ? platform.platformId.replace('AIR-', 'U') : platform.platformId
+  if (!compact && label === platform.platformId) id.style.display = 'none'
   id.style.color = '#7f9aad'
   id.style.fontFamily = 'Consolas, monospace'
   id.style.fontSize = '12px'
@@ -1059,7 +1029,69 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
   return root
 }
 
-const nodeLayers = new WeakMap<L.LayerGroup, Map<string, { marker: L.Marker; appearance: string }>>()
+interface NodeLayer {
+  marker: L.Marker
+  appearance: string
+  members: SituationMapNode[]
+  image?: HTMLImageElement
+}
+
+const nodeLayers = new WeakMap<L.LayerGroup, Map<string, NodeLayer>>()
+
+function nodeHeading(platform: SituationMapNode, trail: NodeTrail | undefined, simulationTime?: number): number | undefined {
+  const { heading } = platform
+  if (heading !== undefined && Number.isFinite(heading)) return heading
+
+  const previous = trail?.points.at(-2)
+  const current = trail?.points.at(-1)
+  const time = platform.time ?? simulationTime
+  // 位置和轨迹分开更新，转向只能使用当前节点已走到的轨迹段。
+  if (!previous || !current || time === undefined || current.time > time
+    || current.longitude !== platform.longitude || current.latitude !== platform.latitude) return undefined
+
+  const longitudeDelta = ((current.longitude - previous.longitude + 540) % 360) - 180
+  const from = L.Projection.SphericalMercator.project(L.latLng(previous.latitude, 0))
+  const to = L.Projection.SphericalMercator.project(L.latLng(current.latitude, longitudeDelta))
+  return from.equals(to) ? undefined : Math.atan2(to.x - from.x, to.y - from.y) * 180 / Math.PI
+}
+
+function uavGroupHeading(
+  members: readonly SituationMapNode[],
+  trailsByPlatformId: ReadonlyMap<string, NodeTrail>,
+  simulationTime?: number,
+): number | undefined {
+  let east = 0
+  let north = 0
+  let totalSpeed = 0
+  for (const member of members) {
+    const { speed } = member
+    if (!Number.isFinite(speed) || speed <= 0) continue
+    const heading = nodeHeading(member, trailsByPlatformId.get(member.platformId), simulationTime)
+    if (heading === undefined) continue
+    const angle = (heading % 360) * Math.PI / 180
+    east += speed * Math.sin(angle)
+    north += speed * Math.cos(angle)
+    totalSpeed += speed
+  }
+  // 运动互相抵消时，机群没有明确的整体朝向。
+  if (Math.hypot(east, north) <= totalSpeed * 1e-6) return undefined
+  return Math.atan2(east, north) * 180 / Math.PI
+}
+
+function renderNodeHeadings(group: L.LayerGroup, trails: NodeTrail[], simulationTime?: number): void {
+  const trailsByPlatformId = new Map(trails.map(trail => [trail.platformId, trail]))
+  for (const { members, image } of nodeLayers.get(group)?.values() ?? []) {
+    if (!image) continue
+    const platform = members[0]!
+    const imageHeading = MAP_CONFIG.nodeImageHeadings[nodeCategory(platform) ?? '']
+    if (imageHeading === undefined) continue
+    const heading = members.length > 1
+      ? uavGroupHeading(members, trailsByPlatformId, simulationTime)
+      : nodeHeading(platform, trailsByPlatformId.get(platform.platformId), simulationTime)
+    const transform = heading === undefined ? '' : `rotate(${(heading - imageHeading) % 360}deg)`
+    if (image.style.transform !== transform) image.style.transform = transform
+  }
+}
 
 /** 按节点身份复用 Marker；位置更新不替换图标，选中和名称变化只更新对应图标。 */
 function renderNodes(
@@ -1067,41 +1099,69 @@ function renderNodes(
   nodes: SituationMapNode[],
   selectedNodeId: string,
   onSelectNode: (platformId: string) => void,
+  collapseUavMarkers: boolean,
+  onExpandCluster: (point: L.LatLng) => void,
 ): void {
-  const entries = nodeLayers.get(group) ?? new Map<string, { marker: L.Marker; appearance: string }>()
+  const entries = nodeLayers.get(group) ?? new Map<string, NodeLayer>()
   nodeLayers.set(group, entries)
-  const ids = new Set(nodes.map(node => node.platformId))
-  for (const [id, entry] of entries) {
-    if (!ids.has(id)) { group.removeLayer(entry.marker); entries.delete(id) }
+  const visible = new Map<string, SituationMapNode[]>()
+  const uavGroups = new Map<string, SituationMapNode[]>()
+  for (const node of nodes) {
+    // 该文件模型也用于高空中继；缺少角色时保留独立标记。
+    if (collapseUavMarkers && node.type !== 'MISSION_UAV_PLATFORM' && nodeCategory(node) === 'AIRBORNE_MISSION_CLUSTER') {
+      const side = node.side ?? ''
+      const members = uavGroups.get(side) ?? []
+      members.push(node)
+      uavGroups.set(side, members)
+    } else {
+      visible.set(`node:${node.platformId}`, [node])
+    }
   }
-  for (const platform of nodes) {
-    const selected = platform.platformId === selectedNodeId
+  for (const [side, members] of uavGroups) {
+    visible.set(members.length > 1 ? `uav:${side}` : `node:${members[0]!.platformId}`, members)
+  }
+  for (const [id, entry] of entries) {
+    if (!visible.has(id)) { group.removeLayer(entry.marker); entries.delete(id) }
+  }
+  for (const [key, members] of visible) {
+    const platform = members[0]!
+    const clustered = members.length > 1
+    const selected = members.some(node => node.platformId === selectedNodeId)
+    const point = clustered
+      ? L.latLngBounds(members.map(node => pointForPlatform(node, nodes))).getCenter()
+      : pointForPlatform(platform, nodes)
     // 阵营变化也必须重建图标，否则改阵营后配色不会更新。
-    const appearance = JSON.stringify([platform.name, platform.type, platform.satelliteType, platform.side, selected])
-    let entry = entries.get(platform.platformId)
+    const appearance = JSON.stringify([platform.name, platform.type, platform.satelliteType, platform.side, selected, members.length])
+    const orbitSuffix = isSatellitePlatform(platform) ? '（轨道示意）' : ''
+    const clusterLabel = `无人机群（${members.length} 架）`
+    const category = nodeCategory(platform)
+    const commandLabel = category === 'REAR_COMMAND_NODE' || category === 'GROUND_CLUSTER_COMMAND_NODE' ? PLATFORM_TYPE_LABELS[category] : undefined
+    const label = commandLabel ?? platform.name
+    const accessibleName = clustered ? `展开${clusterLabel}` : `选择节点 ${label}${orbitSuffix}`
+    let entry = entries.get(key)
     if (!entry) {
-      const isSat = isSatellitePlatform(platform)
-      const marker = L.marker(pointForPlatform(platform, nodes), {
-        title: `选择节点 ${platform.name}${isSat ? '（轨道示意）' : ''}`,
+      const marker = L.marker(point, {
+        title: accessibleName,
         keyboard: true, riseOnHover: true, riseOffset: 500, bubblingMouseEvents: false,
       })
-      marker.on('click', () => onSelectNode(platform.platformId))
-      bindMarkerKeyboardSelection(marker, () => onSelectNode(platform.platformId))
-      entry = { marker, appearance: '' }
-      entries.set(platform.platformId, entry)
+      const activate = clustered ? () => onExpandCluster(marker.getLatLng()) : () => onSelectNode(platform.platformId)
+      marker.on('click', activate)
+      bindMarkerKeyboardSelection(marker, activate)
+      entry = { marker, appearance: '', members }
+      entries.set(key, entry)
     }
     const { marker } = entry
-    if (!marker.getLatLng().equals(pointForPlatform(platform, nodes))) marker.setLatLng(pointForPlatform(platform, nodes))
+    entry.members = members
+    if (!marker.getLatLng().equals(point)) marker.setLatLng(point)
     if (entry.appearance !== appearance) {
-      const isSat = isSatellitePlatform(platform)
-      const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
+      const compact = clustered || platform.type === 'AIRBORNE_MISSION_CLUSTER'
       const hasImage = !!nodeIconUrl(platform)
       const width = compact ? (hasImage ? 48 : 44) : 160
-      const orbitSuffix = isSat ? '（轨道示意）' : ''
-      const accessibleName = `选择节点 ${platform.name}${orbitSuffix}`
+      const content = createNodeIconContent(platform, selected, members.length, label)
+      entry.image = content.querySelector('img') ?? undefined
       marker.options.title = accessibleName
       marker.setIcon(L.divIcon({
-        html: createNodeIconContent(platform, selected),
+        html: content,
         className: selected ? 'situation-map-node-marker situation-map-node-marker--selected' : 'situation-map-node-marker',
         iconSize: [width, hasImage ? (compact ? 68 : 88) : (compact ? 40 : 52)],
         iconAnchor: [width / 2, hasImage ? 24 : 16], tooltipAnchor: [0, hasImage ? -24 : -16],
@@ -1111,8 +1171,10 @@ function renderNodes(
       marker.setZIndexOffset(selected ? 1000 : 0)
       const tooltip = document.createElement('span')
       const sideLabel = nodeSideLabel(platform)
-      tooltip.textContent = `${platform.name}${orbitSuffix} · ${PLATFORM_TYPE_LABELS[platform.type as keyof typeof PLATFORM_TYPE_LABELS] ?? platform.type}`
-        + (sideLabel ? ` · ${sideLabel}` : '')
+      const nodeLabel = commandLabel
+        ? commandLabel + (platform.name === commandLabel ? '' : ` · ${platform.name}`)
+        : `${platform.name}${orbitSuffix} · ${PLATFORM_TYPE_LABELS[platform.type as keyof typeof PLATFORM_TYPE_LABELS] ?? platform.type}`
+      tooltip.textContent = (clustered ? clusterLabel : nodeLabel) + (sideLabel ? ` · ${sideLabel}` : '')
       marker.bindTooltip(tooltip, { direction: 'top', offset: [0, -12] })
       entry.appearance = appearance
     }
@@ -1228,6 +1290,28 @@ function messageLinkCurveOffset(
   return (lanes.indexOf(laneOf(link)) / (lanes.length - 1) - 0.5) * MAP_CONFIG.linkCurveSeparationRatio
 }
 
+interface FlowLaneCurveInput {
+  sourcePlatformId: string
+  targetPlatformId: string
+  type: FileCommunicationType
+  directionKey: string
+}
+
+/** 同一跳段承载不同业务方向或对向报文时按车道对称偏移，避免流星互相压盖。 */
+function flowLaneCurveOffset(lane: FlowLaneCurveInput, lanesAll: readonly FlowLaneCurveInput[]): number {
+  const samePair = lanesAll.filter((candidate) => (
+    candidate.sourcePlatformId === lane.sourcePlatformId && candidate.targetPlatformId === lane.targetPlatformId
+  ) || (
+    candidate.sourcePlatformId === lane.targetPlatformId && candidate.targetPlatformId === lane.sourcePlatformId
+  ))
+  const laneOf = (item: FlowLaneCurveInput): string => (
+    `${item.sourcePlatformId <= item.targetPlatformId ? 'F' : 'R'}|${item.type}|${item.directionKey}`
+  )
+  const sorted = [...new Set(samePair.map(laneOf))].sort()
+  if (sorted.length < 2) return 0
+  return (sorted.indexOf(laneOf(lane)) / (sorted.length - 1) - 0.5) * MAP_CONFIG.linkCurveSeparationRatio
+}
+
 /**
  * 偏移按端点距离缩放且垂直于连线；方向归一保证端点反转后曲线不翻边，不改变节点位置。
  * @remarks 方向归一之后，两个方向的控制点偏移方向相同，因此给不同车道分配**符号相反**的偏移
@@ -1262,27 +1346,36 @@ interface ConnectionDrawing {
   points: L.LatLngTuple[]
   /** 链路点击热区图标的落点；中继折线需落在段中点，避免压住中继平台图标。 */
   hitPoint?: L.LatLngTuple
+  tooltipText?: string
   name: string
   style: L.PathOptions
   hitClass: string
   select: () => void
   /** 有向链路的方向箭头；无向关联不设置。rotation 为 CSS 顺时针角度，0 指向正东。 */
   arrow?: { position: L.LatLngTuple; rotation: number }
-  /** 射线脉冲的样式；在独立图层组中沿主线几何绘制渐亮光束。 */
-  flow?: L.PathOptions
-  pulseId?: string
-  playback?: FileLinkPlayback
+  /** 异常或切换链路的中点轻量状态徽标。 */
+  badge?: { text: string; variant: 'down' | 'degraded' | 'switch-before' | 'switch-after' }
 }
 interface ConnectionLayer {
   line: L.Polyline
   marker: L.Marker
+  tooltipContent: HTMLSpanElement
   drawing: ConnectionDrawing
   geometry: string
   appearance: string
   arrow?: L.Marker
   arrowAppearance?: string
+  badge?: L.Marker
+  badgeAppearance?: string
 }
 const connectionLayers = new WeakMap<L.LayerGroup, Map<string, ConnectionLayer>>()
+interface FlowSpec {
+  id: string
+  points: L.LatLngTuple[]
+  flow: L.PathOptions
+  pulseId?: string
+  playback?: FileLinkPlayback
+}
 interface FlowLayer {
   lines: L.Polyline[]
   geometry: string
@@ -1315,7 +1408,7 @@ function arrowColor(style: L.PathOptions): string {
 }
 
 /** 三种来源共用图层更新；回调始终读取最新记录，隐藏图层也只更新、不重新开启。 */
-function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], flowGroup?: L.LayerGroup): void {
+function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[]): void {
   const entries = connectionLayers.get(group) ?? new Map<string, ConnectionLayer>()
   connectionLayers.set(group, entries)
   const ids = new Set(drawings.map(drawing => drawing.id))
@@ -1324,24 +1417,15 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], f
       group.removeLayer(entry.line)
       group.removeLayer(entry.marker)
       if (entry.arrow) group.removeLayer(entry.arrow)
+      if (entry.badge) group.removeLayer(entry.badge)
       entries.delete(id)
-    }
-  }
-  const flows = flowGroup ? flowLayers.get(flowGroup) ?? new Map<string, FlowLayer>() : null
-  if (flowGroup && flows) flowLayers.set(flowGroup, flows)
-  const flowIds = new Set(drawings.filter(drawing => drawing.flow).map(drawing => drawing.id))
-  if (flowGroup && flows) {
-    for (const [id, entry] of flows) {
-      if (!flowIds.has(id)) {
-        entry.lines.forEach(line => flowGroup.removeLayer(line))
-        flows.delete(id)
-      }
     }
   }
   for (const drawing of drawings) {
     const midpoint = drawing.hitPoint ?? drawing.points[Math.floor(drawing.points.length / 2)]!
     const geometry = JSON.stringify([drawing.points, midpoint])
     const appearance = JSON.stringify([drawing.name, drawing.style])
+    const tooltipText = drawing.tooltipText ?? drawing.name
     let entry = entries.get(drawing.id)
     if (!entry) {
       const hit = document.createElement('span')
@@ -1351,11 +1435,22 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], f
         icon: L.divIcon({ html: hit, className: drawing.hitClass, iconSize: [28, 28], iconAnchor: [14, 14] }),
         keyboard: true, title: drawing.name, bubblingMouseEvents: false, zIndexOffset: 750,
       })
+      const tooltipContent = document.createElement('span')
+      if (drawing.tooltipText !== undefined) tooltipContent.className = 'situation-map-link-tooltip'
+      tooltipContent.textContent = tooltipText
       const line = L.polyline(drawing.points, { ...drawing.style, bubblingMouseEvents: false, interactive: true })
-      const created: ConnectionLayer = { line, marker, drawing, geometry, appearance: '' }
+        .bindTooltip(tooltipContent, { sticky: true })
+      const created: ConnectionLayer = { line, marker, tooltipContent, drawing, geometry, appearance: '' }
       const select = () => created.drawing.select()
       line.on('click', select)
       marker.on('click', select)
+      marker.on('mouseover', () => line.openTooltip(marker.getLatLng()))
+      marker.on('mouseout', () => line.closeTooltip())
+      marker.on('add', () => {
+        const element = marker.getElement()
+        element?.setAttribute('aria-label', created.drawing.name)
+        element?.removeAttribute('title')
+      })
       bindMarkerKeyboardSelection(marker, select)
       entry = created
       entries.set(drawing.id, entry)
@@ -1377,40 +1472,61 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], f
       lineElement?.classList.toggle('situation-map-link--switch-before', drawing.style.className?.includes('situation-map-link--switch-before') ?? false)
       lineElement?.classList.toggle('situation-map-link--switch-after', drawing.style.className?.includes('situation-map-link--switch-after') ?? false)
       lineElement?.classList.toggle('situation-map-link--switch-both', drawing.style.className?.includes('situation-map-link--switch-both') ?? false)
-      const tooltip = document.createElement('span')
-      tooltip.textContent = drawing.name
-      entry.line.bindTooltip(tooltip, { sticky: true })
       entry.marker.options.title = drawing.name
-      const element = entry.marker.getElement()
-      if (element) element.title = drawing.name
+      entry.marker.getElement()?.setAttribute('aria-label', drawing.name)
       const hit = (entry.marker.options.icon as L.DivIcon).options.html as HTMLElement
       hit.textContent = drawing.name
       entry.appearance = appearance
     }
+    if (entry.tooltipContent.textContent !== tooltipText) {
+      entry.tooltipContent.textContent = tooltipText
+      entry.line.getTooltip()?.update()
+    }
     syncArrowMarker(group, entry, drawing)
-    syncFlowLine(flowGroup, flows, drawing)
+    syncStatusBadgeMarker(group, entry, drawing, midpoint)
   }
+}
+
+/** 统一刷新文件回放与实时场景仿真的报文流向脉冲。 */
+function renderFlowSpecs(
+  flowGroup: L.LayerGroup | undefined,
+  specs: FlowSpec[],
+): void {
+  if (!flowGroup) return
+  const flows = flowLayers.get(flowGroup) ?? new Map<string, FlowLayer>()
+  flowLayers.set(flowGroup, flows)
+  const ids = new Set(specs.map(spec => spec.id))
+  for (const [id, entry] of flows) {
+    if (!ids.has(id)) {
+      entry.lines.forEach(line => flowGroup.removeLayer(line))
+      flows.delete(id)
+    }
+  }
+  const restartPaths: SVGPathElement[] = []
+  for (const spec of specs) syncFlowLine(flowGroup, flows, spec, restartPaths)
+  // 一次布局让本批移除的动画类统一生效，再恢复类以重启 scoped 动画。
+  restartPaths[0]?.getBoundingClientRect()
+  for (const path of restartPaths) path.classList.add('situation-map-link-flow')
 }
 
 /** 按需创建、更新或移除流向叠加线；几何始终与主连线一致。 */
 function syncFlowLine(
-  flowGroup: L.LayerGroup | undefined,
-  flows: Map<string, FlowLayer> | null,
-  drawing: ConnectionDrawing,
+  flowGroup: L.LayerGroup,
+  flows: Map<string, FlowLayer>,
+  spec: FlowSpec,
+  restartPaths: SVGPathElement[],
 ): void {
-  if (!flowGroup || !flows || !drawing.flow) return
-  const geometry = JSON.stringify(drawing.points)
-  const appearance = JSON.stringify(drawing.flow)
-  let entry = flows.get(drawing.id)
-  // 四段拼成一颗流星，亮头从起点进入，暗尾完全离开终点后才开始下一轮。
+  const geometry = JSON.stringify(spec.points)
+  const appearance = JSON.stringify(spec.flow)
+  let entry = flows.get(spec.id)
   const segmentLength = LINK_FLOW_TRAIL_LENGTH / LINK_FLOW_BRIGHTNESS.length
   const segmentStyle = (index: number): L.PathOptions => ({
-    ...drawing.flow,
+    ...spec.flow,
     color: '#e8fcff',
     dashArray: `${segmentLength} ${LINK_FLOW_PERIOD - segmentLength}`,
     dashOffset: `${LINK_FLOW_TRAIL_LENGTH - index * segmentLength}`,
     weight: 1.5 + index * 0.7,
-    opacity: (drawing.flow!.opacity ?? 1) * LINK_FLOW_BRIGHTNESS[index]!,
+    opacity: (spec.flow.opacity ?? 1) * LINK_FLOW_BRIGHTNESS[index]!,
     interactive: false,
     bubblingMouseEvents: false,
   })
@@ -1418,18 +1534,18 @@ function syncFlowLine(
     const created: FlowLayer = { lines: [], geometry, appearance, elapsedMs: Infinity,
       updatedAt: performance.now(), playing: false }
     const lines = LINK_FLOW_BRIGHTNESS.map((_, index) => {
-      const line = L.polyline(drawing.points, segmentStyle(index))
+      const line = L.polyline(spec.points, segmentStyle(index))
       // 图层重开后 SVG 元素会重建，需恢复同一组脉冲相位。
-      line.on('add', () => applyFlowAnimation(line, created))
+      line.on('add', () => { applyFlowAnimation(line, created) })
       line.addTo(flowGroup)
       return line
     })
     created.lines = lines
-    flows.set(drawing.id, created)
+    flows.set(spec.id, created)
     entry = created
   }
   if (entry.geometry !== geometry) {
-    entry.lines.forEach(line => line.setLatLngs(drawing.points))
+    entry.lines.forEach(line => line.setLatLngs(spec.points))
     entry.geometry = geometry
   }
   if (entry.appearance !== appearance) {
@@ -1440,19 +1556,21 @@ function syncFlowLine(
   }
   const now = performance.now()
   const elapsed = entry.elapsedMs + (entry.playing ? now - entry.updatedAt : 0)
-  const playing = drawing.playback?.playing ?? false
-  const changed = entry.pulseId !== drawing.pulseId || entry.playing !== playing
-  if (changed) {
-    // 流星尚在途中时合并后续密集消息，不重置亮头、不排队，统计记录不变。
-    entry.elapsedMs = !drawing.pulseId ? Infinity
-      : drawing.pulseId !== entry.pulseId && elapsed >= MAP_CONFIG.linkFlowCycleSeconds * 1000
-        ? 0 : elapsed
-    entry.pulseId = drawing.pulseId
+  const playing = spec.playback?.playing ?? false
+  const pulseChanged = entry.pulseId !== spec.pulseId
+  const startsNewPulse = pulseChanged && !!spec.pulseId && elapsed >= MAP_CONFIG.linkFlowCycleSeconds * 1000
+  entry.pulseId = spec.pulseId
+  // 在途投递只更新标识，沿用浏览器正在播放的动画和计时。
+  if (startsNewPulse || (pulseChanged && !spec.pulseId) || entry.playing !== playing) {
+    entry.elapsedMs = !spec.pulseId ? Infinity : startsNewPulse ? 0 : elapsed
     entry.updatedAt = now
     entry.playing = playing
-  }
-  if (changed || entry.lines.some(line => !line.getElement()?.hasAttribute('pathLength'))) {
-    entry.lines.forEach(line => applyFlowAnimation(line, entry))
+    for (const line of entry.lines) {
+      const path = applyFlowAnimation(line, entry)
+      if (!path) continue
+      path.classList.remove('situation-map-link-flow')
+      restartPaths.push(path)
+    }
   }
 }
 
@@ -1461,8 +1579,8 @@ function syncFlowLine(
  * 尾迹比例和时长来自 MAP_CONFIG；动画名由组件 scoped 样式提供，行内只覆盖参数，
  * 避免 Vue 的局部 @keyframes 哈希重命名与行内名字失配。
  */
-function applyFlowAnimation(line: L.Polyline, flow: FlowLayer): void {
-  const element = line.getElement() as SVGPathElement | null
+function applyFlowAnimation(line: L.Polyline, flow: FlowLayer): SVGPathElement | undefined {
+  const element = line.getElement() as SVGPathElement | undefined
   if (!element) return
   element.setAttribute('pathLength', `${LINK_FLOW_PATH_LENGTH}`)
   const offset = Number(line.options.dashOffset ?? 0)
@@ -1474,10 +1592,7 @@ function applyFlowAnimation(line: L.Polyline, flow: FlowLayer): void {
   element.style.animationDuration = `${MAP_CONFIG.linkFlowCycleSeconds}s`
   element.style.animationDelay = `${-Math.min(elapsed, MAP_CONFIG.linkFlowCycleSeconds * 1000)}ms`
   element.style.animationPlayState = flow.playing ? 'running' : 'paused'
-  // 仅重启同一 scoped CSS 动画，不写入未经 Vue 转换的动画名。
-  element.classList.remove('situation-map-link-flow')
-  void element.getBoundingClientRect()
-  element.classList.add('situation-map-link-flow')
+  return element
 }
 
 /** 按需创建、更新或移除方向箭头；无箭头的链路不会残留上一次的标记。 */
@@ -1512,15 +1627,103 @@ function syncArrowMarker(group: L.LayerGroup, entry: ConnectionLayer, drawing: C
   entry.arrowAppearance = arrowAppearance
 }
 
+/** 按需创建、更新或移除链路中点状态/切换徽标（非交互，避免遮挡点击热区）。 */
+function syncStatusBadgeMarker(
+  group: L.LayerGroup,
+  entry: ConnectionLayer,
+  drawing: ConnectionDrawing,
+  midpoint: L.LatLngTuple,
+): void {
+  if (!drawing.badge) {
+    if (entry.badge) {
+      group.removeLayer(entry.badge)
+      entry.badge = undefined
+      entry.badgeAppearance = undefined
+    }
+    return
+  }
+  const badgeAppearance = JSON.stringify([midpoint, drawing.badge.text, drawing.badge.variant])
+  if (entry.badge && entry.badgeAppearance === badgeAppearance) return
+  const pill = document.createElement('span')
+  pill.className = `situation-map-link-badge situation-map-link-badge--${drawing.badge.variant}`
+  pill.textContent = drawing.badge.text
+  const icon = L.divIcon({
+    html: pill,
+    className: 'situation-map-link-badge-wrap',
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  })
+  if (entry.badge) {
+    entry.badge.setLatLng(midpoint)
+    entry.badge.setIcon(icon)
+  } else {
+    entry.badge = L.marker(midpoint, { icon, interactive: false, keyboard: false, zIndexOffset: 770 }).addTo(group)
+  }
+  entry.badgeAppearance = badgeAppearance
+}
+
+function formatLinkDistance(meters: number | null | undefined): string | undefined {
+  if (meters == null || !Number.isFinite(meters) || meters < 0) return undefined
+  return meters < 1000 ? `${meters.toFixed(0)} m` : `${(meters / 1000).toFixed(2)} km`
+}
+
+const HOVER_NO_DATA = '暂无数据'
+
+function formatHoverNumber(value: number | null | undefined, unit = ''): string | undefined {
+  return value != null && Number.isFinite(value) ? `${Number(value.toPrecision(8))}${unit}` : undefined
+}
+
+function linkHoverText(name: string, route: string, metrics: {
+  direction?: LinkDirection
+  segmentMargin?: string
+  segmentDelay?: string
+  delayMs?: number | null
+  rateBps?: number | null
+  gxbDb?: number | null
+  ber?: number | null
+  marginDb?: number | null
+  distanceM?: number | null
+}): string {
+  return [
+    ['链路名称', name],
+    ['传输方向', metrics.direction === 'FORWARD' ? '前向' : metrics.direction === 'REVERSE' ? '反向' : undefined],
+    ['链路段抗干扰余量', metrics.segmentMargin],
+    ['链路段时延', metrics.segmentDelay],
+    ['链路延迟', formatHoverNumber(metrics.delayMs, ' ms')],
+    ['链路速率', formatHoverNumber(metrics.rateBps, ' bit/s')],
+    ['干信比', formatHoverNumber(metrics.gxbDb, ' dB')],
+    ['误码率', formatHoverNumber(metrics.ber)],
+    ['干扰余量', formatHoverNumber(metrics.marginDb, ' dB')],
+    ['全程距离', formatLinkDistance(metrics.distanceM)],
+    ['链路走向', route],
+  ].map(([label, value]) => `${label}：${value ?? HOVER_NO_DATA}`).join('\n')
+}
+
+function segmentHoverMetric(
+  segments: EngineLinkHover['segments'] | undefined, names: readonly string[], key: 'marginDb' | 'delayMs', unit: string,
+): string | undefined {
+  const values = segments?.map(segment => formatHoverNumber(segment?.quality[key], unit))
+  if (!values?.some(value => value !== undefined)) return undefined
+  if (values.length === 1) return values[0]
+  return '\n' + values.map((value, index) => `${names[index]} → ${names[index + 1]}  ${value ?? HOVER_NO_DATA}`).join('\n')
+}
+
 /** 运行链路保留规范/三态投影语义，仅局部刷新几何和样式。 */
 function renderLinks(group: L.LayerGroup, frame: TelemetryFrame, links: SituationLinkView[], selectedLinkId: string, onSelectLink: (link: SituationLinkView) => void): void {
   renderConnections(group, links.flatMap(link => {
     const points = sampleLinkCurve(frame, link, links)
     if (!points.length) return []
+    const selected = link.linkId === selectedLinkId
+    const typeName = LINK_TYPE_LABELS[link.type]
     return [{
       id: `runtime:${link.linkId}`, points,
-      name: `${LINK_TYPE_LABELS[link.type]}，${link.sourceName}至${link.destinationName}，${LINK_STATUS_LABELS[link.status]}`,
-      style: { ...linkStyle(link), className: '', ...(link.linkId === selectedLinkId ? { weight: 6, opacity: 1, className: 'situation-map-link--selected' } : {}) },
+      tooltipText: linkHoverText(`${link.linkId} · ${typeName}`, `${link.sourceName} → ${link.destinationName}`, {
+        direction: link.direction,
+        delayMs: link.detailed?.latencyMs, rateBps: link.detailed && link.detailed.dataRate * 1e6,
+        gxbDb: link.detailed?.jsrDb, ber: link.ber, distanceM: link.detailed?.distance,
+      }),
+      name: `${typeName}，${link.sourceName}至${link.destinationName}，${LINK_STATUS_LABELS[link.status]}`,
+      style: { ...linkStyle(link), className: '', ...(selected ? { weight: 6, opacity: 1, className: 'situation-map-link--selected' } : {}) },
       hitClass: 'situation-map-link-keyboard-hit', select: () => onSelectLink(link),
     }]
   }))
@@ -1552,48 +1755,88 @@ function configuredConnectionPath(
   allLinks: readonly Link[],
   platforms: ReadonlyMap<string, SituationMapNode>,
   hopEdges = expandConfiguredHopEdges(allLinks, platforms),
-): { points: L.LatLngTuple[]; hitPoint: L.LatLngTuple; routeLabel: string } | null {
+): { legs: { key: string; points: L.LatLngTuple[] }[]; nodeNames: string[] } | null {
   const source = platforms.get(link.sourcePlatformId)
   const target = platforms.get(link.targetPlatformId)
   if (!source || !target) return null
+  const leg = (from: SituationMapNode, to: SituationMapNode) => ({
+    key: JSON.stringify([link.type, ...[from.platformId, to.platformId].sort()]),
+    points: sampleConnectionCurve(from, to, connectionCurveOffset(from, to, link.type, hopEdges), nodes),
+  })
   const relay = link.relayPlatformId ? platforms.get(link.relayPlatformId) : undefined
   if (relay && relay.platformId !== source.platformId && relay.platformId !== target.platformId) {
-    const firstLeg = sampleConnectionCurve(source, relay, connectionCurveOffset(source, relay, link.type, hopEdges), nodes)
-    const secondLeg = sampleConnectionCurve(relay, target, connectionCurveOffset(relay, target, link.type, hopEdges), nodes)
     return {
-      points: [...firstLeg, ...secondLeg.slice(1)],
-      hitPoint: secondLeg[Math.floor(secondLeg.length / 2)]!,
-      routeLabel: `${source.name} → ${relay.name} → ${target.name}`,
+      legs: [leg(source, relay), leg(relay, target)],
+      nodeNames: [source.name, relay.name, target.name],
     }
   }
-  const points = sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, hopEdges), nodes)
   return {
-    points,
-    hitPoint: points[Math.floor(points.length / 2)]!,
-    routeLabel: `${source.name} → ${target.name}`,
+    legs: [leg(source, target)],
+    nodeNames: [source.name, target.name],
   }
 }
 
 /**
- * 配置连线沿用体制样式，仅已验证质量帧的判定结果可覆盖为异常红色。
+ * 配置连线沿用体制样式。劣化覆盖为浅红，中断覆盖为深红。
  * 配置启停不代表运行质量，缺少判定时停用仅降低透明度。
  */
-function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: Link[], selectedId: string, onSelect: (link: Link) => void,
+function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: SituationMapLink[], selectedId: string, onSelect: (link: Link) => void,
   statuses?: ReadonlyMap<string, UiLinkStatus>, switches?: ReadonlyMap<string, ConfiguredLinkSwitchState>): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
   const hopEdges = expandConfiguredHopEdges(links, platforms)
-  renderConnections(group, links.flatMap(link => {
+  const owners = new Map<string, { linkId: string; priority: number; shared: boolean }>()
+  const paths = links.flatMap(link => {
     const path = configuredConnectionPath(link, nodes, links, platforms, hopEdges)
     if (!path) return []
     const status = statuses?.get(link.id)
     const switching = switches?.get(link.id)
-    const style = status && status !== 'UP' ? UNAVAILABLE_LINK_STYLE : LINK_TYPE_STYLES[link.type]
+    // 共用段优先显示选中和切换高亮，其次显示启用链路及正常样式。
+    const hasAbnormalStatus = status !== undefined && status !== 'UP'
+    let priority = link.enabled === false ? 0 : hasAbnormalStatus ? 1 : 2
+    if (switching) priority = 3
+    if (selectedId === link.id) priority = 4
+    for (const { key } of path.legs) {
+      const owner = owners.get(key)
+      if (!owner || priority > owner.priority) owners.set(key, { linkId: link.id, priority, shared: !!owner })
+      else owner.shared = true
+    }
+    return [{ link, path, status, switching }]
+  })
+  renderConnections(group, paths.flatMap(({ link, path, status, switching }) => {
+    const legs = path.legs.filter(leg => owners.get(leg.key)?.linkId === link.id)
+    const lastLeg = legs.at(-1)
+    if (!lastLeg) return []
+    const points = legs.flatMap((leg, index) => index === 0 ? leg.points : leg.points.slice(1))
+    const shared = legs.some(leg => owners.get(leg.key)?.shared)
+    const style = status === 'DOWN' ? DOWN_LINK_STYLE : status && status !== 'UP' ? UNAVAILABLE_LINK_STYLE : LINK_TYPE_STYLES[link.type]
+    const selected = selectedId === link.id
+    const linkName = `${link.id} · ${LINK_TYPE_LABELS[link.type]}`
+    const routeLabel = path.nodeNames.join(' → ')
+    const fullPath = link.hover?.path
     return [{
-      id: `configured:${link.id}`, points: path.points, hitPoint: path.hitPoint,
-      name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${path.routeLabel}；配置${link.enabled === false ? '停用' : '启用'}；${status ? `质量判定：${LINK_STATUS_LABELS[status]}` : '暂无运行数据'}${switching ? `；最近一次切换${switching === 'BEFORE' ? '前' : switching === 'AFTER' ? '后' : '前后'}路径已唯一关联` : ''}`,
-      // 仅叠加高亮，不覆盖异常红色或四类体制线型。
-      style: { ...style, weight: selectedId === link.id ? 5 : switching ? 4 : 3, opacity: link.enabled === false ? 0.35 : 0.85,
-        className: `situation-map-configured-link${switching ? ` situation-map-link--switch-${switching.toLowerCase()}` : ''}` },
+      id: `configured:${link.id}`, points, hitPoint: lastLeg.points[Math.floor(lastLeg.points.length / 2)]!,
+      tooltipText: linkHoverText(linkName, fullPath?.platformIds.map(id => platforms.get(id)?.name ?? id).join(' → ') ?? routeLabel, {
+        ...fullPath?.quality,
+        direction: link.direction,
+        segmentMargin: segmentHoverMetric(link.hover?.segments, path.nodeNames, 'marginDb', ' dB'),
+        segmentDelay: segmentHoverMetric(link.hover?.segments, path.nodeNames, 'delayMs', ' ms'),
+        distanceM: fullPath ? fullPath.distanceM : link.distanceM,
+      }),
+      name: `${shared ? '共用连线 · ' : ''}${linkName} · ${routeLabel}；配置${link.enabled === false ? '停用' : '启用'}；${status ? `质量判定：${LINK_STATUS_LABELS[status]}` : '暂无运行数据'}${switching ? `；最近一次切换${switching === 'BEFORE' ? '前' : switching === 'AFTER' ? '后' : '前后'}路径已唯一关联` : ''}`,
+      // 仅叠加高亮，不覆盖异常红色或四类体制线型；区分切出旧链与切入新链。
+      style: {
+        ...style,
+        ...(switching === 'BEFORE' ? { dashArray: '6 6' } : {}),
+        weight: selected ? 5 : switching === 'AFTER' ? 5 : switching === 'BOTH' ? 4 : 3,
+        opacity: link.enabled === false ? 0.35 : switching === 'BEFORE' ? 0.55 : switching === 'AFTER' ? 1 : 0.85,
+        className: `situation-map-configured-link${switching ? ` situation-map-link--switch-${switching.toLowerCase()}` : ''}`,
+      },
+      badge: switching === 'AFTER' ? { text: '已切换', variant: 'switch-after' }
+        : switching === 'BEFORE' ? { text: '已切出', variant: 'switch-before' }
+          : switching === 'BOTH' ? { text: '重路由', variant: 'switch-after' }
+            : status === 'DOWN' ? { text: '✕ 中断', variant: 'down' }
+              : status === 'DEGRADED' ? { text: '⚡ 受扰', variant: 'degraded' }
+                : undefined,
       hitClass: 'situation-map-configured-link-hit', select: () => onSelect(link),
     }]
   }))
@@ -1608,13 +1851,24 @@ function renderMessageLinks(group: L.LayerGroup, nodes: SituationMapNode[], link
   onSelect: (link: FileMessageLink) => void, flowGroup?: L.LayerGroup,
   pulses?: ReadonlyMap<string, FileMessagePulse>, playback?: FileLinkPlayback): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
-  renderConnections(group, links.flatMap(link => {
+  const drawings: ConnectionDrawing[] = []
+  const flowSpecs: FlowSpec[] = []
+  const flowLaneInputs: FlowLaneCurveInput[] = []
+  const linkMeta: Array<{
+    link: FileMessageLink
+    source: SituationMapNode
+    target: SituationMapNode
+    points: L.LatLngTuple[]
+    buckets: Array<FileMessageDirection | 'UNKNOWN'>
+  }> = []
+
+  for (const link of links) {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
-    if (!source || !target) return []
+    if (!source || !target) continue
     const points = sampleConnectionCurve(source, target, messageLinkCurveOffset(link, links), nodes)
     const directionLabel = link.direction ? FILE_MESSAGE_DIRECTION_LABELS[link.direction] : ''
-    return [{
+    drawings.push({
       id: `message:${link.id}`,
       points,
       name: `${directionLabel ? `${directionLabel} · ` : ''}${FILE_COMMUNICATION_LABELS[link.type]}业务：${source.name} → ${target.name}；${link.messageCount} 条投递；${link.firstTimeS}–${link.lastTimeS} 秒`,
@@ -1625,10 +1879,100 @@ function renderMessageLinks(group: L.LayerGroup, nodes: SituationMapNode[], link
       hitClass: 'situation-map-message-link-hit',
       select: () => onSelect(link),
       arrow: curveArrow(points),
-      flow: { ...LINK_FLOW_STYLE, color: arrowColor(FILE_LINK_TYPE_STYLES[link.type]) },
-      pulseId: pulses?.get(link.id)?.eventId, playback,
-    }]
-  }), flowGroup)
+    })
+
+    const bucketSet = new Set<FileMessageDirection | 'UNKNOWN'>()
+    for (const record of link.records) bucketSet.add(readSingleMessageDirection(record.messageType) ?? 'UNKNOWN')
+    const buckets = bucketSet.size > 0 ? [...bucketSet].sort() : ['UNKNOWN' as const]
+    linkMeta.push({ link, source, target, points, buckets })
+    for (const dirKey of buckets) {
+      flowLaneInputs.push({
+        sourcePlatformId: link.sourcePlatformId,
+        targetPlatformId: link.targetPlatformId,
+        type: link.type,
+        directionKey: dirKey,
+      })
+    }
+  }
+
+  for (const meta of linkMeta) {
+    const { link, source, target, points, buckets } = meta
+    if (buckets.length <= 1) {
+      const pulse = pulses?.get(link.id)
+      flowSpecs.push({
+        id: `message:${link.id}`,
+        points,
+        flow: { ...LINK_FLOW_STYLE, color: arrowColor(FILE_LINK_TYPE_STYLES[link.type]) },
+        pulseId: pulse?.eventId,
+        playback,
+      })
+      continue
+    }
+    for (const dirKey of buckets) {
+      const pulseKey = `${link.id}|${dirKey}`
+      const pulse = pulses?.get(pulseKey)
+      const lanePoints = sampleConnectionCurve(
+        source,
+        target,
+        flowLaneCurveOffset(
+          { sourcePlatformId: link.sourcePlatformId, targetPlatformId: link.targetPlatformId, type: link.type, directionKey: dirKey },
+          flowLaneInputs,
+        ),
+        nodes,
+      )
+      flowSpecs.push({
+        id: `message:${pulseKey}`,
+        points: lanePoints,
+        flow: { ...LINK_FLOW_STYLE, color: arrowColor(FILE_LINK_TYPE_STYLES[link.type]) },
+        pulseId: pulse?.eventId,
+        playback,
+      })
+    }
+  }
+
+  renderConnections(group, drawings)
+  renderFlowSpecs(flowGroup, flowSpecs)
+}
+
+/** 仅从本次仿真已配对的跳段生成动画路径，同一对节点的曲线一起计算。 */
+function collectLiveFlowPaths(
+  nodes: SituationMapNode[],
+  lanes: readonly LiveMessageFlowLane[],
+  cache: Map<string, { geometry: string; points: L.LatLngTuple[] }>,
+): LiveFlowPath[] {
+  if (lanes.length === 0) { cache.clear(); return [] }
+  const platforms = new Map(nodes.map(node => [node.platformId, node]))
+  const byPair = new Map<string, Array<FlowLaneCurveInput & { id: string; pulseId?: string }>>()
+  for (const lane of lanes) {
+    const { sourcePlatformId, targetPlatformId, id, pulseId, type } = lane
+    if (!platforms.has(sourcePlatformId) || !platforms.has(targetPlatformId)) continue
+    const pair = JSON.stringify([sourcePlatformId, targetPlatformId].sort())
+    const entry = { sourcePlatformId, targetPlatformId, id, pulseId, type, directionKey: lane.direction ?? 'UNKNOWN' }
+    const peers = byPair.get(pair)
+    if (peers) peers.push(entry)
+    else byPair.set(pair, [entry])
+  }
+
+  const used = new Set<string>()
+  const paths: LiveFlowPath[] = []
+  for (const peers of byPair.values()) {
+    for (const lane of peers) {
+      if (!lane.pulseId) continue
+      const source = platforms.get(lane.sourcePlatformId)!
+      const target = platforms.get(lane.targetPlatformId)!
+      const offset = flowLaneCurveOffset(lane, peers)
+      const geometry = JSON.stringify([pointForPlatform(source, nodes), pointForPlatform(target, nodes), offset])
+      let cached = cache.get(lane.id)
+      if (!cached || cached.geometry !== geometry) {
+        cached = { geometry, points: sampleConnectionCurve(source, target, offset, nodes) }
+        cache.set(lane.id, cached)
+      }
+      used.add(lane.id)
+      paths.push({ id: lane.id, pulseId: lane.pulseId, points: cached.points })
+    }
+  }
+  for (const id of cache.keys()) if (!used.has(id)) cache.delete(id)
+  return paths
 }
 
 /** 文件连线只表达登记关联；端点始终取本轮最新节点坐标，明细保留原始方向。 */
@@ -1659,29 +2003,32 @@ function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: 
   }))
 }
 
-const interferenceLayers = new WeakMap<L.LayerGroup, Map<string, { circle: L.Circle; selected: boolean; sourceLabel: string }>>()
+const interferenceLayers = new WeakMap<L.LayerGroup, Map<string, { circle: L.Circle; selected: boolean; active: boolean; sourceLabel: string }>>()
+const jammingPulseLayers = new WeakMap<L.LayerGroup, Map<string, L.Marker>>()
+const jammingBeamLayers = new WeakMap<L.LayerGroup, Map<string, { line: L.Polyline; geometry: string; label: string }>>()
 
 const detectionLayers = new WeakMap<L.LayerGroup, Map<string, L.Circle>>()
 
-/** 固定半径示意随文件节点移动；不依赖干扰事件，也不产生侦测结果。 */
-function renderFileDetection(group: L.LayerGroup, nodes: SituationMapNode[]): void {
+/** 固定半径或场景/引擎探测范围圈随节点移动；保持非交互，避免遮挡内部链路和干扰圈。 */
+function renderDetection(group: L.LayerGroup, frame: TelemetryFrame | null, nodes: SituationMapNode[],
+  jammers?: ConfiguredJammerRange[], engineFrame?: EngineFrameSnapshot | null, configuredLinks?: readonly SituationMapLink[]): void {
   const entries = detectionLayers.get(group) ?? new Map<string, L.Circle>()
   detectionLayers.set(group, entries)
-  const platforms = nodes.filter(node => MAP_CONFIG.fileDetectionRadiiMeters[node.platformId] !== undefined)
-  const ids = new Set(platforms.map(node => node.platformId))
+  const ranges = selectDetectionRanges(nodes, frame, jammers, engineFrame, configuredLinks)
+  const ids = new Set(ranges.map(range => range.id))
   for (const [id, circle] of entries) {
     if (!ids.has(id)) { group.removeLayer(circle); entries.delete(id) }
   }
-  for (const platform of platforms) {
-    const radius = MAP_CONFIG.fileDetectionRadiiMeters[platform.platformId]!
+  for (const range of ranges) {
+    const platform = nodes.find(node => node.platformId === range.platformId)!
     const position = pointForPlatform(platform, nodes)
-    const circle = entries.get(platform.platformId)
+    const circle = entries.get(range.id)
     if (circle) {
       if (!circle.getLatLng().equals(position)) circle.setLatLng(position)
-      if (circle.getRadius() !== radius) circle.setRadius(radius)
+      if (circle.getRadius() !== range.radiusMeters) circle.setRadius(range.radiusMeters)
     } else {
-      entries.set(platform.platformId, L.circle(position, {
-        radius, color: '#f5c542', weight: 1.5, opacity: 0.9,
+      entries.set(range.id, L.circle(position, {
+        radius: range.radiusMeters, color: '#f5c542', weight: 1.5, opacity: 0.9,
         dashArray: '8 6', fill: true, fillColor: '#f5c542', fillOpacity: 0.08,
         interactive: false, className: 'situation-map-detection',
       }).addTo(group))
@@ -1689,11 +2036,13 @@ function renderFileDetection(group: L.LayerGroup, nodes: SituationMapNode[]): vo
   }
 }
 
-/** 逐设备复用配置范围圈；不由范围推断设备启停、实测覆盖或链路质量。 */
+/** 逐设备复用配置范围圈，并按真实引擎压制状态高亮正在压制的干扰圈。 */
 function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string,
   nodes: SituationMapNode[], jammers?: ConfiguredJammerRange[], fileDeviceStates: FileDeviceEvent[] = [], engineFrame?: EngineFrameSnapshot | null): void {
-  const entries = interferenceLayers.get(group) ?? new Map<string, { circle: L.Circle; selected: boolean; sourceLabel: string }>()
+  const entries = interferenceLayers.get(group) ?? new Map<string, { circle: L.Circle; selected: boolean; active: boolean; sourceLabel: string }>()
   interferenceLayers.set(group, entries)
+
+  const { activeJammerPlatformIds } = extractActiveJammingOverlay(engineFrame, nodes)
   const ranges = selectInterferenceRanges(nodes, frame, jammers, fileDeviceStates, engineFrame)
   const ids = new Set(ranges.map(range => range.id))
   for (const [id, entry] of entries) {
@@ -1701,34 +2050,128 @@ function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, s
   }
   for (const range of ranges) {
     const platform = nodes.find(node => node.platformId === range.platformId)!
+    const position = pointForPlatform(platform, nodes)
     const selected = range.jammerId ? range.jammerId === selectedJammerId
       : frame?.platforms.find(node => node.platformId === platform.platformId)?.jammers
         .some(jammer => jammer.active && jammer.jammerId === selectedJammerId) ?? false
+    const active = activeJammerPlatformIds.has(range.platformId)
     const radius = range.radiusMeters
     const sourceLabel = interferenceRangeSource(range)
     let entry = entries.get(range.id)
-    if (entry && !entry.circle.getLatLng().equals(pointForPlatform(platform, nodes))) entry.circle.setLatLng(pointForPlatform(platform, nodes))
-    if (entry?.selected === selected && entry.circle.getRadius() === radius && entry.sourceLabel === sourceLabel) continue
-    const color = selected ? '#f5b942' : '#ff526d'
+    if (entry && !entry.circle.getLatLng().equals(position)) entry.circle.setLatLng(position)
+    if (entry?.selected === selected && entry.active === active && entry.circle.getRadius() === radius && entry.sourceLabel === sourceLabel) continue
+    const color = selected ? '#f5b942' : active ? '#ff3b5c' : '#ff526d'
+    const className = [
+      selected ? 'situation-map-interference--selected' : '',
+      active ? 'situation-map-interference--active' : '',
+    ].filter(Boolean).join(' ')
     const style: L.CircleMarkerOptions = {
-      color, weight: selected ? 4 : 1.5, opacity: selected ? 1 : 0.9, dashArray: '8 6',
-      fill: true, fillColor: color, fillOpacity: selected ? 0.2 : 0.09,
-      className: selected ? 'situation-map-interference--selected' : '', interactive: true,
+      color, weight: selected ? 4 : active ? 2.5 : 1.5, opacity: selected || active ? 1 : 0.9, dashArray: '8 6',
+      fill: true, fillColor: color, fillOpacity: selected ? 0.2 : active ? 0.16 : 0.09,
+      className, interactive: true,
     }
     if (!entry) {
-      const circle = L.circle(pointForPlatform(platform, nodes), { ...style, radius }).addTo(group)
-      entry = { circle, selected, sourceLabel }
+      const circle = L.circle(position, { ...style, radius }).addTo(group)
+      entry = { circle, selected, active, sourceLabel }
       entries.set(range.id, entry)
     } else {
       entry.circle.setRadius(radius)
       entry.circle.setStyle(style)
-      entry.circle.getElement()?.classList.toggle('situation-map-interference--selected', selected)
+      const element = entry.circle.getElement()
+      element?.classList.toggle('situation-map-interference--selected', selected)
+      element?.classList.toggle('situation-map-interference--active', active)
       entry.selected = selected
+      entry.active = active
       entry.sourceLabel = sourceLabel
     }
     const label = document.createElement('span')
-    label.textContent = `${range.jammerId ?? platform.name}：半径 ${radius / 1000} 公里（${sourceLabel}）`
+    label.textContent = `${range.jammerId ?? platform.name}：半径 ${radius / 1000} 公里（${active ? '正在压制 · ' : ''}${sourceLabel}）`
     entry.circle.unbindTooltip().bindTooltip(label, { sticky: true })
+  }
+}
+
+/** 在独立效果层绘制活跃压制脉冲环、微标与干扰射线，随干扰图层联动显隐且不混入范围圈集合。 */
+function renderJammingEffects(group: L.LayerGroup, nodes: SituationMapNode[], engineFrame?: EngineFrameSnapshot | null): void {
+  const pulses = jammingPulseLayers.get(group) ?? new Map<string, L.Marker>()
+  jammingPulseLayers.set(group, pulses)
+  const beams = jammingBeamLayers.get(group) ?? new Map<string, { line: L.Polyline; geometry: string; label: string }>()
+  jammingBeamLayers.set(group, beams)
+
+  const { activeJammerPlatformIds, beams: activeBeams } = extractActiveJammingOverlay(engineFrame, nodes)
+
+  // 活跃干扰源脉冲环与「压制中」微标
+  for (const [platformId, marker] of pulses) {
+    if (!activeJammerPlatformIds.has(platformId) || !nodes.some(node => node.platformId === platformId)) {
+      group.removeLayer(marker)
+      pulses.delete(platformId)
+    }
+  }
+  for (const platformId of activeJammerPlatformIds) {
+    const platform = nodes.find(node => node.platformId === platformId)
+    if (!platform) continue
+    const position = pointForPlatform(platform, nodes)
+    const existing = pulses.get(platformId)
+    if (existing) {
+      if (!existing.getLatLng().equals(position)) existing.setLatLng(position)
+      continue
+    }
+    const html = '<span class="situation-map-jammer-pulse__ring situation-map-jammer-pulse__ring--a"></span>'
+      + '<span class="situation-map-jammer-pulse__ring situation-map-jammer-pulse__ring--b"></span>'
+      + '<span class="situation-map-jammer-pulse__tag">压制中</span>'
+    const marker = L.marker(position, {
+      icon: L.divIcon({ html, className: 'situation-map-jammer-pulse', iconSize: [0, 0], iconAnchor: [0, 0] }),
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: 740,
+    }).addTo(group)
+    pulses.set(platformId, marker)
+  }
+
+  // 干扰源 → 受扰目标的动态红色压制射线
+  const activeBeamIds = new Set(activeBeams.map(beam => beam.id))
+  for (const [beamId, beamEntry] of beams) {
+    if (!activeBeamIds.has(beamId)) {
+      group.removeLayer(beamEntry.line)
+      beams.delete(beamId)
+    }
+  }
+  for (const beam of activeBeams) {
+    const jammerNode = nodes.find(node => node.platformId === beam.jammerPlatformId)
+    const targetNode = nodes.find(node => node.platformId === beam.targetPlatformId)
+    if (!jammerNode || !targetNode) continue
+    const points: L.LatLngTuple[] = [pointForPlatform(jammerNode, nodes), pointForPlatform(targetNode, nodes)]
+    const geometry = JSON.stringify(points)
+    const labelText = [
+      `${beam.jammerName} → ${beam.targetName} 电磁压制`,
+      beam.mode ?? '',
+      beam.lossDb !== null ? `干扰损耗 ${beam.lossDb.toFixed(1)} dB` : '',
+    ].filter(Boolean).join(' · ')
+    const existing = beams.get(beam.id)
+    if (existing) {
+      if (existing.geometry !== geometry) {
+        existing.line.setLatLngs(points)
+        existing.geometry = geometry
+      }
+      if (existing.label !== labelText) {
+        const span = document.createElement('span')
+        span.textContent = labelText
+        existing.line.unbindTooltip().bindTooltip(span, { sticky: true })
+        existing.label = labelText
+      }
+      continue
+    }
+    const span = document.createElement('span')
+    span.textContent = labelText
+    const line = L.polyline(points, {
+      color: '#ff3b5c',
+      weight: 2.5,
+      opacity: 0.9,
+      dashArray: '8 8',
+      className: 'situation-map-jamming-beam',
+      bubblingMouseEvents: false,
+      interactive: true,
+    }).bindTooltip(span, { sticky: true }).addTo(group)
+    beams.set(beam.id, { line, geometry, label: labelText })
   }
 }
 

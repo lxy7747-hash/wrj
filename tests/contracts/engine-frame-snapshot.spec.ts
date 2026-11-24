@@ -16,6 +16,44 @@ const validate = ajv.compile({ $ref: 'engine#/components/schemas/LinkMetricPaylo
 const adapt = (input: unknown = sample) => { const result = adaptEngineFrameSnapshot(input); expect(result.data).not.toBeNull(); return { ...result.data!, runId: 'RUN-ENGINE' } }
 
 describe('引擎帧归一化及合同', () => {
+  it('分别读取设备段和整条热链质量，保留单位、零值和缺测值', () => {
+    const first = sample.link_calc.links[0]!
+    const frame = adapt({ ...sample, link_calc: {
+      ...sample.link_calc,
+      links: [{ ...first, quality: { ...first.quality, delay: 3, margin_db: 0, delay_ms: '1.369' } }],
+      path_quality: [
+        { path_id: 'PATH-1', gxb_db: 9.5, ber: 1.2e-7, margin_db: 26.3, delay_ms: 1.26, rate_bps: 2356 },
+        { path_id: '', gxb_db: 'unknown', ber: 0, delay_ms: 0, rate_bps: 0 },
+      ],
+    } })
+    expect(frame.links[0]!.quality).toMatchObject({ delay: 3, marginDb: 0, delayMs: 1.369 })
+    expect(frame.pathQuality).toEqual([
+      { pathId: 'PATH-1', gxbDb: 9.5, ber: 1.2e-7, marginDb: 26.3, delayMs: 1.26, rateBps: 2356 },
+      { pathId: null, gxbDb: null, ber: 0, marginDb: null, delayMs: 0, rateBps: 0 },
+    ])
+    expect(isEngineFrameSnapshot(frame)).toBe(true)
+    expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
+
+    const invalidFrames = [
+      { ...frame, links: frame.links.map(link => ({ ...link, quality: { ...link.quality, delayMs: '1.369' } })) },
+      { ...frame, pathQuality: { pathId: 'PATH-1' } },
+      { ...frame, pathQuality: frame.pathQuality!.map(quality => ({ ...quality, rateBps: '2356' })) },
+    ]
+    for (const invalid of invalidFrames) {
+      expect(isEngineFrameSnapshot(invalid)).toBe(false)
+      expect(validate(invalid)).toBe(false)
+    }
+  })
+
+  it('旧报文继续通过适配和校验，缺测字段不补值', () => {
+    const frame = adapt()
+    expect(frame.links[0]!.quality).not.toHaveProperty('marginDb')
+    expect(frame.links[0]!.quality).not.toHaveProperty('delayMs')
+    expect(frame).not.toHaveProperty('pathQuality')
+    expect(isEngineFrameSnapshot(frame)).toBe(true)
+    expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
+  })
+
   it('保留事件新旧路径并兼容旧 pathId，新增字段可选且严格校验', () => {
     const frame = adapt({ ...sample, events: [
       { events_type: 'beyond_weitch', events_new_pathid: 'new', events_old_pathid: 'old' },
@@ -158,5 +196,61 @@ describe('引擎帧归一化及合同', () => {
     expect(isEngineFrameSnapshot(frame)).toBe(false); expect(validate(frame)).toBe(false)
     frame.links[0].quality.ber = NaN; expect(isEngineFrameSnapshot(frame)).toBe(false)
     delete frame.links[0].quality; expect(isEngineFrameSnapshot(frame)).toBe(false)
+  })
+  it('完整支持第 5 版引擎报文新增与迁移字段，并严格校验畸形值', () => {
+    const raw: any = structuredClone(sample)
+    raw.link_calc.links[0].quality.input_trace.jammers[0].frequency_ghz = 4.5
+    raw.link_calc.links[0].quality.input_trace.jammers[1].frequency_ghz = '2.5'
+    delete raw.jammer_params[0].jammer_sensor.events[0].detect_prob
+    raw.jammer_params[0].jammer_sensor.events[0].target_pos[0].detect_prob = 0.92
+    raw.jammer_params[0].jammer_sensor.events[0].target_pos[1].detect_prob = 0.85
+    delete raw.jammer_params[0].rf_jammer.mode
+    delete raw.jammer_params[0].rf_jammer.active_params.freq_band_hz
+    raw.jammer_params[0].rf_jammer.active_params.antenna_gain_dbi = 25
+    raw.jammer_params[0].rf_jammer.active_params.eirp_dbw = 30
+    raw.jammer_params[0].rf_jammer.active_params.freq_band = [
+      { frequency_ghz: 4.5, bandwidth_mhz: 10, mode: 'broadband' },
+      { frequency_ghz: 2.5, bandwidth_mhz: 20, mode: 'sweep' },
+    ]
+    raw.jammer_params[0].closed_loop[0].jam_freq_hz = 4.5
+    raw.jammer_params[0].closed_loop[1].jam_freq_hz = 2.5
+
+    const frame = adapt(raw)
+    expect(frame.links[0]!.inputTrace.jammers).toMatchObject([{ frequencyGHz: 4.5 }, { frequencyGHz: 2.5 }])
+    expect(frame.jammers[0]).toMatchObject({
+      antennaGainDbi: 25,
+      eirpDbw: 30,
+      engineMode: 'broadband',
+      frequencyHz: 4.5e9,
+      freqBands: [
+        { frequencyGHz: 4.5, bandwidthMHz: 10, mode: 'BARRAGE', engineMode: 'broadband' },
+        { frequencyGHz: 2.5, bandwidthMHz: 20, mode: 'SWEEP', engineMode: 'sweep' },
+      ],
+      detections: [{
+        probability: null,
+        targets: [{ name: 'UAV3', probability: 0.92 }, { name: 'UAV2', probability: 0.85 }],
+      }],
+      actions: [
+        { targetName: 'UAV3', jamFreqHz: 4.5, mode: 'BARRAGE' },
+        { targetName: 'UAV2', jamFreqHz: 2.5, mode: 'BARRAGE' },
+      ],
+    })
+    expect(isEngineFrameSnapshot(frame)).toBe(true)
+    expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
+
+    const mutations: Array<(v: any) => void> = [
+      v => { v.links[0].inputTrace.jammers[0].frequencyGHz = '4.5' },
+      v => { v.jammers[0].antennaGainDbi = '25' },
+      v => { v.jammers[0].eirpDbw = '30' },
+      v => { v.jammers[0].freqBands = [{ frequencyGHz: '4.5', bandwidthMHz: 10, mode: 'BARRAGE', engineMode: 'broadband' }] },
+      v => { v.jammers[0].detections[0].targets[0].probability = '0.92' },
+      v => { v.jammers[0].actions[0].jamFreqHz = '4.5' },
+    ]
+    for (const mutate of mutations) {
+      const bad = structuredClone(frame)
+      mutate(bad)
+      expect(isEngineFrameSnapshot(bad)).toBe(false)
+      expect(validate(bad)).toBe(false)
+    }
   })
 })

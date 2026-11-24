@@ -191,6 +191,9 @@ export function createTemplateScenario(): ScenarioDraft {
         environment: {
           seaState: 3,
           rainRateMmPerHour: 10,
+          rainCloudAttenuation: 'lightRain',
+          simClockSpeed: 2,
+          transmissionDistance: 300,
           multipathEnabled: true,
           rainEnabled: true,
           rainAltitudeLimitM: 3000,
@@ -245,7 +248,6 @@ export function createTemplateScenario(): ScenarioDraft {
         hotLinks: {
           forward: [['fiber_forward', 'c_forward_uav2'], ['fiber_forward', 'c_forward_uav3']],
           reverse: [['c_return_uav2', 'fiber_return'], ['c_return_uav3', 'fiber_return']],
-          endPlatformType: 'REAR_COMMAND_NODE',
         },
       },
       jammingEnabled: true,

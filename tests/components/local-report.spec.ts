@@ -10,69 +10,69 @@ import LocalReportTabs from '../../src/components/reports/LocalReportTabs.vue'
 import { useReportStore, isReport } from '../../src/stores/report'
 import { useAuthStore } from '../../src/stores/auth'
 import { isLocalReport, isLocalReportExport, localReportTables } from '../../src/features/reports/local-report'
+import { attachQualityReport } from '../../src/features/reports/quality-report'
 import { LOCAL_REPORT, LOCAL_EXPORT, LOCAL_QUALITY_REPORT } from '../fixtures/local-report'
-import type { EngineFrameArchiveSummary } from '../../src/contracts/domain-models'
-import { STEP_FIVE_REPORT } from '../fixtures/engine-frame/step-five-report'
+import type { EngineFrameArchiveSummary, LocalReportFilterResult, LocalSwitchEvent } from '../../src/contracts/domain-models'
+import type { MissionResultParameterComparison } from '../../src/features/results/mission-result'
 import { LATEST_FRAME_REPORT } from '../fixtures/engine-frame/latest-report'
 
 const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data }) }) as Response
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = '' })
-async function expand(wrapper: VueWrapper, id: 'report-details' | 'report-tools') {
-  const header = wrapper.get(`[data-testid="${id}"] .el-collapse-item__header`)
-  if (!header.classes().includes('is-active')) await header.trigger('click')
-  await flushPromises()
-}
 
 describe('本地文件报告页面与信任边界', () => {
-  it.each([true, false])('缺失指标和 CSV 显示暂无数据，保留原因与真实零值（归档：%s）', async hasArchive => {
+  it('主报告不展示运行明细，也不把内部缺失原因写成引擎故障', async () => {
     const report = structuredClone(LATEST_FRAME_REPORT)
     const evidence = report.localEvidence!
-    const archive = evidence.engineFrameArchive!
-    archive.segmentRows = [archive.segmentRows[0]!]
-    Object.assign(archive.segmentRows[0]!.segment.quality, { gxbDb: 0, ber: 0, rxPowerDbm: null, rxPowerDbw: null })
-    archive.segmentRows[0]!.segment.losses.totalDb = 0
-    if (!hasArchive) delete evidence.engineFrameArchive
     evidence.engineCsv = { sourceSha256: 'c'.repeat(64), files: [], missing: [
       { fileName: 'link_state.csv', status: 'SOURCE_MISSING', reason: '缺少接收功率。' },
     ] }
     const before = structuredClone(evidence)
     const wrapper = mount(LocalReportTabs, { props: { evidence }, global: { plugins: [ElementPlus] } })
     try {
+      expect(wrapper.find('[data-testid="report-details"]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('运行明细与来源校验')
       expect(wrapper.text()).not.toContain('引擎数据缺少')
       expect(wrapper.text()).not.toContain('部分规范 CSV 数据缺失')
-      await expand(wrapper, 'report-details')
-      await wrapper.get('#tab-引擎链路段实测').trigger('click'); await flushPromises()
-      const status = wrapper.get('[data-testid="engine-csv-status"]')
-      expect(status.text()).toContain('link_state.csv暂无数据')
-      expect(status.text()).not.toContain('SOURCE_MISSING')
-      expect(status.get('[title="缺少接收功率。"]').text()).toBe('暂无数据')
-      if (hasArchive) {
-        const cells = wrapper.get('[aria-label="引擎链路段实测明细"]').findAll('tbody tr')[0]!.findAll('.cell').map(cell => cell.text())
-        expect(cells.filter(text => text === '0')).toHaveLength(3)
-        expect(cells).toContain('暂无数据 / 暂无数据')
-      }
       expect(evidence).toEqual(before)
     } finally { wrapper.unmount() }
   })
 
-  it('默认只展开评估指标与业务页签，技术明细可展开并保留来源校验', async () => {
+  it('评估指标与业务页签直接展示，不再提供运行明细与来源校验', async () => {
     const wrapper = mount(LocalReportTabs, { attachTo: document.body, props: { evidence: LOCAL_QUALITY_REPORT.localEvidence! }, global: { plugins: [ElementPlus] } })
     try {
       await flushPromises()
       const cards = wrapper.get('[data-testid="report-metric-cards"]')
-      expect(cards.findAll('h4').map(card => card.text())).toEqual(['平均连通时长', '切换次数', '平均GXB', '平均干信比', '平均误码率', '干扰持续时长'])
+      expect(cards.findAll('h4').map(card => card.text())).toEqual(['平均连通时长', '切换次数', '平均干信比', '平均误码率', '干扰持续时长'])
       expect(cards.isVisible()).toBe(true)
-      expect(wrapper.get('.local-report-sources').isVisible()).toBe(false)
-      expect(wrapper.get('#tab-引擎链路段实测').isVisible()).toBe(false)
-      for (const title of ['汇总', '链路质量与曲线', '柱状图', '雷达图', '事件时间线', '已完成运行参数对比']) expect(wrapper.get(`#tab-${title}`).isVisible()).toBe(true)
-      await expand(wrapper, 'report-details')
-      expect(wrapper.get('.local-report-sources').isVisible()).toBe(true)
-      expect(wrapper.get('.local-report-sources').text()).toContain(LOCAL_QUALITY_REPORT.localEvidence!.eventFile.sha256)
-      expect(wrapper.get('#tab-引擎链路段实测').isVisible()).toBe(true)
+      expect(wrapper.find('[data-testid="report-details"]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('运行明细与来源校验')
+      for (const title of ['汇总', '折线图', '柱状图', '雷达图', '事件时间线']) expect(wrapper.get(`#tab-${title}`).isVisible()).toBe(true)
+      expect(wrapper.find('#tab-已完成运行参数对比').exists()).toBe(false)
     } finally { wrapper.unmount() }
   })
 
-  it('运行报告只保留一次刷新，刷新目录与报告；统计 CSV 收进排障区', async () => {
+  it('无运行日志切换事件时，链路切换事件表使用引擎帧 routing.switches', async () => {
+    const report = structuredClone(LATEST_FRAME_REPORT)
+    report.localEvidence!.engineFrameArchive!.switchRows = [{
+      engineEpoch: 0, frameId: 5, simulationTime: 5,
+      value: {
+        pathId: 'NEW-PATH', direction: 'FORWARD', sourceName: 'A', targetName: 'B',
+        sourcePlatformId: 'A', targetPlatformId: 'B', transTypes: [], nodes: [],
+        oldPathId: 'OLD-PATH', oldNodes: [], reasons: [{ linkId: 'L-1', reasons: ['ber_switch'] }],
+      },
+    }]
+    const wrapper = mount(LocalReportTabs, { props: { evidence: report.localEvidence }, global: { plugins: [ElementPlus] } })
+    try {
+      await wrapper.findAll('.el-tabs__item').find(item => item.text() === '链路切换事件')!.trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('切换-001')
+      expect(wrapper.text()).toContain('OLD-PATH')
+      expect(wrapper.text()).toContain('NEW-PATH')
+      expect(wrapper.text()).toContain('链路劣化切换')
+    } finally { wrapper.unmount() }
+  })
+
+  it('运行报告只保留一次刷新，刷新目录与报告；统计 CSV 收进数据导出菜单', async () => {
     const pinia = createPinia(); setActivePinia(pinia)
     useAuthStore().runtimeMode = 'LOCAL'
     const record = { resultId: 'RESULT-11111111-1111-4111-8111-111111111111', scenarioId: 'SCN-001', scenarioName: '运行结果', revision: 1, startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:10Z' }
@@ -84,49 +84,24 @@ describe('本地文件报告页面与信任边界', () => {
     const exportReport = vi.spyOn(store, 'requestExport').mockResolvedValue(true)
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/reports', component: ReportsPage }] })
     await router.push(`/reports?resultId=${record.resultId}`)
-    const wrapper = mount(ReportsPage, { global: { plugins: [pinia, router, ElementPlus] } })
+    const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus] } })
     try {
       await flushPromises()
       expect(load).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledOnce()
       expect(wrapper.find('[data-testid="report-source"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="report-tools"]').exists()).toBe(false)
       const refresh = wrapper.findAll('button').filter(button => /刷新|重新加载/.test(button.text()))
       expect(refresh).toHaveLength(1)
       await refresh[0]!.trigger('click'); await flushPromises()
       expect(load).toHaveBeenCalledTimes(2); expect(fetch).toHaveBeenCalledTimes(2)
       expect(wrapper.findAllComponents(ElSelect).find(select => wrapper.get('.reports-page__actions').element.contains(select.element))!.findAllComponents({ name: 'ElOption' }).map(option => option.props('value'))).toEqual(['HTML', 'PDF'])
-      const csv = wrapper.findAll('button').find(button => button.text() === '导出统计 CSV')!
-      expect(csv.isVisible()).toBe(false)
-      await expand(wrapper, 'report-tools')
-      await csv.trigger('click'); await flushPromises()
+      await wrapper.get('[data-testid="report-data-export"]').trigger('click'); await flushPromises()
+      const csvItem = document.querySelector<HTMLElement>('[data-testid="export-summary-csv"]')!
+      expect(csvItem.textContent).toContain('导出统计 CSV')
+      csvItem.click(); await flushPromises()
       expect(exportReport).toHaveBeenLastCalledWith('CSV')
       await wrapper.get('[data-testid="report-export"]').trigger('click'); await flushPromises()
       expect(exportReport).toHaveBeenLastCalledWith('HTML')
-    } finally { wrapper.unmount() }
-  })
-
-  it('最新报文的极小 BER 曲线保留变化，报表可展开全部接收参数', async () => {
-    const wrapper = mount(LocalReportTabs, { props: { evidence: LATEST_FRAME_REPORT.localEvidence }, global: { plugins: [ElementPlus] } })
-    try {
-      await expand(wrapper, 'report-details')
-      await wrapper.get('#tab-引擎链路段实测').trigger('click'); await flushPromises()
-      const chart = wrapper.findAllComponents(ReportChart).find(chart => chart.get('h4').text().includes('BER'))!
-      expect(new Set(chart.findAll('circle').map(point => point.attributes('cy'))).size).toBe(2)
-      await wrapper.findAll('.el-table__expand-icon')[1]!.trigger('click'); await flushPromises()
-      const details = wrapper.get('[data-testid="engine-segment-details"]')
-      for (const value of ['雨衰', '云衰', '44.092173718306995', '8.2', '80', '30', '-3', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '口径待确认']) expect(details.text()).toContain(value)
-    } finally { wrapper.unmount() }
-  })
-  it('引擎曲线连通5→10→15，仅在缺少20的25之前断开', async () => {
-    const wrapper = mount(LocalReportTabs, { props: { evidence: STEP_FIVE_REPORT.localEvidence }, global: { plugins: [ElementPlus] } })
-    try {
-      await expand(wrapper, 'report-details')
-    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '引擎链路段实测')!.trigger('click'); await flushPromises()
-      const charts = wrapper.findAllComponents(ReportChart).filter(chart => chart.get('h4').text().startsWith('引擎段'))
-      expect(charts).toHaveLength(2)
-      for (const chart of charts) {
-        expect(chart.findAll('polyline').map(line => line.attributes('points')!.trim().split(/\s+/).length)).toEqual([3, 1])
-        expect(chart.findAll('circle')).toHaveLength(4)
-      }
     } finally { wrapper.unmount() }
   })
 
@@ -134,24 +109,92 @@ describe('本地文件报告页面与信任边界', () => {
     const wrapper: VueWrapper = mount(LocalReportTabs, { props: { evidence: LOCAL_QUALITY_REPORT.localEvidence!, generatedTime: LOCAL_QUALITY_REPORT.generatedTime }, global: { plugins: [ElementPlus] } })
     const tabs = wrapper.findAll('.el-tabs__item').map(tab => tab.text())
     expect(tabs.indexOf('雷达图')).toBe(tabs.indexOf('柱状图') + 1)
-    await wrapper.get('#tab-链路质量与曲线').trigger('click'); await flushPromises()
-    expect(wrapper.findAllComponents(ReportChart)).toHaveLength(9)
-    expect(wrapper.findAllComponents(ReportChart).every(chart => /GXB|SNR|误码率/.test(chart.get('h4').text()))).toBe(true)
-    expect(wrapper.find('polygon').exists()).toBe(false)
+    await wrapper.get('#tab-折线图').trigger('click'); await flushPromises()
+    expect(wrapper.findAllComponents(ReportChart)).toHaveLength(5)
+    expect(wrapper.findAllComponents(ReportChart).map(chart => chart.get('h4').text())).toEqual([
+      '连通时长随时间变化（秒）', '切换次数随时间变化（次）', '干信比随时间变化（dB）', '误码率随时间变化（比率）', '干扰持续时长随时间变化（秒）',
+    ])
+    expect(wrapper.get('#pane-折线图').find('svg[aria-label*="范围 0–100%"]').exists()).toBe(false)
     await wrapper.get('#tab-柱状图').trigger('click'); await flushPromises()
     const bars = wrapper.get('[data-testid="report-bar-charts"]')
-    expect(bars.text()).toContain('scenario_events.csv · 完整快照 · 0分0秒～0分10秒')
-    expect(bars.text()).toContain(`生成时刻 ${formatDateTime(LOCAL_REPORT.generatedTime)}`)
+    expect(bars.text()).toContain('五项评估指标')
+    const panels = wrapper.findAllComponents(ReportChart).filter(chart => bars.element.contains(chart.element))
+      .map(chart => ({ ...(chart.props() as { title: string; rows: unknown[] }), text: chart.text() }))
+    expect(panels.map(chart => chart.title)).toEqual(['平均连通时长', '切换次数', '平均干信比', '平均误码率', '干扰持续时长'])
+    expect(panels.find(chart => chart.title === '切换次数')?.rows).toEqual([])
+    expect(panels.find(chart => chart.title === '干扰持续时长')?.text).toContain('暂无数据')
     await wrapper.get('#tab-雷达图').trigger('click'); await flushPromises()
     const radar = wrapper.get('[data-testid="report-radar-chart"]')
-    expect(radar.text()).toContain('quality.csv · 完整快照')
-    expect(radar.text()).toContain(`生成时刻 ${formatDateTime(LOCAL_REPORT.generatedTime)}`)
-    expect(radar.findAll('li').map(row => row.text())).toEqual(['L-1：100 %', 'L-2：0 %', 'L-3：100 %'])
+    expect(radar.text()).not.toContain('quality.csv')
+    expect(radar.text()).toContain('平均连通时长')
+    expect(radar.findAll('li')).toHaveLength(3)
+    expect(radar.findAll('li').map(item => item.text())).toContain('平均误码率：0')
     await wrapper.setProps({ preciseFilter: true, filter: { nodeId: 'A', linkId: 'L-1', stage: 'PH-1', from: 0, to: 1 } })
-    expect(radar.text()).toContain('quality.csv · 筛选范围 · 0分0秒～0分1秒 · 节点 A · 链路 L-1 · 阶段 PH-1')
+    expect(radar.text()).not.toContain('quality.csv')
     await wrapper.setProps({ evidence: LOCAL_REPORT.localEvidence })
     expect(radar.text()).toBe('暂无数据')
     wrapper.unmount()
+  })
+  it('趋势沿用实际仿真时刻，时长曲线不计未配对的末次采样', async () => {
+    const quality = LOCAL_QUALITY_REPORT.localEvidence!.quality!
+    const evidence = attachQualityReport({ ...LOCAL_REPORT, localEvidence: {
+      ...LOCAL_REPORT.localEvidence,
+      switchEvents: [{ eventId: 'SW-OBSERVED', time: 0.75, demandId: 'D-1', ruleId: null,
+        fromDeviceId: 'device-a', toDeviceId: 'device-b', fromLinkId: 'L-1', toLinkId: 'L-2', stableChecks: null }],
+    } }, { ...quality, samples: quality.samples.map(sample => ({ ...sample, time: sample.time + 0.25, interferenceActive: false })) }).localEvidence!
+    const wrapper: VueWrapper = mount(LocalReportTabs, { props: { evidence }, global: { plugins: [ElementPlus] } })
+    try {
+      await wrapper.get('#tab-折线图').trigger('click')
+      await flushPromises()
+      const getCharts = () => new Map(wrapper.findAllComponents(ReportChart).map(chart => {
+        const props = chart.props() as { title: string; rows: unknown[]; stepEnd?: boolean }
+        return [props.title, props] as const
+      }))
+      const charts = getCharts()
+      expect(charts.get('误码率随时间变化')?.rows).toMatchObject([{ time: 0.25 }, { time: 1.25 }])
+      expect(charts.get('连通时长随时间变化')?.rows).toMatchObject([{ time: 0.25, value: 2 / 3 }])
+      expect(charts.get('干扰持续时长随时间变化')?.rows).toMatchObject([{ time: 0.25, value: 0 }, { time: 1.25, value: 0 }])
+      expect(charts.get('切换次数随时间变化')).toMatchObject({
+        stepEnd: true, rows: [{ time: 0, value: 0 }, { time: 0.75, value: 1 }, { time: 10, value: 1 }],
+      })
+
+      const clipped = {
+        ...evidence, startTimeS: 0.5, endTimeS: 1, positionCount: 1, simulationComplete: false,
+        nodes: evidence.nodes.map(node => node.platformId === 'A'
+          ? { ...node, positionCount: 1, lastTimeS: 1 }
+          : { ...node, positionCount: 0, firstTimeS: 0.5, lastTimeS: 0.5 }),
+        eventCount: 0, eventCounts: [], connections: [], deviceEvents: [], switchEvents: undefined,
+        quality: { ...quality, samples: [], switchEvents: [] }, qualityKpis: { jammingDurationS: 0.5 },
+        qualityJammingDurationTrend: [{ time: 0.5, value: 0 }, { time: 1, value: 0.5 }],
+      }
+      expect(isLocalReport({ ...LOCAL_QUALITY_REPORT, localEvidence: clipped })).toBe(true)
+      await wrapper.setProps({ evidence: clipped, filter: { from: 0.5, to: 1 } })
+      await flushPromises()
+      expect(getCharts().get('干扰持续时长随时间变化')).toMatchObject({
+        xMin: 0.5, xMax: 1, scopeSummary: '0分0.5秒',
+        rows: [{ time: 0.5, value: 0 }, { time: 1, value: 0.5 }],
+      })
+    } finally { wrapper.unmount() }
+  })
+  it.each([0, 1])('引擎明细尚未加载时使用已归档的累计趋势（切换 %i 次）', async switchCount => {
+    const report = structuredClone(LOCAL_REPORT)
+    const switchCountTrend = [{ time: 0, value: 0 }, ...(switchCount ? [{ time: 4, value: 1 }] : []), { time: 10, value: switchCount }]
+    const jammingDurationTrend = [{ time: 0, value: 0 }, { time: 2, value: 1 }, { time: 6, value: 1, breakBefore: true }, { time: 8, value: 2 }]
+    report.localEvidence.engineFrameArchive = {
+      sourceSha256: 'd'.repeat(64), frameCount: 2, firstSimulationTime: 0, lastSimulationTime: 10,
+      missingFieldNames: [], detailDeferred: true, segmentRows: [], switchRows: [], eventRows: [],
+      aggregate: { uniqueSingleSegmentCount: 1, switchCount, jammingDurationS: 2, switchCountTrend, jammingDurationTrend, missing: [] },
+    }
+    expect(isLocalReport(report)).toBe(true)
+    const wrapper = mount(LocalReportTabs, { props: { evidence: report.localEvidence }, global: { plugins: [ElementPlus] } })
+    try {
+      await wrapper.get('#tab-折线图').trigger('click')
+      await flushPromises()
+      const rows = (title: string) => wrapper.findAllComponents(ReportChart)
+        .map(chart => chart.props() as { title: string; rows: unknown[] }).find(chart => chart.title === title)?.rows
+      expect(rows('切换次数随时间变化')).toMatchObject(switchCountTrend)
+      expect(rows('干扰持续时长随时间变化')).toMatchObject(jammingDurationTrend)
+    } finally { wrapper.unmount() }
   })
   it('表单编辑不改变已应用范围，非法区间仍可重置，重新加载清除旧条件', async () => {
     const pinia = createPinia(); setActivePinia(pinia)
@@ -198,6 +241,104 @@ describe('本地文件报告页面与信任边界', () => {
     expect(wrapper.get('[data-testid="report-export"]').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
+  it('精确筛选完成后各页签共用服务端数据，等待期间保留当前页签和已应用数据', async () => {
+    const before = structuredClone(LOCAL_QUALITY_REPORT)
+    const switchIn: LocalSwitchEvent = { eventId: 'SW-FILTERED', time: 1, demandId: 'D-1', ruleId: null,
+      fromDeviceId: 'device-a', toDeviceId: 'device-b', fromLinkId: 'L-1', toLinkId: 'L-2', stableChecks: null }
+    before.localEvidence!.switchEvents = [switchIn, { ...switchIn, eventId: 'SW-UNFILTERED', time: 5 }]
+    const { localEvidence } = LOCAL_REPORT
+    const filter = { linkId: 'L-2', from: 0, to: 1 }
+    const after = attachQualityReport({ ...LOCAL_REPORT, localEvidence: {
+      ...localEvidence, endTimeS: 1, positionCount: 2, nodes: localEvidence.nodes.map(node =>
+        node.platformId === 'A' ? { ...node, positionCount: 1, lastTimeS: 1 } : node),
+      eventCount: 1, eventCounts: [localEvidence.eventCounts[1]!], connections: [], switchEvents: [switchIn],
+    } }, before.localEvidence!.quality!, filter)
+    expect(isLocalReport(before)).toBe(true)
+    expect(isLocalReport(after)).toBe(true)
+    const record = { resultId: 'RESULT-11111111-1111-4111-8111-111111111111', scenarioId: 'SCN-1', scenarioName: '运行结果', revision: 1,
+      startedAt: '2026-09-20T00:00:00Z', completedAt: '2026-09-20T00:00:10Z', runId: 'RUN-1', taskId: 'TASK-1' }
+    const shownEvent = { id: 'LOG-L2', type: 'COMM_TURNED_ON', time: 0, subject: 'A' }
+    const initialFilter = { filter: {}, stages: [], links: ['L-1', 'L-2'], timelineTotal: 2,
+      timeline: [shownEvent, { id: 'LOG-L1', type: 'LINK_ADDED_TO_MANAGER', subject: 'A', target: 'B', time: 5 }] }
+    const filtered: LocalReportFilterResult = { ...initialFilter, report: after, filter, timeline: [shownEvent], timelineTotal: 1 }
+    let finishFilter!: (result: Response) => void
+    const inFlight = new Promise<Response>(resolve => { finishFilter = resolve })
+    const fetch = vi.fn().mockResolvedValueOnce(response({ record, report: before, initialFilter })).mockReturnValueOnce(inFlight)
+    vi.stubGlobal('fetch', fetch)
+    const pinia = createPinia()
+    vi.spyOn(useReportStore(pinia), 'loadEvidenceOverview').mockResolvedValue(false)
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/reports', component: ReportsPage }] })
+    await router.push('/reports?resultId=' + record.resultId)
+    const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true } } })
+    const tab = async (label: string) => { await wrapper.get('#tab-' + label).trigger('click'); await flushPromises() }
+    const charts = () => wrapper.findAllComponents(ReportChart).map(chart => ({
+      ...(chart.props() as { title: string; unit: string; radar?: boolean; scopeSummary?: string; xMin?: number; xMax?: number;
+        rows: Array<{ label: string; value: number; displayValue?: string }> }),
+      bar: chart.element.closest('#pane-柱状图') !== null,
+    }))
+    const berChart = () => charts().find(chart => chart.title === '误码率随时间变化')!
+    const cards = () => Object.fromEntries(wrapper.get('[data-testid="report-metric-cards"]').findAll('.engine-metric-card')
+      .map(card => [card.get('h4').text(), card.get('p').text()]))
+    try {
+      await flushPromises()
+      await tab('折线图')
+      expect(berChart().rows).toMatchObject([{ time: 0, value: 0.1 / 3 }, { time: 1, value: 0.1 / 3 }])
+      const form = wrapper.get('[aria-label="报告统一筛选"]')
+      wrapper.findAllComponents(ElSelect).filter(select => form.element.contains(select.element))[1]!.vm.$emit('update:modelValue', filter.linkId)
+      const inputs = wrapper.findAllComponents(ElInputNumber)
+      inputs[0]!.vm.$emit('update:modelValue', filter.from)
+      inputs[1]!.vm.$emit('update:modelValue', filter.to)
+      await flushPromises()
+      await form.findAll('button').find(button => button.text() === '应用精确筛选')!.trigger('click')
+      await flushPromises()
+      expect(fetch).toHaveBeenCalledTimes(2)
+      expect(fetch.mock.calls[1]?.[0]).toContain('linkId=L-2&from=0&to=1')
+      expect(wrapper.get('#tab-折线图').attributes('aria-selected')).toBe('true')
+      expect(wrapper.get('[data-testid="report-applied-filter"]').text()).toContain('全部数据')
+      expect(cards()['切换次数']).toBe('2')
+      expect(berChart().rows).toMatchObject([{ time: 0, value: 0.1 / 3 }, { time: 1, value: 0.1 / 3 }])
+
+      finishFilter(response(filtered))
+      await flushPromises()
+      expect(wrapper.get('#tab-折线图').attributes('aria-selected')).toBe('true')
+      expect(wrapper.get('[data-testid="report-applied-filter"]').text()).toContain('0～1 秒')
+      const filteredCards = cards()
+      expect(filteredCards).toMatchObject({ 平均连通时长: '0分0秒', 切换次数: '1', 平均误码率: '1.00e-1' })
+      expect(berChart()).toMatchObject({
+        scopeSummary: filteredCards['平均误码率'], xMin: 0, xMax: 1,
+        rows: [{ time: 0, value: 0.1 }, { time: 1, value: 0.1 }],
+      })
+
+      await tab('汇总')
+      const summary = wrapper.get('#pane-汇总').findAll('tbody tr').map(row => row.findAll('td').map(cell => cell.text()))
+      expect(summary).toContainEqual(['统计范围', '0分0秒～0分1秒'])
+      expect(summary).toContainEqual(['事件记录', '1'])
+      await tab('链路切换事件')
+      const switches = wrapper.get('#pane-链路切换事件').text()
+      expect(switches).toContain('SW-FILTERED')
+      expect(switches).not.toContain('SW-UNFILTERED')
+      await tab('柱状图')
+      await tab('雷达图')
+      const bars = charts().filter(chart => chart.bar)
+      expect(bars.map(chart => chart.unit)).toEqual(['秒', '次', 'dB', '比率', '秒'])
+      const barRows = bars.flatMap(chart => chart.rows)
+      expect(barRows).toContainEqual({ label: '平均连通时长', value: 0, displayValue: filteredCards['平均连通时长'] })
+      expect(bars.find(chart => chart.unit === '比率')?.rows).toEqual([
+        { label: '平均误码率', value: 0.1, displayValue: filteredCards['平均误码率'] },
+      ])
+      expect(bars.find(chart => chart.unit === '次')?.rows).toEqual([
+        { label: '切换次数', value: 1, displayValue: filteredCards['切换次数'] },
+      ])
+      const radarRows = charts().find(chart => chart.radar)!.rows
+      expect(radarRows).toContainEqual({ label: '切换次数', value: 95 })
+      expect(radarRows).toContainEqual({ label: '平均误码率', value: 0 })
+      await tab('事件时间线')
+      const timeline = wrapper.get('[data-testid="report-event-timeline"]').text()
+      expect(timeline).toContain('LOG-L2')
+      expect(timeline).not.toContain('LOG-L1')
+    } finally { wrapper.unmount() }
+  })
+
   it('精确筛选时间线非空时不显示空态，柱图声明筛选范围', async () => {
     const wrapper = mount(LocalReportTabs, { props: { evidence: LOCAL_REPORT.localEvidence, preciseFilter: true,
       timeline: [{ id: 'LOG-L1', time: 5, type: 'LINK_ADDED_TO_MANAGER', subject: 'A', target: 'B' }], timelineTotal: 1 },
@@ -208,7 +349,7 @@ describe('本地文件报告页面与信任边界', () => {
     expect(wrapper.findAll('.el-empty').some(empty => empty.text().includes('暂无符合条件的数据'))).toBe(false)
     await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '柱状图')!.trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('筛选范围事件记录数')
+    expect(wrapper.text()).toContain('五项评估指标')
     wrapper.unmount()
   })
   it('把已导入质量切换合并到时间线，并保留方向、原因和文件来源', async () => {
@@ -280,20 +421,13 @@ describe('本地文件报告页面与信任边界', () => {
     } })
     const wrapper = mount(LocalReportTabs, { props: { evidence: report.localEvidence }, global: { plugins: [ElementPlus] } })
     const cards = wrapper.get('[data-testid="report-metric-cards"]')
-    expect(cards.text()).toContain('平均GXB')
+    expect(cards.text()).not.toContain('平均GXB')
     expect(cards.text()).not.toContain('唯一单段有效样本')
-    expect(cards.text()).toContain('4.25 dB（唯一单段实测）')
     expect(cards.text()).toContain('2.50e-3')
     expect(cards.text()).toContain('3（引擎实际记录）')
     expect(wrapper.get('[data-testid="engine-archive-truncated"]').isVisible()).toBe(true)
-    await expand(wrapper, 'report-details')
-    expect(wrapper.get('[aria-label="运行统计明细"]').text()).toContain('2 条')
-    expect(wrapper.text()).toContain('引擎完整流平均GXB')
-    expect(wrapper.text()).toContain('引擎路由切换记录')
-    await expand(wrapper, 'report-details')
-    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '引擎链路段实测')!.trigger('click'); await flushPromises()
     expect(wrapper.get('[data-testid="engine-archive-truncated"]').text()).toContain('汇总仍包含完整归档')
-    expect(wrapper.text()).toContain('非全量统计')
+    expect(wrapper.find('[data-testid="report-details"]').exists()).toBe(false)
     await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '事件时间线')!.trigger('click'); await flushPromises()
     const timeline = wrapper.get('[data-testid="report-event-timeline"]')
     expect(timeline.text()).toContain('引擎路径切换')
@@ -323,10 +457,8 @@ describe('本地文件报告页面与信任边界', () => {
     await router.push('/reports'); await router.isReady()
     const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true } } })
     await flushPromises()
-    expect(wrapper.get('[data-testid="engine-frame-archive-download"]').isVisible()).toBe(false)
-    await expand(wrapper, 'report-tools')
-    expect(wrapper.get('[data-testid="engine-frame-archive-download"]').isVisible()).toBe(true)
-    await wrapper.get('[data-testid="engine-frame-archive-download"]').trigger('click'); await flushPromises()
+    await wrapper.get('[data-testid="report-data-export"]').trigger('click'); await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="engine-frame-archive-download"]')!.click(); await flushPromises()
     expect(fetch.mock.calls[0]![0]).toContain(`/api/v1/mission-results/${record.resultId}/engine-frames/${'b'.repeat(64)}`)
     expect(click).toHaveBeenCalledOnce(); expect(createUrl).toHaveBeenCalledOnce()
     wrapper.unmount()
@@ -349,11 +481,8 @@ describe('本地文件报告页面与信任边界', () => {
     await router.push('/reports'); await router.isReady()
     const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true } } })
     await flushPromises()
-    await expand(wrapper, 'report-details')
-    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '引擎链路段实测')!.trigger('click'); await flushPromises()
-    expect(wrapper.text()).toContain('PARTIAL · 12 行；跳过 2 行')
-    await expand(wrapper, 'report-tools')
-    await wrapper.get('[data-testid="engine-csv-download"]').trigger('click'); await flushPromises()
+    await wrapper.get('[data-testid="report-data-export"]').trigger('click'); await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="engine-csv-download"]')!.click(); await flushPromises()
     expect(fetch.mock.calls[0]![0]).toContain(`/api/v1/mission-results/${record.resultId}/engine-csv/link_state.csv`)
     expect(click).toHaveBeenCalledOnce(); expect(createUrl).toHaveBeenCalledOnce()
     wrapper.unmount()
@@ -397,11 +526,10 @@ describe('本地文件报告页面与信任边界', () => {
     const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus] } })
     await flushPromises()
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(wrapper.text()).toContain('scenario_events.csv')
     expect(wrapper.get('[data-testid="report-export"]').text()).toBe('导出报告')
     expect(wrapper.text()).not.toContain('来源为本地 CSV 快照；未绑定场景或运行编号。')
     expect(wrapper.text()).toContain('0分10秒')
-    await expand(wrapper, 'report-details')
+    expect(wrapper.find('[data-testid="report-details"]').exists()).toBe(false)
     for (const tab of wrapper.findAll('.el-tabs__item')) { await tab.trigger('click'); await flushPromises() }
     expect(wrapper.text()).toContain('暂无数据')
     // 链路质量曲线无测量时只显示暂无数据；汇总按大纲列出评估指标，缺数据同样显示暂无数据。
@@ -463,18 +591,138 @@ describe('本地文件报告页面与信任边界', () => {
     partial.simulationComplete = false; partial.waitingForPositionLine = true; partial.nodes[0]!.positionCount = 0
     expect(JSON.stringify(localReportTables(partial))).toContain('当前快照')
   })
-  it.each([undefined, 'PROJECT_REFERENCE'] as const)('展示冻结的已保存参数并注明来源 %s，不补造质量指标', async source => {
-    const wrapper = mount(LocalReportTabs, { props: { evidence: LOCAL_REPORT.localEvidence, comparison: [{
+  it.each([undefined, 'PROJECT_REFERENCE'] as const)('弹窗展示已保存参数、可读时间和配置来源 %s', async source => {
+    const links = [
+      { id: 'L-1', type: 'MICROWAVE' },
+      { id: 'fiber_forward', type: 'FIBER' },
+      { id: 'fiber_return', type: 'FIBER' },
+      { id: 'c_forward_command_relay', type: 'DATALINK' },
+    ].map(link => ({ ...link, frequencyMHz: 8200, bandwidthMHz: 30, txPowerW: 45 }))
+    const jammers = ['J-1', 'ground_jammer', 'airborne_jammer']
+      .map(id => ({ id, frequencyMHz: 2400, bandwidthMHz: 50, defaultPowerW: 200 }))
+    const current: MissionResultParameterComparison = {
       record: { resultId: 'RESULT-00000000-0000-0000-0000-000000000001', scenarioId: 'SCN-001', scenarioName: '参数对比', revision: 2, startedAt: '2026-09-20T00:00:00Z', completedAt: '2026-09-20T00:01:00Z' },
-      parameters: { source, scenarioId: 'SCN-001', revision: 2, platformCount: 2, linkCount: 1, jammerCount: 1,
-        links: [{ id: 'L-1', type: 'MICROWAVE', frequencyMHz: 8200, bandwidthMHz: 30, txPowerW: 45 }],
-        jammers: [{ id: 'J-1', frequencyMHz: 2400, bandwidthMHz: 50, defaultPowerW: 200 }] },
-    }] }, global: { plugins: [ElementPlus] } })
-    await wrapper.findAll('.el-tabs__item').find(tab => tab.text().includes('已完成运行参数对比'))!.trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[data-testid="completed-result-parameter-comparison"]').text()).toContain('8200MHz/30MHz/45W')
-    expect(wrapper.text()).toContain('测量指标以实际归档数据为准')
-    expect(wrapper.get('[data-testid="completed-result-parameter-comparison"]').text()).toContain(source ? 'SCN-001 · 项目参考配置，未确认引擎实际执行版本' : 'SCN-001 · 运行配置快照')
-    wrapper.unmount()
+      parameters: { source, scenarioId: 'SCN-001', revision: 2, platformCount: 2, linkCount: links.length, jammerCount: jammers.length, links, jammers },
+    }
+    const historicalResultId = 'RESULT-00000000-0000-0000-0000-000000000002'
+    const historical = {
+      record: { ...current.record, resultId: historicalResultId, scenarioId: 'SCN-002' },
+      parameters: { ...current.parameters, scenarioId: 'SCN-002', linkCount: 0, jammerCount: 0, links: [], jammers: [] },
+    }
+    const wrapper = mount(LocalReportTabs, {
+      attachTo: document.body,
+      props: { evidence: LOCAL_REPORT.localEvidence, currentResultId: current.record.resultId, comparison: [historical, current] },
+      global: { plugins: [ElementPlus] },
+    })
+    try {
+      const trigger = wrapper.get('.report-summary-actions').get('[data-testid="report-parameter-comparison"]')
+      expect(trigger.text()).toBe('运行参数对比')
+      expect(document.querySelector('[role="dialog"][aria-label="运行参数对比"] .el-dialog')).toBeNull()
+      await trigger.trigger('click')
+      await flushPromises()
+      const dialog = document.querySelector('[role="dialog"][aria-label="运行参数对比"]')
+      const full = dialog?.querySelector<HTMLDetailsElement>('[data-testid="run-parameter-full"]')
+      expect(full?.open).toBe(true)
+      const table = full?.querySelector('[data-testid="completed-result-parameter-comparison"]')
+      const rows = [...(table?.querySelectorAll('tbody > tr') ?? [])].map(row => row.textContent ?? '')
+      expect(rows.find(row => row.includes(current.record.resultId))).toContain('本次运行')
+      const historyRow = rows.find(row => row.includes(historicalResultId))
+      expect(historyRow).toContain('历史运行')
+      expect(historyRow).toContain('无链路参数')
+      expect(historyRow).toContain('无干扰机参数')
+      expect(table?.textContent).toContain(formatDateTime(current.record.completedAt))
+      const items = [...(table?.querySelectorAll('li') ?? [])]
+      for (const [id, title] of [
+        ['fiber_forward', '光纤链路 · 前向'],
+        ['fiber_return', '光纤链路 · 返向'],
+        ['c_forward_command_relay', 'C 波段数传链路 · 前向 · 指挥车与中继节点'],
+        ['ground_jammer', '地面干扰机'],
+        ['airborne_jammer', '机载干扰机'],
+        ['L-1', '微波链路 1'],
+        ['J-1', '干扰机 1'],
+      ]) {
+        const item = items.find(element => element.textContent?.includes('编号 ' + id))
+        expect(item?.querySelector('strong')?.textContent).toBe(title)
+      }
+      for (const parameter of ['频率 8200 MHz', '带宽 30 MHz', '发射功率 45 W', '默认功率 200 W']) {
+        expect(table?.textContent).toContain(parameter)
+      }
+      expect(table?.textContent).toContain(source ? '项目参考配置' : '运行时保存的配置')
+      if (source) expect(table?.textContent).toContain('未确认引擎实际执行版本')
+    } finally { wrapper.unmount() }
+  })
+  it('并排比较同场景最近运行，可显示全部参数及切换对照', async () => {
+    const snapshot = (id: string, completedAt: string, platformCount: number, scenarioId = 'SCN-001'): MissionResultParameterComparison => ({
+      record: {
+        resultId: id, scenarioId: 'SCN-FILE', scenarioName: '文件接收', revision: 1, startedAt: '2026-09-20T00:00:00Z',
+        completedAt, executionSource: 'REMOTE_WS', runId: 'RUN-001', taskId: 'TASK-001',
+      },
+      parameters: { source: 'PROJECT_REFERENCE', scenarioId, revision: 1, platformCount, linkCount: 0, jammerCount: 0, links: [], jammers: [] },
+    })
+    const current = snapshot('RESULT-00000000-0000-0000-0000-000000000001', '2026-09-20T00:04:00Z', 5)
+    const same = snapshot('RESULT-00000000-0000-0000-0000-000000000002', '2026-09-20T00:01:00Z', 5)
+    const recent = snapshot('RESULT-00000000-0000-0000-0000-000000000003', '2026-09-20T00:02:00Z', 4)
+    const unrelated = snapshot('RESULT-00000000-0000-0000-0000-000000000004', '2026-09-20T00:03:00Z', 3, 'SCN-002')
+    const wrapper: VueWrapper = mount(LocalReportTabs, {
+      attachTo: document.body,
+      props: { evidence: LOCAL_REPORT.localEvidence, currentResultId: current.record.resultId, comparison: [current] },
+      global: { plugins: [ElementPlus] },
+    })
+    try {
+      await wrapper.get('[data-testid="report-parameter-comparison"]').trigger('click')
+      await flushPromises()
+      const dialog = document.querySelector('[role="dialog"][aria-label="运行参数对比"]')
+      const status = () => dialog?.querySelector('[data-testid="run-parameter-difference-status"]')?.textContent
+      const differences = () => dialog?.querySelector('[data-testid="run-parameter-differences"]')
+      expect(status()).toContain('没有同场景的历史参数快照可对比。')
+      expect(dialog?.querySelector<HTMLDetailsElement>('[data-testid="run-parameter-full"]')?.open).toBe(true)
+
+      await wrapper.setProps({ comparison: [same, unrelated, current, recent] })
+      await flushPromises()
+      const select = wrapper.findAllComponents(ElSelect).find(item => item.attributes('data-testid') === 'run-parameter-history')!
+      expect(select.props('modelValue')).toBe(recent.record.resultId)
+      const values = select.findAllComponents({ name: 'ElOption' }).map(option => option.props('value'))
+      expect(values).toHaveLength(2)
+      expect(values).toContain(same.record.resultId)
+      expect(values).not.toContain(unrelated.record.resultId)
+      expect(status()).toContain('共 1 项差异')
+      const reference = () => differences()?.querySelector('th[data-testid="run-parameter-reference"]')?.textContent
+      const selected = differences()?.querySelector('th[data-testid="run-parameter-current"]')?.textContent
+      expect(differences()?.querySelectorAll('thead th')).toHaveLength(2)
+      for (const [info, title, run] of [[reference(), '对照运行', recent], [selected, '本次运行', current]] as const) {
+        expect(info).toContain(title)
+        expect(info).toContain(run.record.resultId)
+        expect(info).toContain(formatDateTime(run.record.completedAt))
+        expect(info).toContain('项目参考配置')
+      }
+      const rows = () => [...(differences()?.querySelectorAll<HTMLTableRowElement>('tbody tr') ?? [])]
+      expect(rows()).toHaveLength(1)
+      const cells = [...rows()[0]!.cells]
+      expect(cells).toHaveLength(2)
+      expect(cells.every(cell => cell.textContent?.includes('节点数'))).toBe(true)
+      expect(cells.map(cell => cell.querySelector('.comparison-value')?.textContent?.trim())).toEqual(['4', '5'])
+      expect(dialog?.querySelector('[data-testid="run-parameter-full"]')).toBeNull()
+
+      const showAll = [...(dialog?.querySelectorAll('label') ?? [])].find(label => label.textContent?.includes('显示全部参数'))
+        ?.querySelector<HTMLInputElement>('input[type="checkbox"]')
+      expect(showAll?.checked).toBe(false)
+      showAll?.click()
+      await flushPromises()
+      const unchanged = rows().find(row => row.textContent?.includes('链路数'))
+      expect([...(unchanged?.cells ?? [])].map(cell => cell.querySelector('.comparison-value')?.textContent?.trim())).toEqual(['0', '0'])
+      expect(rows().every(row => row.cells.length === 2)).toBe(true)
+      showAll?.click()
+      await flushPromises()
+      expect(rows()).toHaveLength(1)
+
+      select.vm.$emit('update:modelValue', same.record.resultId)
+      await flushPromises()
+      expect(status()).toContain('两次运行的参数对比项一致。')
+      expect(reference()).toContain(same.record.resultId)
+      expect(rows()).toHaveLength(0)
+
+      await wrapper.setProps({ comparison: [same] })
+      expect(status()).toContain('本次运行未保存参数快照，无法对比。')
+    } finally { wrapper.unmount() }
   })
 })

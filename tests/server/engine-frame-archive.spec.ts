@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import sample from '../fixtures/engine-frame/params_check.json'
 import newSample from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
 import { LOCAL_REPORT } from '../fixtures/local-report'
+import { LOCAL_REPORT_TRENDS_ACCEPT } from '../../src/features/reports/local-report'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 const { mkdtemp, rm, mkdir, readdir, open } = await import('node:' + 'fs/promises')
 const { readFile, writeFile } = await import('node:' + 'fs/promises')
@@ -234,6 +235,120 @@ describe('引擎帧可靠归档', () => {
     await writeFile(path, 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,LinkType,LinkStatus,GXB,BER,ReceivedPower\r\n', 'utf8')
     expect(await archive.getCsvFile('RUN-ARCHIVE', evidence.sourceSha256, 'link_state.csv')).toBeNull()
   })
+  it('按连续引擎帧计算平均连通时长和干扰持续时长，单帧不推算', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-archive-')); roots.push(root)
+    const archive = createEngineFrameArchive(root, () => '2026-11-07T00:00:00Z')
+    const scope = { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-07T00:00:00Z' }
+    const session = await archive.begin(scope, { 'L-1': { type: 'MICROWAVE', sourcePlatformId: 'A', targetPlatformId: 'B' } })
+    const first = frame(5), second = frame(10)
+    for (const item of [first, second]) {
+      Object.assign(item.links[0]!, { linkIds: ['L-1'], sourcePlatformId: 'A', targetPlatformId: 'B', status: 'UP' })
+      item.jammers.forEach(jammer => { jammer.deviceStatus = 'ON' })
+    }
+    session.append(first); session.append(second); await session.close()
+    await expect(archive.aggregate('RUN-ARCHIVE', scope, {}, { start: 5, end: 10 })).resolves.toMatchObject({
+      averageConnectedDurationS: 5, jammingDurationS: 5, missing: [],
+    })
+    await expect(archive.aggregate('RUN-ARCHIVE', scope, {}, { start: 5, end: 5 })).resolves.toMatchObject({
+      missing: ['connectivityDurationS', 'interferenceDurationS'],
+    })
+  })
+
+  it('节点和链路时长只用所选范围的归档证据，区分明确为零与未记录', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-archive-')); roots.push(root)
+    const archive = createEngineFrameArchive(root, () => '2026-11-07T00:00:00Z')
+    const scope = { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-07T00:00:00Z' }
+    const session = await archive.begin(scope, {
+      'L-1': { type: 'MICROWAVE', sourcePlatformId: 'A', relayPlatformId: 'B', targetPlatformId: 'C' },
+      'L-2': { type: 'MICROWAVE', sourcePlatformId: 'D', targetPlatformId: 'E' },
+    })
+    for (const time of [5, 10]) {
+      const item = frame(time)
+      const segment = item.links[0]!
+      const jammer = item.jammers[0]!
+      const noTrace = { ...segment.inputTrace, jammers: [] }
+      item.links = [
+        { ...segment, linkId: 'SEG-1', linkIds: ['L-1'], sourcePlatformId: 'A', targetPlatformId: 'B', status: 'UP',
+          inputTrace: { ...noTrace, jammers: [{ platformId: 'A', jammerName: null, distanceM: null, eirpDbw: null, lossDb: null }] } },
+        { ...segment, linkId: 'SEG-2', linkIds: ['L-1'], sourcePlatformId: 'B', targetPlatformId: 'C', status: 'DOWN', inputTrace: noTrace },
+        { ...segment, linkId: 'SEG-3', linkIds: ['L-2'], sourcePlatformId: 'D', targetPlatformId: 'E', status: 'UP', inputTrace: noTrace },
+      ]
+      item.jammers = [
+        { ...jammer, platformId: 'A', deviceStatus: 'OFF' },
+        { ...jammer, platformId: 'Z', deviceStatus: 'ON' },
+      ]
+      await session.append(item)
+    }
+    await session.close()
+
+    const timeRange = { start: 5, end: 10 }
+    await expect(archive.aggregate(scope.runId, scope, {}, timeRange)).resolves.toMatchObject({
+      averageConnectedDurationS: 2.5, jammingDurationS: 5, missing: [],
+    })
+    await expect(archive.loadWithAggregate!(scope.runId, scope, { ...timeRange, nodeId: 'A' })).resolves.toMatchObject({
+      aggregate: { averageConnectedDurationS: 0, jammingDurationS: 0, missing: [] },
+    })
+    await expect(archive.aggregate(scope.runId, scope, {}, { ...timeRange, linkId: 'L-1' })).resolves.toMatchObject({
+      averageConnectedDurationS: 0, jammingDurationS: 0, missing: [],
+    })
+    const unassociated = await archive.aggregate(scope.runId, scope, {}, { ...timeRange, linkId: 'L-2' })
+    expect(unassociated).toMatchObject({ averageConnectedDurationS: 5, missing: ['interferenceDurationS'] })
+    expect(unassociated).not.toHaveProperty('jammingDurationS')
+    const noMatch = await archive.aggregate(scope.runId, scope, {}, { ...timeRange, nodeId: 'F' })
+    expect(noMatch).toMatchObject({ missing: ['connectivityDurationS', 'interferenceDurationS'] })
+    expect(noMatch).not.toHaveProperty('averageConnectedDurationS')
+    expect(noMatch).not.toHaveProperty('jammingDurationS')
+  })
+
+  it('累计曲线使用实际归档时刻，保持缺测断点并与当前范围统计一致', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-trends-')); roots.push(root)
+    const archive = createEngineFrameArchive(root, () => '2026-11-07T00:00:00Z')
+    const scope = { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-07T00:00:00Z' }
+    const session = await archive.begin(scope)
+    const selectedSwitch = {
+      pathId: 'P-A', direction: 'FORWARD' as const, sourceName: null, targetName: null,
+      sourcePlatformId: 'A', targetPlatformId: 'B', transTypes: [], nodes: [], oldPathId: null, oldNodes: [],
+      reasons: [{ linkId: 'L-A', reasons: [] }],
+    }
+    for (const [time, status] of [[5, 'ON'], [10, 'OFF'], [15, null], [20, 'ON'], [30, 'OFF'], [35, 'ON'], [40, 'OFF'], [45, 'OFF'], [50, 'OFF']] as const) {
+      const item = frame(time)
+      item.links = []
+      item.jammers = [{ ...item.jammers[0]!, platformId: 'A', deviceStatus: status }]
+      item.routing.switches = time === 10
+        ? [selectedSwitch, { ...selectedSwitch, pathId: 'P-B', sourcePlatformId: 'C', reasons: [{ linkId: 'L-B', reasons: [] }] }]
+        : time === 35 ? [selectedSwitch] : []
+      await session.append(item)
+    }
+    await session.close()
+
+    await expect(archive.aggregate(scope.runId, scope, {}, { start: 5, end: 40, nodeId: 'A' })).resolves.toMatchObject({
+      switchCount: 2, jammingDurationS: 10,
+      switchCountTrend: [{ time: 5, value: 0 }, { time: 10, value: 1 }, { time: 35, value: 2 }, { time: 40, value: 2 }],
+      jammingDurationTrend: [
+        { time: 5, value: 0 }, { time: 10, value: 5 }, { time: 15, value: 5 },
+        { time: 30, value: 5, breakBefore: true }, { time: 35, value: 5 }, { time: 40, value: 10 },
+      ],
+    })
+    await expect(archive.aggregate(scope.runId, scope, {}, { start: 5, end: 40 })).resolves.toMatchObject({
+      switchCount: 3,
+      switchCountTrend: [{ time: 5, value: 0 }, { time: 10, value: 2 }, { time: 35, value: 3 }, { time: 40, value: 3 }],
+    })
+    const single = await archive.aggregate(scope.runId, scope, {}, { start: 5, end: 10, includeEnd: false })
+    expect(single?.switchCountTrend).toEqual([{ time: 5, value: 0 }])
+    expect(single).not.toHaveProperty('jammingDurationTrend')
+    const unknown = await archive.aggregate(scope.runId, scope, {}, { start: 15, end: 20 })
+    expect(unknown?.missing).toContain('interferenceDurationS')
+    expect(unknown).not.toHaveProperty('jammingDurationS')
+    expect(unknown).not.toHaveProperty('jammingDurationTrend')
+    await expect(archive.aggregate(scope.runId, scope, {}, { start: 40, end: 50 })).resolves.toMatchObject({
+      switchCountTrend: [{ time: 40, value: 0 }, { time: 50, value: 0 }],
+      jammingDurationS: 0, jammingDurationTrend: [{ time: 40, value: 0 }, { time: 50, value: 0 }],
+    })
+    const empty = await archive.aggregate(scope.runId, scope, {}, { start: 51, end: 60 })
+    expect(empty).not.toHaveProperty('switchCountTrend')
+    expect(empty).not.toHaveProperty('jammingDurationTrend')
+  })
+
   it('多段或链路错误不冒充唯一逻辑链路，并按完整归档的筛选范围计算汇总', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-engine-archive-')); roots.push(root)
     const archive = createEngineFrameArchive(root, () => '2026-11-07T00:00:00Z', { maxReportRows: 1 })
@@ -271,6 +386,67 @@ describe('引擎帧可靠归档', () => {
       expect(csv.headers['content-disposition']).toContain('link_state.csv')
       expect(csv.text).toContain('task_id')
       await api.get(`/api/v1/mission-results/${resultId}/engine-csv/other.csv`).set({ Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }).expect(400)
+    } finally { await server.close() }
+  })
+
+  it('单遍 loadWithAggregate 与分步结果一致并预热原生统计；超 500 段在报告视图延迟返回，includeEngineSegments=1 可按需取回', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-defer-')); roots.push(root)
+    const archive = createEngineFrameArchive(root, () => '2026-11-07T00:00:00Z')
+    const scope = { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-07T00:00:00Z' }
+    const session = await archive.begin(scope, { 'L-1': { type: 'MICROWAVE', sourcePlatformId: 'A', targetPlatformId: 'B' } })
+    const template = frame(1)
+    const extraLinks = Array.from({ length: 6 }, (_, idx) => ({ ...structuredClone(template.links[0]!), linkId: `SEG-${idx}` }))
+    for (let i = 1; i <= 100; i += 1) {
+      const f = frame(i)
+      f.links = structuredClone(extraLinks)
+      f.jammers = [{ ...f.jammers[0]!, deviceStatus: 'OFF' }]
+      if (i === 1) {
+        f.links[0]!.linkIds = ['L-1']; f.links[0]!.sourcePlatformId = 'A'; f.links[0]!.targetPlatformId = 'B'
+        f.links[0]!.quality.gxbDb = 4; f.links[0]!.quality.ber = 0.02
+      }
+      await session.append(f)
+    }
+    await session.close()
+    const summaryOnly = await archive.load(scope.runId, scope)
+    const aggregateOnly = await archive.aggregate(scope.runId, scope, {})
+    const combined = (await archive.loadWithAggregate!(scope.runId, scope))!
+    expect(combined.summary).toEqual(summaryOnly)
+    expect(combined.aggregate).toEqual(aggregateOnly)
+    expect(await archive.queryCounts(scope.runId, scope)).toMatchObject({ segments: 600 })
+    expect((await archive.querySeriesCatalog(scope.runId, scope))!.length).toBeGreaterThan(0)
+
+    const resultId = 'RESULT-11111111-1111-4111-8111-111111111111'
+    const baseReport = structuredClone(LOCAL_REPORT)
+    baseReport.localEvidence!.startTimeS = 0; baseReport.localEvidence!.endTimeS = 200
+    const snapshot = { record: { resultId, ...scope, scenarioName: '延迟段测试', completedAt: '2026-11-07T00:05:00Z' }, report: baseReport }
+    const filterStub = async () => ({ report: structuredClone(baseReport), filter: {}, timeline: [], timelineTotal: 0, stages: [], links: [] })
+    const server = createMockServer({ port: 0, engineFrameArchive: archive,
+      missionResults: { get: async (id: string) => id === resultId ? snapshot : null, list: async () => [], filter: filterStub } as any })
+    try {
+      if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+      const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
+      const authHeaders = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
+      const deferred = await api.get(`/api/v1/mission-results/${resultId}`).set({ ...authHeaders, 'X-Mission-Result-View': 'report' }).expect(200)
+      expect(deferred.body.data.report.localEvidence.engineFrameArchive.detailDeferred).toBe(true)
+      expect(deferred.body.data.report.localEvidence.engineFrameArchive.segmentRows).toEqual([])
+      const { switchCountTrend, jammingDurationTrend, ...legacyAggregate } = aggregateOnly!
+      expect(switchCountTrend?.length).toBeGreaterThan(0)
+      expect(jammingDurationTrend?.length).toBeGreaterThan(0)
+      expect(deferred.body.data.report.localEvidence.engineFrameArchive.aggregate).toEqual(legacyAggregate)
+      const optedIn = await api.get('/api/v1/mission-results/' + resultId)
+        .set({ ...authHeaders, 'X-Mission-Result-View': 'report', Accept: LOCAL_REPORT_TRENDS_ACCEPT }).expect(200)
+      expect(optedIn.body.data.report.localEvidence.engineFrameArchive.aggregate).toEqual(aggregateOnly)
+      const filtered = await api.get(`/api/v1/reports/${baseReport.reportId}/filter?resultId=${resultId}`).set(authHeaders).expect(200)
+      expect(filtered.body.data.report.localEvidence.engineFrameArchive.detailDeferred).toBe(true)
+      expect(filtered.body.data.report.localEvidence.engineFrameArchive.segmentRows).toEqual([])
+      expect(filtered.body.data.report.localEvidence.engineFrameArchive.aggregate).toEqual(legacyAggregate)
+      const optedInFilter = await api.get('/api/v1/reports/' + baseReport.reportId + '/filter?resultId=' + resultId)
+        .set({ ...authHeaders, Accept: LOCAL_REPORT_TRENDS_ACCEPT }).expect(200)
+      expect(optedInFilter.body.data.report.localEvidence.engineFrameArchive.aggregate).toEqual(aggregateOnly)
+      const fullSegments = await api.get(`/api/v1/reports/${baseReport.reportId}/filter?resultId=${resultId}&includeEngineSegments=1`).set(authHeaders).expect(200)
+      expect(fullSegments.body.data.report.localEvidence.engineFrameArchive.detailDeferred).toBeUndefined()
+      expect(fullSegments.body.data.report.localEvidence.engineFrameArchive.segmentRows).toHaveLength(600)
+      await api.get(`/api/v1/reports/${baseReport.reportId}/filter?resultId=${resultId}&includeEngineSegments=2`).set(authHeaders).expect(422)
     } finally { await server.close() }
   })
 })

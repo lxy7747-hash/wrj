@@ -56,31 +56,64 @@ export function adaptEngineFrameSnapshot(value: unknown): { data: EngineFrameSna
         cloudRainDb: number(losses.cloud_rain_db), jammingDb: number(losses.jamming_loss_db), totalDb: number(losses.total_composite_db),
         // shortcut: 分量与总损耗均保留源值，口径确认后再做合并或派生统计。
         rainDb: number(losses.atten_rain_db), cloudDb: number(losses.atten_cloud_db) },
-      quality: { gxbDb: number(quality.gxb_db), ber: number(quality.ber), rxPowerDbw, rxPowerDbm: rxPowerDbw === null ? null : rxPowerDbw + 30, delay: number(quality.delay) },
+      quality: { gxbDb: number(quality.gxb_db), ber: number(quality.ber), rxPowerDbw, rxPowerDbm: rxPowerDbw === null ? null : rxPowerDbw + 30,
+        delay: number(quality.delay),
+        ...(Object.hasOwn(quality, 'margin_db') ? { marginDb: number(quality.margin_db) } : {}),
+        ...(Object.hasOwn(quality, 'delay_ms') ? { delayMs: number(quality.delay_ms) } : {}),
+      },
       inputTrace: { eirpDbw: number(trace.eirp_dbw), gtDbk: number(trace.g_over_t_dbk), dataRateMbps: number(trace.data_rate_bps, 1e-6),
         frequencyGHz: number(trace.frequency_ghz ?? trace.frequency),
         jammers: list(trace.jammers).map(value => { const jammer = record(value), name = text(jammer.jammer_name); return {
           jammerName: name, platformId: name, distanceM: number(jammer.dist_km, 1000), eirpDbw: number(jammer.eirp_dbw), lossDb: number(jammer.Loss_dB),
+          ...(Object.hasOwn(jammer, 'frequency_ghz') ? { frequencyGHz: number(jammer.frequency_ghz) } : {}),
         } }),
       },
     }
   })
+  const pathQuality = Array.isArray(calc.path_quality) ? calc.path_quality.map(value => {
+    const item = record(value)
+    return {
+      pathId: text(item.path_id), gxbDb: number(item.gxb_db), ber: number(item.ber),
+      marginDb: number(item.margin_db), delayMs: number(item.delay_ms), rateBps: number(item.rate_bps),
+    }
+  }) : undefined
+  const parseJamMode = (mode: string | null): 'BARRAGE' | 'SPOT' | 'SWEEP' | null =>
+    mode === 'broadband' ? 'BARRAGE' : mode === 'spot' ? 'SPOT' : mode === 'sweep' ? 'SWEEP' : null
   const jammers = list(input.jammer_params).map((value): EngineJammer => {
     const item = record(value), sensor = record(item.jammer_sensor), rf = record(item.rf_jammer), params = record(rf.active_params), name = text(item.jammer_name), pos = record(item.jammer_pos)
+    const freqBands = Array.isArray(params.freq_band)
+      ? list(params.freq_band).map(entry => {
+        const band = record(entry), engineMode = text(band.mode)
+        return {
+          frequencyGHz: number(band.frequency_ghz),
+          bandwidthMHz: number(band.bandwidth_mhz),
+          mode: parseJamMode(engineMode),
+          engineMode,
+        }
+      })
+      : undefined
+    const primaryBand = freqBands?.[0]
+    const frequencyHz = number(params.freq_band_hz) ?? (primaryBand?.frequencyGHz != null ? primaryBand.frequencyGHz * 1e9 : null)
+    const engineMode = text(rf.mode) ?? primaryBand?.engineMode ?? null
     return { name, platformId: name, detectStatus: text(sensor.detect_status), deviceStatus: text(rf.device_status),
-      powerW: number(params.power_w), frequencyHz: number(params.freq_band_hz), rangeM: number(params.jammer_range_nm, 1852),
-      position: { longitude: number(pos.lon), latitude: number(pos.lat), altitudeM: number(pos.alt_m) }, engineMode: text(rf.mode),
+      powerW: number(params.power_w), frequencyHz, rangeM: number(params.jammer_range_nm, 1852),
+      ...(Object.hasOwn(params, 'antenna_gain_dbi') ? { antennaGainDbi: number(params.antenna_gain_dbi) } : {}),
+      ...(Object.hasOwn(params, 'eirp_dbw') ? { eirpDbw: number(params.eirp_dbw) } : {}),
+      ...(freqBands !== undefined ? { freqBands } : {}),
+      position: { longitude: number(pos.lon), latitude: number(pos.lat), altitudeM: number(pos.alt_m) }, engineMode,
       detections: list(sensor.events).map(value => { const item = record(value), targetNames = texts(item.target_names); return {
-        // 探测器该字段实际为 GHz；rf_jammer.active_params 同名字段仍为 Hz。
-        targetNames, targetIds: [...targetNames], platformType: text(item.platform_type), frequencyHz: number(item.freq_band_hz, 1e9),
+        // 2026-11-24 起按插件实际输出统一为 Hz，与 rf_jammer.active_params 同名字段一致，不再乘 10⁹。
+        targetNames, targetIds: [...targetNames], platformType: text(item.platform_type), frequencyHz: number(item.freq_band_hz),
         probability: number(item.detect_prob), rangeM: number(item.detect_range_nm, 1852),
         targets: list(item.target_pos).map(value => { const target = record(value), pos = record(target.pos), name = text(target.name); return {
           name, platformId: name, longitude: number(pos.lon), latitude: number(pos.lat), altitudeM: number(pos.alt_m),
+          ...(Object.hasOwn(target, 'detect_prob') ? { probability: number(target.detect_prob) } : {}),
         } }),
       } }),
       actions: list(item.closed_loop).map(value => { const action = record(value), engineMode = text(action.jam_mode), targetName = text(action.jam_target_id); return {
         action: text(action.last_action), targetName, targetPlatformId: targetName, engineMode,
-        mode: engineMode === 'broadband' ? 'BARRAGE' : engineMode === 'spot' ? 'SPOT' : engineMode === 'sweep' ? 'SWEEP' : null,
+        mode: parseJamMode(engineMode),
+        ...(Object.hasOwn(action, 'jam_freq_hz') ? { jamFreqHz: number(action.jam_freq_hz) } : {}),
       } }),
     }
   })
@@ -99,7 +132,7 @@ export function adaptEngineFrameSnapshot(value: unknown): { data: EngineFrameSna
     // 运行身份和重启轮次由服务端连接所有者覆盖，不信任外部消息中的身份。
     kind: 'ENGINE_FRAME', runId: '', engineEpoch: 0, frameId: frameId!, simulationTime: frameId!, modelVersion: text(calc.model_version), modulation: text(calc.modulation),
     wallTimeMs: number(input.wall_time_ms),
-    links, jammers, initRouting: manager.init_routing_result == null ? null : routes(manager.init_routing_result, false),
+    links, jammers, ...(pathQuality === undefined ? {} : { pathQuality }), initRouting: manager.init_routing_result == null ? null : routes(manager.init_routing_result, false),
     routing: { switches, alarms: [...list(manager.alarm), ...list(routing.alarm)].map(value => { const item = record(value); return {
       pathId: text(item.path_id) ?? text(item.pathid), linkId: text(item.link_id) ?? text(item.linkid), message: text(item.message),
     } }) },
@@ -112,44 +145,93 @@ export function adaptEngineFrameSnapshot(value: unknown): { data: EngineFrameSna
   } }
 }
 
+const snapObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
+const snapStr = (v: unknown) => v === null || typeof v === 'string'
+const snapNum = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v))
+const snapArray = (v: unknown, check: (v: unknown) => boolean) => Array.isArray(v) && v.every(check)
+const snapStrEl = (v: unknown) => typeof v === 'string'
+const snapStrings = (v: unknown) => snapArray(v, snapStrEl)
+const snapFields = (v: unknown, names: readonly string[], check: (v: unknown) => boolean) =>
+  snapObj(v) && names.every(key => Object.hasOwn(v, key) && check(v[key]))
+const snapOptional = (v: unknown, key: string, check: (v: unknown) => boolean) =>
+  snapObj(v) && (!Object.hasOwn(v, key) || check(v[key]))
+
+const PATH_NODE_FIELDS = ['platformName', 'platformId', 'inPort', 'outPort'] as const
+const PATH_ENDPOINTS = ['sourceName', 'targetName', 'sourcePlatformId', 'targetPlatformId'] as const
+const PATH_PARAMS = ['delay', 'transFrequency', 'dataContent'] as const
+const LINK_ENDPOINTS = ['sourceName', 'sourcePlatformId', 'sourcePort', 'targetName', 'targetPlatformId', 'targetPort', 'engineStatus', 'error'] as const
+const LOSS_FIELDS = ['freeSpaceDb', 'seaMultipathDb', 'atmosphericDb', 'cloudRainDb', 'jammingDb', 'totalDb'] as const
+const QUALITY_FIELDS = ['gxbDb', 'ber', 'rxPowerDbw', 'rxPowerDbm'] as const
+const TRACE_FIELDS = ['eirpDbw', 'gtDbk', 'dataRateMbps', 'frequencyGHz'] as const
+const TRACE_JAMMER_NAMES = ['jammerName', 'platformId'] as const
+const TRACE_JAMMER_NUMS = ['distanceM', 'eirpDbw', 'lossDb'] as const
+const PATH_QUALITY_ID = ['pathId'] as const
+const PATH_QUALITY_NUMS = ['gxbDb', 'ber', 'marginDb', 'delayMs', 'rateBps'] as const
+const JAMMER_TEXTS = ['name', 'platformId', 'detectStatus', 'deviceStatus'] as const
+const JAMMER_NUMS = ['powerW', 'frequencyHz', 'rangeM'] as const
+const POS_FIELDS = ['longitude', 'latitude', 'altitudeM'] as const
+const DET_NUMS = ['frequencyHz', 'probability', 'rangeM'] as const
+const TARGET_TEXTS = ['name', 'platformId'] as const
+const ACTION_TEXTS = ['action', 'targetName', 'targetPlatformId', 'engineMode'] as const
+const ALARM_FIELDS = ['pathId', 'linkId', 'message'] as const
+const EVENT_TEXTS = ['type', 'pathId'] as const
+const EVENT_STRING_LISTS = ['uavNames', 'jammerNames', 'uavIds', 'jammerIds'] as const
+
+const isSnapPathNode = (v: unknown) => snapFields(v, PATH_NODE_FIELDS, snapStr)
+const isSnapPathNodes = (v: unknown) => snapArray(v, isSnapPathNode)
+const isSnapPathParams = (p: unknown) => snapFields(p, PATH_PARAMS, snapNum)
+const isSnapPath = (v: unknown) => snapObj(v) && typeof v.pathId === 'string' && v.pathId.length > 0
+  && typeof v.direction === 'string' && (v.direction === 'FORWARD' || v.direction === 'REVERSE')
+  && snapFields(v, PATH_ENDPOINTS, snapStr) && snapStrings(v.transTypes) && isSnapPathNodes(v.nodes)
+  && snapOptional(v, 'parameters', isSnapPathParams)
+const isSnapTraceJammer = (j: unknown) => snapFields(j, TRACE_JAMMER_NAMES, snapStr) && snapFields(j, TRACE_JAMMER_NUMS, snapNum)
+  && snapOptional(j, 'frequencyGHz', snapNum)
+const isSnapLink = (v: unknown) => snapObj(v) && typeof v.linkId === 'string' && v.linkId.length > 0 && snapStrings(v.linkIds)
+  && snapFields(v, LINK_ENDPOINTS, snapStr)
+  && typeof v.status === 'string' && (v.status === 'UP' || v.status === 'DEGRADED' || v.status === 'DOWN' || v.status === 'UNKNOWN')
+  && snapNum(v.distanceM)
+  && snapFields(v.losses, LOSS_FIELDS, snapNum)
+  && snapOptional(v.losses, 'rainDb', snapNum) && snapOptional(v.losses, 'cloudDb', snapNum)
+  && snapFields(v.quality, QUALITY_FIELDS, snapNum)
+  && snapOptional(v.quality, 'delay', snapNum) && snapOptional(v.quality, 'marginDb', snapNum) && snapOptional(v.quality, 'delayMs', snapNum)
+  && snapFields(v.inputTrace, TRACE_FIELDS, snapNum) && snapObj(v.inputTrace)
+  && snapArray(v.inputTrace.jammers, isSnapTraceJammer)
+const isSnapPathQualityItem = (item: unknown) => snapFields(item, PATH_QUALITY_ID, snapStr) && snapFields(item, PATH_QUALITY_NUMS, snapNum)
+const isSnapPathQuality = (v: unknown) => snapArray(v, isSnapPathQualityItem)
+const isSnapJamMode = (m: unknown) => m === null || (typeof m === 'string' && (m === 'BARRAGE' || m === 'SPOT' || m === 'SWEEP'))
+const isSnapTarget = (t: unknown) => snapFields(t, TARGET_TEXTS, snapStr) && snapFields(t, POS_FIELDS, snapNum)
+  && snapOptional(t, 'probability', snapNum)
+const isSnapDetection = (d: unknown) => snapObj(d) && snapStrings(d.targetNames) && snapStrings(d.targetIds) && snapStr(d.platformType)
+  && snapFields(d, DET_NUMS, snapNum) && snapArray(d.targets, isSnapTarget)
+const isSnapAction = (a: unknown) => snapObj(a) && snapFields(a, ACTION_TEXTS, snapStr) && isSnapJamMode(a.mode)
+  && snapOptional(a, 'jamFreqHz', snapNum)
+const isSnapJammerBand = (b: unknown) => snapObj(b) && snapNum(b.frequencyGHz) && snapNum(b.bandwidthMHz)
+  && isSnapJamMode(b.mode) && snapStr(b.engineMode)
+const isSnapPos = (p: unknown) => snapFields(p, POS_FIELDS, snapNum)
+const isSnapJammer = (v: unknown) => snapObj(v) && snapFields(v, JAMMER_TEXTS, snapStr) && snapFields(v, JAMMER_NUMS, snapNum)
+  && snapOptional(v, 'antennaGainDbi', snapNum) && snapOptional(v, 'eirpDbw', snapNum)
+  && snapOptional(v, 'freqBands', bands => snapArray(bands, isSnapJammerBand))
+  && snapOptional(v, 'engineMode', snapStr) && snapOptional(v, 'position', isSnapPos)
+  && snapArray(v.detections, isSnapDetection) && snapArray(v.actions, isSnapAction)
+const isSnapReason = (r: unknown) => snapObj(r) && snapStr(r.linkId) && snapStrings(r.reasons)
+const isSnapSwitch = (s: unknown) => snapObj(s) && isSnapPath(s) && snapStr(s.oldPathId) && isSnapPathNodes(s.oldNodes) && snapArray(s.reasons, isSnapReason)
+const isSnapAlarm = (a: unknown) => snapFields(a, ALARM_FIELDS, snapStr)
+const isSnapEvent = (e: unknown) => snapObj(e) && snapFields(e, EVENT_TEXTS, snapStr)
+  && snapOptional(e, 'newPathId', snapStr) && snapOptional(e, 'oldPathId', snapStr)
+  && EVENT_STRING_LISTS.every(k => snapStrings(e[k]))
+
 /** 校验已归一化的 WS 载荷，不允许数字字符串或畸形嵌套越过前端信任边界。 */
 export function isEngineFrameSnapshot(value: unknown): value is EngineFrameSnapshot {
-  const obj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
-  const str = (v: unknown) => v === null || typeof v === 'string'
-  const num = (v: unknown) => v === null || typeof v === 'number' && Number.isFinite(v)
-  const array = (v: unknown, check: (v: unknown) => boolean) => Array.isArray(v) && v.every(check)
-  const strings = (v: unknown) => array(v, v => typeof v === 'string')
-  const fields = (v: unknown, names: string[], check: (v: unknown) => boolean) => obj(v) && names.every(key => Object.hasOwn(v, key) && check(v[key]))
-  const optional = (v: unknown, key: string, check: (v: unknown) => boolean) => obj(v) && (!Object.hasOwn(v, key) || check(v[key]))
-  const pathNodes = (v: unknown) => array(v, v => fields(v, ['platformName', 'platformId', 'inPort', 'outPort'], str))
-  const path = (v: unknown) => obj(v) && typeof v.pathId === 'string' && v.pathId.length > 0 && typeof v.direction === 'string' && ['FORWARD', 'REVERSE'].includes(v.direction)
-    && fields(v, ['sourceName', 'targetName', 'sourcePlatformId', 'targetPlatformId'], str) && strings(v.transTypes) && pathNodes(v.nodes)
-    && optional(v, 'parameters', p => fields(p, ['delay', 'transFrequency', 'dataContent'], num))
-  if (!obj(value) || value.kind !== 'ENGINE_FRAME' || typeof value.runId !== 'string' || !value.runId.trim()
+  if (!snapObj(value) || value.kind !== 'ENGINE_FRAME' || typeof value.runId !== 'string' || !value.runId.trim()
     || typeof value.engineEpoch !== 'number' || !Number.isSafeInteger(value.engineEpoch) || value.engineEpoch < 0
     || !isEngineFrameId(value.frameId)
     || typeof value.simulationTime !== 'number' || !Number.isFinite(value.simulationTime) || value.simulationTime < 0
-    || !str(value.modelVersion) || !str(value.modulation) || !optional(value, 'wallTimeMs', num)) return false
-  return array(value.links, v => obj(v) && typeof v.linkId === 'string' && v.linkId.length > 0 && strings(v.linkIds)
-    && fields(v, ['sourceName', 'sourcePlatformId', 'sourcePort', 'targetName', 'targetPlatformId', 'targetPort', 'engineStatus', 'error'], str)
-    && typeof v.status === 'string' && ['UP', 'DEGRADED', 'DOWN', 'UNKNOWN'].includes(v.status) && num(v.distanceM)
-    && fields(v.losses, ['freeSpaceDb', 'seaMultipathDb', 'atmosphericDb', 'cloudRainDb', 'jammingDb', 'totalDb'], num)
-    && optional(v.losses, 'rainDb', num) && optional(v.losses, 'cloudDb', num)
-    && fields(v.quality, ['gxbDb', 'ber', 'rxPowerDbw', 'rxPowerDbm'], num)
-    && optional(v.quality, 'delay', num)
-    && fields(v.inputTrace, ['eirpDbw', 'gtDbk', 'dataRateMbps', 'frequencyGHz'], num) && obj(v.inputTrace)
-    && array(v.inputTrace.jammers, j => fields(j, ['jammerName', 'platformId'], str) && fields(j, ['distanceM', 'eirpDbw', 'lossDb'], num)))
-    && array(value.jammers, v => obj(v) && fields(v, ['name', 'platformId', 'detectStatus', 'deviceStatus'], str) && fields(v, ['powerW', 'frequencyHz', 'rangeM'], num)
-      && optional(v, 'engineMode', str) && optional(v, 'position', p => fields(p, ['longitude', 'latitude', 'altitudeM'], num))
-      && array(v.detections, d => obj(d) && strings(d.targetNames) && strings(d.targetIds) && str(d.platformType) && fields(d, ['frequencyHz', 'probability', 'rangeM'], num)
-        && array(d.targets, t => fields(t, ['name', 'platformId'], str) && fields(t, ['longitude', 'latitude', 'altitudeM'], num)))
-      && array(v.actions, a => obj(a) && fields(a, ['action', 'targetName', 'targetPlatformId', 'engineMode'], str)
-        && (a.mode === null || typeof a.mode === 'string' && ['BARRAGE', 'SPOT', 'SWEEP'].includes(a.mode))))
-    && (value.initRouting === null || array(value.initRouting, path))
-    && obj(value.routing) && array(value.routing.switches, s => obj(s) && path(s) && str(s.oldPathId) && pathNodes(s.oldNodes)
-      && array(s.reasons, r => obj(r) && str(r.linkId) && strings(r.reasons)))
-    && array(value.routing.alarms, a => fields(a, ['pathId', 'linkId', 'message'], str))
-    && array(value.events, e => obj(e) && fields(e, ['type', 'pathId'], str)
-      && optional(e, 'newPathId', str) && optional(e, 'oldPathId', str)
-      && ['uavNames', 'jammerNames', 'uavIds', 'jammerIds'].every(k => strings(e[k])))
+    || !snapStr(value.modelVersion) || !snapStr(value.modulation) || !snapOptional(value, 'wallTimeMs', snapNum)) return false
+  return snapArray(value.links, isSnapLink)
+    && snapOptional(value, 'pathQuality', isSnapPathQuality)
+    && snapArray(value.jammers, isSnapJammer)
+    && (value.initRouting === null || snapArray(value.initRouting, isSnapPath))
+    && snapObj(value.routing) && snapArray(value.routing.switches, isSnapSwitch)
+    && snapArray(value.routing.alarms, isSnapAlarm)
+    && snapArray(value.events, isSnapEvent)
 }

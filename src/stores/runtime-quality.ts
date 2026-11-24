@@ -44,6 +44,23 @@ type RuntimeQualityState = 'EMPTY' | 'SUCCESS' | 'ERROR'
 export type EngineLinkStatus = Pick<RuntimeLinkStatus, 'linkId' | 'frameId' | 'simulationTime' | 'status' | 'gxbDb' | 'ber' | 'receivedPowerDbm'>
   & { source: 'ENGINE_FRAME'; stableFrames?: undefined }
 
+export interface EngineAlarmContext {
+  link?: {
+    linkIds: string[]
+    sourcePlatformId: string | null
+    targetPlatformId: string | null
+    sourcePort: string | null
+    targetPort: string | null
+    status: EngineFrameSnapshot['links'][number]['status']
+    ber: number | null
+  }
+  path?: {
+    direction: 'FORWARD' | 'REVERSE'
+    sourcePlatformId: string | null
+    targetPlatformId: string | null
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -147,7 +164,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   let pendingEngineFrames: Array<{ frame: EngineFrameSnapshot; receivedAt: number }> = []
   const engineEvents = ref<{ frameId: number; simulationTime: number; event: EngineFrameSnapshot['events'][number] }[]>([])
   const engineSwitches = ref<{ frameId: number; simulationTime: number; route: EngineFrameSnapshot['routing']['switches'][number]; resolution?: EngineSwitchHighlights }[]>([])
-  const engineAlarms = ref<{ frameId: number; simulationTime: number; alarm: EngineFrameSnapshot['routing']['alarms'][number] }[]>([])
+  const engineAlarms = ref<{ frameId: number; simulationTime: number; alarm: EngineFrameSnapshot['routing']['alarms'][number]; context?: EngineAlarmContext }[]>([])
   const source = computed(() => engineFrame.value ? 'ENGINE_FRAME' : snapshot.value?.source ?? null)
   /** Events recorded by the imported source; never populated from local route decisions. */
   const importedSwitchEvents = ref<SwitchEvent[]>([])
@@ -163,12 +180,14 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   let allowedLinkIds: string[] = []
   /** 同一运行/引擎世代内的逐帧路由证据，用于解析切换前已退出当前帧的旧段；有界保留。 */
   let routeEvidenceHistory: EngineRouteEvidenceFrame[] = []
+  /** 同一运行/引擎世代内已出现过的路径摘要，用于为告警冻结路径端点信息。 */
+  let knownRoutesByPathId = new Map<string, NonNullable<EngineAlarmContext['path']>>()
   let activatedUserId: string | null = null
   let activatedAuthEpoch: number | null = null
   // 数据校验失败的较新源帧同样已被处理；不能让更早的成功帧回写 ERROR。
   let latestMeta: RuntimeQualityFrameMeta | null = null
   const decisionTracker = new RuntimeLinkDecisionTracker()
-  const clearEngine = () => { engineFrame.value = null; engineFrameReceivedAt.value = null; engineEvents.value = []; engineSwitches.value = []; engineAlarms.value = []; routeEvidenceHistory = [] }
+  const clearEngine = () => { engineFrame.value = null; engineFrameReceivedAt.value = null; engineEvents.value = []; engineSwitches.value = []; engineAlarms.value = []; routeEvidenceHistory = []; knownRoutesByPathId = new Map() }
 
   const resetCurrentDecisions = () => {
     decisionTracker.reset()
@@ -449,10 +468,28 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     const frozenSwitches = frame.routing.switches.map(route => ({ ...meta, route,
       resolution: resolveEngineSwitchHighlightsWithEvidence(frame, route.oldNodes, route.nodes, routeEvidenceHistory) }))
     engineSwitches.value = [...engineSwitches.value, ...frozenSwitches].slice(-200)
-    engineAlarms.value = [...engineAlarms.value, ...frame.routing.alarms.map(alarm => ({ ...meta, alarm }))].slice(-200)
+    for (const route of frame.initRouting ?? []) {
+      if (route.pathId) knownRoutesByPathId.set(route.pathId, { direction: route.direction, sourcePlatformId: route.sourcePlatformId, targetPlatformId: route.targetPlatformId })
+    }
+    for (const route of frame.routing.switches) {
+      const summary = { direction: route.direction, sourcePlatformId: route.sourcePlatformId, targetPlatformId: route.targetPlatformId }
+      if (route.pathId) knownRoutesByPathId.set(route.pathId, summary)
+      if (route.oldPathId && !knownRoutesByPathId.has(route.oldPathId)) knownRoutesByPathId.set(route.oldPathId, summary)
+    }
+    const frozenAlarms = frame.routing.alarms.map(alarm => {
+      const matchedLink = alarm.linkId ? frame.links.find(link => link.linkId === alarm.linkId || link.linkIds.includes(alarm.linkId!)) : undefined
+      const matchedPath = alarm.pathId ? knownRoutesByPathId.get(alarm.pathId) : undefined
+      const context: EngineAlarmContext | undefined = matchedLink || matchedPath ? {
+        ...(matchedLink ? { link: { linkIds: [...matchedLink.linkIds], sourcePlatformId: matchedLink.sourcePlatformId, targetPlatformId: matchedLink.targetPlatformId, sourcePort: matchedLink.sourcePort, targetPort: matchedLink.targetPort, status: matchedLink.status, ber: matchedLink.quality.ber } } : {}),
+        ...(matchedPath ? { path: { ...matchedPath } } : {}),
+      } : undefined
+      return context ? { ...meta, alarm, context } : { ...meta, alarm }
+    })
+    engineAlarms.value = [...engineAlarms.value, ...frozenAlarms].slice(-200)
     routeEvidenceHistory = [...routeEvidenceHistory, { runId: frame.runId, engineEpoch: frame.engineEpoch, frameId: frame.frameId, simulationTime: frame.simulationTime, hops: buildFrameRouteEvidence(frame) }].slice(-200)
     errors.value = []
-    state.value = frame.links.length || frame.jammers.length || frame.events.length || frame.initRouting?.length || engineSwitches.value.length || engineAlarms.value.length ? 'SUCCESS' : 'EMPTY'
+    state.value = frame.links.length || frame.pathQuality?.length || frame.jammers.length || frame.events.length
+      || frame.initRouting?.length || engineSwitches.value.length || engineAlarms.value.length ? 'SUCCESS' : 'EMPTY'
   }
 
   function drainPresentation(): void {

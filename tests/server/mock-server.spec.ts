@@ -138,7 +138,7 @@ describe('链路补项保存与快照', () => {
     config.linkSettings.priority = ['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER']
     const satellite = config.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!
     const link = config.links.find(l => l.type === 'SAT')!
-    Object.assign(link, { antennaGainCorrectionDb: -2, coding: 'UNCODED', antiJammingGainDb: 6, spatialIsolationDb: 3, relayPlatformId: satellite.id })
+    Object.assign(link, { antennaGainCorrectionDb: -2, antiJammingGainDb: 6, spatialIsolationDb: 3, relayPlatformId: satellite.id })
     const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config.linkSettings).toEqual(config.linkSettings)
     expect(saved.config.links).toEqual(config.links)
@@ -160,12 +160,8 @@ describe('链路补项保存与快照', () => {
     const rejected = await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: (undone.body as ApiSuccess<ScenarioDraft>).data.revision }).expect(422)
     expect((rejected.body as { error: { fieldPath: string } }).error.fieldPath).toMatch(/relayPlatformId$/)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(saved.config)
-    const cleared = structuredClone(saved.config)
-    cleared.links.find(l => l.id === link.id)!.coding = null
-    const clearedResult = await request(baseUrl).put(path).set(headers).send({ config: cleared, uiExtensions: original.uiExtensions, expectedRevision: (undone.body as ApiSuccess<ScenarioDraft>).data.revision }).expect(200)
-    expect((clearedResult.body as ApiSuccess<ScenarioDraft>).data.config.links.find(l => l.id === link.id)?.coding).toBeNull()
     const reloaded = await request(baseUrl).get(path).set(headers).expect(200)
-    expect((reloaded.body as ApiSuccess<ScenarioDraft>).data.config).toEqual(cleared)
+    expect((reloaded.body as ApiSuccess<ScenarioDraft>).data.config).toEqual(saved.config)
   })
 })
 
@@ -199,9 +195,9 @@ describe('业务方向与独立启停保存', () => {
 
 describe('敌方干扰配置保存', () => {
   it.each([
-    ['defaultPower', { defaultPower: 10 ** ((35 - 30) / 10) }],
-    ['bandwidth', { bandwidth: 50 }],
-    ['bandwidth', { type: 'SPOT', bandwidth: 20 }],
+    ['defaultPower', { defaultPower: 10 ** ((70 - 30) / 10) }],
+    ['bandwidth', { bandwidth: 0 }],
+    ['bandwidth', { type: 'SPOT', bandwidth: -1 }],
   ])('PUT、导入和模板创建共同拒绝非法干扰 %s，原场景不被覆盖', async (field, invalid) => {
     const { baseUrl } = await startServer()
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
@@ -237,7 +233,7 @@ describe('敌方干扰配置保存', () => {
     const undone = ((await request(baseUrl).post(`${path}/undo`).set(headers).send({ expectedRevision: reset.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(undone.config).toEqual(config)
     // 干扰范围 0 表示不触发，属于合法写入。
-    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 100_001 }, { jammingRange: -1 }, { jammingRange: 100_001 }, { releaseRange: 100 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
+    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 100_001 }, { jammingRange: -1 }, { jammingRange: 100_001 }, { releaseRange: 100 }]) { // 触发时间越界已降为警告（2026-11-24），不再列为非法写入
       const invalid = structuredClone(config)
       Object.assign(invalid.jammers[0]!, mutation)
       await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: undone.revision }).expect(422)
@@ -1059,12 +1055,7 @@ describe('P0 deterministic mock server', () => {
       .send({ config: zeroPower, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision }).expect(422)
     expect((zeroPowerRejected.body as { error: { fieldPath: string } }).error.fieldPath).toBe('jammers[0].defaultPower')
 
-    const zeroRange = structuredClone(jammerMutation)
-    zeroRange.sensors[0]!.detectionRange = 0
-    const zeroRangeRejected = await request(baseUrl).put('/api/v1/scenarios/SCN-001')
-      .set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
-      .send({ config: zeroRange, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision }).expect(422)
-    expect((zeroRangeRejected.body as { error: { fieldPath: string } }).error.fieldPath).toBe('sensors[0].detectionRange')
+    // 旧传感器侦测距离为 0 已降为警告（传感器页并入干扰设备，2026-11-24），不再期望 422。
 
     const invalidLink = structuredClone(linkMutation)
     invalidLink.links[0]!.bandwidth = 0
@@ -1451,24 +1442,36 @@ describe('P0 deterministic mock server', () => {
     await request(baseUrl).get('/api/v1/templates').set('Origin', ORIGIN).expect(403)
     await request(baseUrl).get('/api/v1/templates/TPL-SCN-001').set('Origin', ORIGIN).expect(403)
     await request(baseUrl).post('/api/v1/templates/TPL-SCN-001/copy').set('Origin', ORIGIN).send({ name: '副本' }).expect(403)
-    await operator(request(baseUrl).put('/api/v1/templates/TPL-SCN-001'))
-      .send({ name: '越权更新', config: originalDraft.config })
+    await request(baseUrl).put('/api/v1/templates/TPL-SCN-001').set('Origin', ORIGIN)
+      .send({ name: '未授权更新', config: originalDraft.config })
       .expect(403)
-    await operator(request(baseUrl).post('/api/v1/confirmations'))
+    await request(baseUrl).post('/api/v1/confirmations').set('Origin', ORIGIN)
       .send({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: 'TPL-SCN-001' })
       .expect(403)
     await operator(request(baseUrl).post('/api/v1/confirmations/CONF-NOT-FOUND')).send({ confirm: true }).expect(409)
     await admin(request(baseUrl).post('/api/v1/confirmations/CONF-NOT-FOUND')).send({ confirm: true }).expect(409)
-    await operator(request(baseUrl).delete('/api/v1/templates/TPL-SCN-001')).expect(403)
+    await operator(request(baseUrl).delete('/api/v1/templates/TPL-SCN-001')).expect(428)
     await admin(request(baseUrl).delete('/api/v1/templates/TPL-NOT-FOUND')).expect(404)
 
     const listed = await operator(request(baseUrl).get('/api/v1/templates')).expect(200)
     expect((listed.body as { data: ScenarioTemplate[] }).data).toMatchObject([
       { templateId: 'TPL-SCN-001', version: '4', official: true, referenceCount: 2 },
     ])
-    await operator(request(baseUrl).post('/api/v1/templates'))
-      .send({ name: '操作员越权模板', config: originalDraft.config })
-      .expect(403)
+    const operatorCreated = (await operator(request(baseUrl).post('/api/v1/templates'))
+      .send({ name: '操作员维护模板', config: originalDraft.config })
+      .expect(201)).body as { data: ScenarioTemplate }
+    await operator(request(baseUrl).put(`/api/v1/templates/${operatorCreated.data.templateId}`))
+      .send({ name: '操作员维护模板 V2', config: originalDraft.config })
+      .expect(200)
+    const opDeleteConfirmation = (await operator(request(baseUrl).post('/api/v1/confirmations'))
+      .send({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: operatorCreated.data.templateId })
+      .expect(201)).body as { data: ConfirmationContext }
+    await operator(request(baseUrl).post(`/api/v1/confirmations/${opDeleteConfirmation.data.confirmationId}`))
+      .send({ confirm: true })
+      .expect(200)
+    await operator(request(baseUrl).delete(`/api/v1/templates/${operatorCreated.data.templateId}`))
+      .set('X-Confirmation-Id', opDeleteConfirmation.data.confirmationId)
+      .expect(200)
 
     const operatorConfirmationResponse = await operator(request(baseUrl).post('/api/v1/confirmations'))
       .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' })
@@ -1483,7 +1486,7 @@ describe('P0 deterministic mock server', () => {
       .send({ name: '台海验证模板', config: originalDraft.config })
       .expect(201)
     const created = (createdResponse.body as { data: ScenarioTemplate }).data
-    expect(created).toMatchObject({ templateId: 'TPL-SCN-002', version: '1', referenceCount: 0 })
+    expect(created).toMatchObject({ templateId: 'TPL-SCN-003', version: '1', referenceCount: 0 })
     await admin(request(baseUrl).post('/api/v1/templates'))
       .send({ name: created.name, config: originalDraft.config })
       .expect(409)
@@ -1684,13 +1687,7 @@ describe('P0 deterministic mock server', () => {
         fieldPath: 'uiExtensions.jammers',
         uiExtensions: { ...changedExtensions, jammers: [] },
       },
-      {
-        fieldPath: 'uiExtensions.jammers[0].elevation',
-        uiExtensions: {
-          ...changedExtensions,
-          jammers: [{ ...changedExtensions.jammers[0]!, elevation: 61 }],
-        },
-      },
+      // 干扰俯仰角越界已降为警告（界面不再提供编辑，2026-11-24），不再列为非法写入。
       {
         fieldPath: 'uiExtensions.sensors[0]',
         uiExtensions: { ...changedExtensions, sensors: [{ sensorId: 'ESM-01' }] },
@@ -1849,7 +1846,7 @@ describe('P0 deterministic mock server', () => {
       expect(response.headers['access-control-allow-methods']).toBe(
         'GET,POST,PUT,PATCH,DELETE,OPTIONS',
       )
-      expect(response.headers['access-control-allow-headers']).toBe('Content-Type, X-Demo-Role, X-Confirmation-Id')
+      expect(response.headers['access-control-allow-headers']).toBe('Content-Type, X-Demo-Role, X-Confirmation-Id, X-Mission-Result-View')
       expect(response.headers.vary).toBe('Origin')
     },
   )

@@ -1,6 +1,19 @@
 import type { EngineFrameSnapshot, Link } from '../../contracts/domain-models'
 import { isEngineFrameId, isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
 
+export type EngineReplayTimelineMarkerKind = 'DETECTION' | 'JAMMING' | 'ALARM' | 'SWITCH'
+
+export interface EngineReplayTimelineMarker {
+  id: string
+  kind: EngineReplayTimelineMarkerKind
+  time: number
+  frameId: number
+  label: string
+  detail: string
+  /** 关联的平台 ID 列表（可选），用于前端映射为场景中文平台名称。 */
+  actorIds?: string[]
+}
+
 type FrameItem<T> = { frameId: number; simulationTime: number } & T
 export interface EngineReplayEvidence {
   engineFrame: EngineFrameSnapshot | null
@@ -19,6 +32,22 @@ export interface EngineReplaySnapshot extends EngineReplayEvidence {
   nextFrameTime: number | null
   historyTruncated: boolean
   links: Pick<Link, 'id' | 'type' | 'sourcePlatformId' | 'targetPlatformId'>[]
+  /** 整轮运行的关键事件时间轴索引（侦测、进入干扰、受扰告警、链路切换），供进度条打点与一键跳转。 */
+  timelineMarkers?: EngineReplayTimelineMarker[]
+}
+
+const TIMELINE_MARKER_KINDS = new Set<EngineReplayTimelineMarkerKind>(['DETECTION', 'JAMMING', 'ALARM', 'SWITCH'])
+
+function isTimelineMarker(value: unknown): value is EngineReplayTimelineMarker {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const m = value as Partial<EngineReplayTimelineMarker>
+  return typeof m.id === 'string' && m.id.length > 0
+    && typeof m.kind === 'string' && TIMELINE_MARKER_KINDS.has(m.kind as EngineReplayTimelineMarkerKind)
+    && typeof m.time === 'number' && Number.isFinite(m.time) && m.time >= 0
+    && isEngineFrameId(m.frameId)
+    && typeof m.label === 'string' && m.label.length > 0
+    && typeof m.detail === 'string'
+    && (m.actorIds === undefined || (Array.isArray(m.actorIds) && m.actorIds.every(id => typeof id === 'string')))
 }
 
 export function isEngineReplaySnapshot(value: unknown): value is EngineReplaySnapshot {
@@ -34,7 +63,8 @@ export function isEngineReplaySnapshot(value: unknown): value is EngineReplaySna
     || new Set(v.epochs.map(e => e.engineEpoch)).size !== v.epochs.length
     || v.epochs.reduce((sum, e) => sum + e.frameCount, 0) !== v.frameCount
     || (v.epochs.length > 0 && !v.epochs.some(e => e.engineEpoch === v.engineEpoch))
-    || !Array.isArray(v.links) || !v.links.every(l => l && typeof l.id === 'string' && ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'].includes(l.type) && typeof l.sourcePlatformId === 'string' && typeof l.targetPlatformId === 'string')) return false
+    || !Array.isArray(v.links) || !v.links.every(l => l && typeof l.id === 'string' && ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'].includes(l.type) && typeof l.sourcePlatformId === 'string' && typeof l.targetPlatformId === 'string')
+    || (v.timelineMarkers !== undefined && (!Array.isArray(v.timelineMarkers) || v.timelineMarkers.length > 200 || !v.timelineMarkers.every(isTimelineMarker)))) return false
   const rows = [v.engineEvents, v.engineSwitches, v.engineAlarms]
   if (!rows.every(items => Array.isArray(items) && items.length <= 200 && items.every(item => item && isEngineFrameId(item.frameId) && number(item.simulationTime) && item.simulationTime <= v.time))) return false
   if (v.engineFrame === null) return rows.every(items => items.length === 0)

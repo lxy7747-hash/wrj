@@ -4,9 +4,12 @@ import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event
 import {
   buildFileMessageLinks,
   fileMessageDeviceKey,
+  formatMessageDirectionLabel,
+  formatMessageDirectionMark,
   isFileMessageLink,
   MESSAGE_MAX_DELAY_S,
   readFileMessageDirection,
+  readSingleMessageDirection,
   selectFileMessageLinks,
   withDerivedMessageDirections,
 } from '../../src/features/situation/file-message-links'
@@ -386,5 +389,55 @@ describe('文件消息链路投影', () => {
     ])
     expect(links[0]!.medianDelayS).toBeCloseTo(0.002, 9)
     expect(JSON.stringify(links)).not.toMatch(/"(?:snr|ber|linkStatus|capacity|packetLoss|packetLossRate|throughput)":/)
+  })
+
+  it('卫星同设备同刻中继转发不误判为自反歧义，跨平台多发送源仍记为歧义', () => {
+    const { links, issues } = build([
+      transmit(12.96422, 'rear_comm_vehicle', 'sat_link_a', 1937, 'kForwardSituation'),
+      receive(13.08587, 'tiantong_sat', 'sat_link', 1937, 'kForwardSituation'),
+      transmit(13.08587, 'tiantong_sat', 'sat_link', 1937, 'kForwardSituation'),
+      receive(13.20752, 'mission_uav_01', 'sat_link_a', 1937, 'kForwardSituation'),
+    ], {
+      platforms: ['rear_comm_vehicle', 'tiantong_sat', 'mission_uav_01'],
+      devices: [
+        ['rear_comm_vehicle', 'sat_link_a'],
+        ['tiantong_sat', 'sat_link'],
+        ['mission_uav_01', 'sat_link_a'],
+      ],
+    })
+    expect(issues).toEqual({ undelivered: 0, ambiguous: 0, unclassified: 0 })
+    expect(links).toHaveLength(2)
+    expect(links.map((link) => `${link.sourcePlatformId}->${link.targetPlatformId}`).sort()).toEqual([
+      'rear_comm_vehicle->tiantong_sat',
+      'tiantong_sat->mission_uav_01',
+    ])
+    expect(links.every((link) => link.direction === 'FORWARD')).toBe(true)
+  })
+
+  it('存在 MESSAGE_HOP 跳段证据时可消解跨平台同序号发送歧义，单条未知业务方向不猜测', () => {
+    const parsed = parseAfsimEventLog([
+      ...DECLARATION,
+      '! MESSAGE_HOP,time<time>,event<string>,receiver<string>,receiver_system<string>,message_serial_number<int>,data_tag<double>,message_type<string>,message_size<int>,destination<string>,time<time>,event<string>',
+      transmit(1.0, 'A', 'c_band_uplink', 99, 'MYSTERY_CUSTOM', 64),
+      transmit(1.001, 'C', 'c_band_uplink', 99, 'MYSTERY_CUSTOM', 64),
+      '1.002,MESSAGE_HOP,A,c_band_uplink,99,0,MYSTERY_CUSTOM,64,B.c_band_uplink,1.0,MESSAGE_TRANSMITTED',
+      receive(1.002, 'B', 'c_band_uplink', 99, 'MYSTERY_CUSTOM', 64),
+    ].join('\n'))
+    const devices = new Map([
+      [fileMessageDeviceKey('A', 'c_band_uplink'), 'WSF_RADIO_TRANSCEIVER'],
+      [fileMessageDeviceKey('B', 'c_band_uplink'), 'WSF_RADIO_TRANSCEIVER'],
+      [fileMessageDeviceKey('C', 'c_band_uplink'), 'WSF_RADIO_TRANSCEIVER'],
+    ])
+    const result = buildFileMessageLinks(parsed.events, new Set(['A', 'B', 'C']), devices)
+    expect(result.issues).toEqual({ undelivered: 0, ambiguous: 0, unclassified: 0 })
+    expect(result.links).toHaveLength(1)
+    expect(result.links[0]).toMatchObject({ sourcePlatformId: 'A', targetPlatformId: 'B', direction: undefined })
+    expect(readSingleMessageDirection('kForwardSituation')).toBe('FORWARD')
+    expect(readSingleMessageDirection('kReturnReconVideo')).toBe('REVERSE')
+    expect(readSingleMessageDirection('MYSTERY_CUSTOM')).toBeUndefined()
+    expect(formatMessageDirectionLabel(readSingleMessageDirection('MYSTERY_CUSTOM'))).toBe('业务方向未识别')
+    expect(formatMessageDirectionMark(readSingleMessageDirection('MYSTERY_CUSTOM'))).toBe('未')
+    expect(formatMessageDirectionLabel('FORWARD')).toBe('前向')
+    expect(formatMessageDirectionMark('REVERSE')).toBe('返')
   })
 })

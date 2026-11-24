@@ -93,9 +93,56 @@ export const REVERSE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
 export const FILE_MESSAGE_DIRECTION_LABELS: Record<FileMessageDirection, string> = {
   FORWARD: '前向', REVERSE: '返向',
 }
-/** 地图中点使用的单字标记；中文单字自带语义，因此不需要额外图例。 */
+/** 地图中点与动态徽标使用的单字标记，配合方向图例展示。 */
 export const FILE_MESSAGE_DIRECTION_MARKS: Record<FileMessageDirection, string> = {
   FORWARD: '前', REVERSE: '返',
+}
+export const FILE_MESSAGE_DIRECTION_UNKNOWN_LABEL = '业务方向未识别'
+export const FILE_MESSAGE_DIRECTION_UNKNOWN_MARK = '未'
+
+/** 引擎/模板报文类型的展示名；未登记类型原样返回，避免猜测业务含义。 */
+export const FILE_MESSAGE_TYPE_LABELS: Readonly<Record<string, string>> = {
+  CMD_ORDER: '前向指令',
+  STATUS_REPORT: '状态上报',
+  RECON_DATA: '侦察数据',
+  FORWARD_STATUS_REPORT: '前向状态上报',
+  FORWARD_RECON_DATA: '前向侦察数据',
+  kForwardSituation: '前向态势',
+  kForwardTarget: '前向目标',
+  kReturnReconVideo: '返向侦察视频',
+  kReturnReconStatus: '返向侦察状态',
+}
+
+/** 场景通信端口名的中文展示；未登记端口原样返回。 */
+export const COMMUNICATION_PORT_LABELS: Readonly<Record<string, string>> = {
+  sat_link: '卫通', sat_link_a: '卫通 A（前向）', sat_link_b: '卫通 B（返向）',
+  microwave_link: '微波', c_band_uplink: 'C 波段上行', c_band_downlink: 'C 波段下行',
+  l_band_uplink: 'L 波段上行', l_band_downlink: 'L 波段下行', fiber_link: '光纤', lazer_link: '激光通信',
+}
+
+export function formatMessageTypeLabel(messageType: string): string {
+  return FILE_MESSAGE_TYPE_LABELS[messageType] ?? messageType
+}
+
+export function formatCommunicationPortLabel(port: string): string {
+  return COMMUNICATION_PORT_LABELS[port] ?? port
+}
+
+/** 按单条消息类型判定业务方向；未登记在已知前向/返向集合中时返回 undefined。 */
+export function readSingleMessageDirection(messageType: string): FileMessageDirection | undefined {
+  if (FORWARD_MESSAGE_TYPES.has(messageType)) return 'FORWARD'
+  if (REVERSE_MESSAGE_TYPES.has(messageType)) return 'REVERSE'
+  return undefined
+}
+
+/** Format business direction text for link/message details. */
+export function formatMessageDirectionLabel(direction?: FileMessageDirection): string {
+  return direction ? FILE_MESSAGE_DIRECTION_LABELS[direction] : FILE_MESSAGE_DIRECTION_UNKNOWN_LABEL
+}
+
+/** Format single-character direction mark for map pulses. */
+export function formatMessageDirectionMark(direction?: FileMessageDirection): string {
+  return direction ? FILE_MESSAGE_DIRECTION_MARKS[direction] : FILE_MESSAGE_DIRECTION_UNKNOWN_MARK
 }
 
 /**
@@ -131,19 +178,36 @@ export function fileMessageDeviceKey(platformName: string, communicationName: st
   return JSON.stringify([platformName, communicationName])
 }
 
-interface TransmitEndpoint {
+export interface MessageTransmitCandidate {
   eventId: string
   time: number
   platformName: string
   communicationName: string
   messageType: string
+  /** 日志行序或增量流事件序号；同刻收发时用于排除后发生的转发发送记录。 */
+  order?: number
 }
 
-interface ReceiveEndpoint extends TransmitEndpoint {
+export interface MessageReceiveInput extends MessageTransmitCandidate {
   /** 消息序号；仅用于索引发送侧，不转换为数值。 */
   serial: string
   messageSizeBits: number
 }
+
+export interface MessageHopHint {
+  time: number
+  serial: string
+  messageType: string
+  platformName: string
+  communicationName: string
+  destination: string
+}
+
+export type MessagePairOutcome =
+  | { kind: 'PAIRED'; type: FileCommunicationType; transmit: MessageTransmitCandidate; record: FileMessageRecord }
+  | { kind: 'UNDELIVERED' }
+  | { kind: 'AMBIGUOUS' }
+  | { kind: 'UNCLASSIFIED' }
 
 /** 读取通信设备类型；未登记时返回空串，由调用方判定为不可归类。 */
 export function readFileMessageDeviceType(
@@ -325,25 +389,193 @@ export function withDerivedMessageDirections<T>(snapshot: T): T {
  * 候选落在同一平台同一设备时来源唯一（同一消息发往多个接收方会产生多条同刻同序号发送记录）；
  * 候选分散在不同平台或设备时计入 ambiguous 且不生成链路，绝不猜测来源。
  */
+export interface BuildFileMessageLinksOptions {
+  /** 仅当设备类型本身无法判定链路制式（如通用射频端口）时，提供来自清单的精确端点制式映射。 */
+  resolveFallbackType?: (source: FileMessageEndpoint, target: FileMessageEndpoint) => FileCommunicationType | null
+}
+
+/**
+ * 仅当外部清单明确给出完整「平台 + 通信设备」端口对且映射结果唯一时，才补充通用设备端口的链路制式；
+ * 若同一端点对存在多种冲突制式，则返回 null 交由调用方记为未归类。
+ */
+export function createManifestEndpointTypeResolver(
+  manifestDevices: unknown,
+): ((source: FileMessageEndpoint, target: FileMessageEndpoint) => FileCommunicationType | null) | undefined {
+  if (!Array.isArray(manifestDevices) || manifestDevices.length === 0) return undefined
+  const pairTypes = new Map<string, Set<FileCommunicationType>>()
+  const pairKey = (a: { platformId: string; deviceId: string }, b: { platformId: string; deviceId: string }) => JSON.stringify([
+    fileMessageDeviceKey(a.platformId, a.deviceId),
+    fileMessageDeviceKey(b.platformId, b.deviceId),
+  ])
+  const bind = (source: { platformId: string; deviceId: string }, target: { platformId: string; deviceId: string }, type: FileCommunicationType) => {
+    for (const key of [pairKey(source, target), pairKey(target, source)]) {
+      const entry = pairTypes.get(key)
+      if (entry) entry.add(type)
+      else pairTypes.set(key, new Set([type]))
+    }
+  }
+  for (const raw of manifestDevices) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>
+    const type = item.linkType
+    if (typeof type !== 'string' || !Object.hasOwn(FILE_COMMUNICATION_LABELS, type)) continue
+    const linkType = type as FileCommunicationType
+    const source = item.source as Record<string, unknown> | undefined
+    const target = item.target as Record<string, unknown> | undefined
+    if (!source || !target || typeof source.platformId !== 'string' || typeof source.deviceId !== 'string'
+      || typeof target.platformId !== 'string' || typeof target.deviceId !== 'string') continue
+    const srcEndpoint = { platformId: source.platformId, deviceId: source.deviceId }
+    const dstEndpoint = { platformId: target.platformId, deviceId: target.deviceId }
+    if (typeof item.relayPlatformId === 'string' && typeof item.relayDeviceId === 'string') {
+      const relay = { platformId: item.relayPlatformId, deviceId: item.relayDeviceId }
+      bind(srcEndpoint, relay, linkType)
+      bind(relay, dstEndpoint, linkType)
+      continue
+    }
+    const legacyRelay = item.relay as Record<string, unknown> | undefined
+    if (legacyRelay && typeof legacyRelay.platformId === 'string'
+      && typeof legacyRelay.ingressDeviceId === 'string' && typeof legacyRelay.egressDeviceId === 'string') {
+      bind(srcEndpoint, { platformId: legacyRelay.platformId, deviceId: legacyRelay.ingressDeviceId }, linkType)
+      bind({ platformId: legacyRelay.platformId, deviceId: legacyRelay.egressDeviceId }, dstEndpoint, linkType)
+      continue
+    }
+    bind(srcEndpoint, dstEndpoint, linkType)
+  }
+  if (pairTypes.size === 0) return undefined
+  return (source, target) => {
+    const resolved = pairTypes.get(pairKey(
+      { platformId: source.platformName, deviceId: source.communicationName },
+      { platformId: target.platformName, deviceId: target.communicationName },
+    ))
+    return resolved?.size === 1 ? [...resolved][0]! : null
+  }
+}
+
+/**
+ * 将单条接收事件与同序号候选发送事件配对。
+ * 保持 0.15s 最大时延边界，不放宽窗口也不猜测歧义来源；
+ * 同时排除同平台同刻中继自环（接收设备在接收同时向下一跳发送），避免自反歧义。
+ */
+export function matchFileMessageReceive(
+  receive: MessageReceiveInput,
+  transmitCandidates: readonly MessageTransmitCandidate[],
+  platformIds: ReadonlySet<string>,
+  deviceTypes: ReadonlyMap<string, string>,
+  options?: BuildFileMessageLinksOptions & { hops?: readonly MessageHopHint[] },
+): MessagePairOutcome {
+  const resolveType = (source: FileMessageEndpoint, target: FileMessageEndpoint): FileCommunicationType | null => (
+    fileMessageLinkType(deviceTypes, source, target) ?? options?.resolveFallbackType?.(source, target) ?? null
+  )
+  const candidates = transmitCandidates.filter((candidate) => (
+    candidate.messageType === receive.messageType
+    && candidate.platformName !== receive.platformName
+    && candidate.time <= receive.time
+    && receive.time - candidate.time <= MESSAGE_MAX_DELAY_S
+    && !(candidate.time === receive.time && candidate.order !== undefined && receive.order !== undefined && candidate.order > receive.order)
+  ))
+  if (candidates.length === 0) return { kind: 'UNDELIVERED' }
+
+  /*
+   * 只有两端设备能构成已知链路制式的发送候选才是有效来源。
+   * 同一消息经中继转发时，接收记录附近可能同时出现上一跳和下一跳的发送记录；
+   * 下一跳的发送设备与接收设备常常无法构成同一制式。若不先排除这些不兼容候选，
+   * 它们会把唯一有效来源淹没成“歧义”。没有兼容候选时保留原候选集合，
+   * 继续按原有路径计入 unclassified，避免把证据缺口误判为未投递。
+   */
+  const compatible = candidates.filter((candidate) => resolveType(
+    { platformName: candidate.platformName, communicationName: candidate.communicationName },
+    { platformName: receive.platformName, communicationName: receive.communicationName },
+  ) !== null)
+  let eligible = compatible.length > 0 ? compatible : candidates
+
+  const uniqueSources = (items: readonly MessageTransmitCandidate[]) => new Set(
+    items.map((candidate) => fileMessageDeviceKey(candidate.platformName, candidate.communicationName)),
+  )
+
+  if (uniqueSources(eligible).size > 1 && options?.hops?.length) {
+    const receiveDestination = `${receive.platformName}.${receive.communicationName}`
+    const hopSources = new Set(
+      options.hops
+        .filter((hop) => (
+          hop.serial === receive.serial
+          && hop.messageType === receive.messageType
+          && hop.destination === receiveDestination
+          && hop.time <= receive.time
+          && receive.time - hop.time <= MESSAGE_MAX_DELAY_S
+        ))
+        .map((hop) => fileMessageDeviceKey(hop.platformName, hop.communicationName)),
+    )
+    if (hopSources.size > 0) {
+      const byHop = eligible.filter((candidate) => hopSources.has(fileMessageDeviceKey(candidate.platformName, candidate.communicationName)))
+      if (byHop.length > 0 && uniqueSources(byHop).size === 1) eligible = byHop
+    }
+  }
+
+  // 候选设备集合唯一才认定来源；分散时如实记为无法确定。
+  if (uniqueSources(eligible).size > 1) return { kind: 'AMBIGUOUS' }
+  const transmit = eligible[eligible.length - 1]!
+
+  if (!platformIds.has(transmit.platformName) || !platformIds.has(receive.platformName)) {
+    return { kind: 'UNCLASSIFIED' }
+  }
+  const source: FileMessageEndpoint = { platformName: transmit.platformName, communicationName: transmit.communicationName }
+  const target: FileMessageEndpoint = { platformName: receive.platformName, communicationName: receive.communicationName }
+  const type = resolveType(source, target)
+  if (type === null) return { kind: 'UNCLASSIFIED' }
+
+  return {
+    kind: 'PAIRED',
+    type,
+    transmit,
+    record: {
+      sourceEventId: receive.eventId,
+      transmitEventId: transmit.eventId,
+      time: receive.time,
+      source,
+      target,
+      messageType: receive.messageType,
+      messageSizeBits: receive.messageSizeBits,
+      delayS: receive.time - transmit.time,
+    },
+  }
+}
+
 export function buildFileMessageLinks(
   events: readonly AfsimLogEvent[],
   platformIds: ReadonlySet<string>,
   deviceTypes: ReadonlyMap<string, string>,
+  options?: BuildFileMessageLinksOptions,
 ): FileMessageLinkResult {
-  const transmits = new Map<string, TransmitEndpoint[]>()
-  const receives: ReceiveEndpoint[] = []
+  const transmits = new Map<string, MessageTransmitCandidate[]>()
+  const hops = new Map<string, MessageHopHint[]>()
+  const receives: MessageReceiveInput[] = []
 
-  for (const event of events) {
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]!
     // 解析失败的事件保留原文但不参与配对，避免把无效记录当成证据。
     if (event.unparsedText || !event.type.startsWith('MESSAGE_')) continue
+    const serial = (event.fields.message_serial_number ?? event.fields.Number ?? '').trim()
+    const messageType = (event.fields.message_type ?? event.fields.Type ?? '').trim()
+    if (!serial || !messageType) continue
+
+    if (event.type === 'MESSAGE_HOP') {
+      const platformName = event.subject.trim()
+      const communicationName = (event.fields.receiver_system ?? event.fields.System ?? event.fields.comm ?? '').trim()
+      const destination = (event.fields.destination ?? event.fields.Destination ?? '').trim()
+      if (!platformName || !communicationName || !destination.includes('.')) continue
+      const bucket = hops.get(serial)
+      const hint: MessageHopHint = { time: event.time, serial, messageType, platformName, communicationName, destination }
+      if (bucket) bucket.push(hint)
+      else hops.set(serial, [hint])
+      continue
+    }
+
     if (event.type !== 'MESSAGE_TRANSMITTED' && event.type !== 'MESSAGE_RECEIVED') continue
     const platformName = event.subject.trim()
     const communicationName = (event.fields.comm ?? '').trim()
-    const serial = (event.fields.message_serial_number ?? '').trim()
-    const messageType = (event.fields.message_type ?? '').trim()
-    if (!platformName || !communicationName || !serial || !messageType) continue
-    const endpoint: TransmitEndpoint = {
-      eventId: event.id, time: event.time, platformName, communicationName, messageType,
+    if (!platformName || !communicationName || !event.fields.message_serial_number || !event.fields.message_type) continue
+    const endpoint: MessageTransmitCandidate = {
+      eventId: event.id, time: event.time, platformName, communicationName, messageType, order: index,
     }
     if (event.type === 'MESSAGE_TRANSMITTED') {
       const bucket = transmits.get(serial)
@@ -356,54 +588,32 @@ export function buildFileMessageLinks(
     if (!Number.isFinite(messageSizeBits)) continue
     receives.push({ ...endpoint, serial, messageSizeBits })
   }
-  for (const bucket of transmits.values()) bucket.sort((left, right) => left.time - right.time)
+  const byTimeOrder = (left: MessageTransmitCandidate, right: MessageTransmitCandidate) => (
+    left.time - right.time || (left.order ?? 0) - (right.order ?? 0)
+  )
+  for (const bucket of transmits.values()) bucket.sort(byTimeOrder)
 
   const issues: FileMessageLinkIssues = { undelivered: 0, ambiguous: 0, unclassified: 0 }
   const grouped = new Map<string, { type: FileCommunicationType; records: FileMessageRecord[] }>()
 
-  for (const receive of [...receives].sort((left, right) => left.time - right.time)) {
-    const candidates = (transmits.get(receive.serial) ?? []).filter((candidate) => (
-      candidate.messageType === receive.messageType
-      && candidate.time <= receive.time
-      && receive.time - candidate.time <= MESSAGE_MAX_DELAY_S
-    ))
-    if (candidates.length === 0) { issues.undelivered += 1; continue }
-
-    /*
-     * 只有两端设备能构成已知链路制式的发送候选才是有效来源。
-     * 同一消息经中继转发时，接收记录附近可能同时出现上一跳和下一跳的发送记录；
-     * 下一跳的发送设备与接收设备常常无法构成同一制式。若不先排除这些不兼容候选，
-     * 它们会把唯一有效来源淹没成“歧义”。没有兼容候选时保留原候选集合，
-     * 继续按原有路径计入 unclassified，避免把证据缺口误判为未投递。
-     */
-    const compatible = candidates.filter((candidate) => fileMessageLinkType(deviceTypes,
-      { platformName: candidate.platformName, communicationName: candidate.communicationName },
-      { platformName: receive.platformName, communicationName: receive.communicationName }) !== null)
-    const eligible = compatible.length > 0 ? compatible : candidates
-
-    // 候选设备集合唯一才认定来源；分散时如实记为无法确定。
-    const sources = new Set(eligible.map((candidate) => (
-      fileMessageDeviceKey(candidate.platformName, candidate.communicationName)
-    )))
-    if (sources.size > 1) { issues.ambiguous += 1; continue }
-    const transmit = eligible[eligible.length - 1]!
-
-    if (!platformIds.has(transmit.platformName) || !platformIds.has(receive.platformName)) {
-      issues.unclassified += 1
+  for (const receive of [...receives].sort(byTimeOrder)) {
+    const outcome = matchFileMessageReceive(
+      receive,
+      transmits.get(receive.serial) ?? [],
+      platformIds,
+      deviceTypes,
+      { ...options, hops: hops.get(receive.serial) },
+    )
+    if (outcome.kind !== 'PAIRED') {
+      if (outcome.kind === 'UNDELIVERED') issues.undelivered += 1
+      else if (outcome.kind === 'AMBIGUOUS') issues.ambiguous += 1
+      else issues.unclassified += 1
       continue
     }
-    const source: FileMessageEndpoint = { platformName: transmit.platformName, communicationName: transmit.communicationName }
-    const target: FileMessageEndpoint = { platformName: receive.platformName, communicationName: receive.communicationName }
-    const type = fileMessageLinkType(deviceTypes, source, target)
-    if (type === null) { issues.unclassified += 1; continue }
 
-    const id = JSON.stringify([type, source.platformName, source.communicationName,
-      target.platformName, target.communicationName])
-    const record: FileMessageRecord = {
-      sourceEventId: receive.eventId, transmitEventId: transmit.eventId, time: receive.time,
-      source, target, messageType: receive.messageType, messageSizeBits: receive.messageSizeBits,
-      delayS: receive.time - transmit.time,
-    }
+    const { type, record } = outcome
+    const id = JSON.stringify([type, record.source.platformName, record.source.communicationName,
+      record.target.platformName, record.target.communicationName])
     const entry = grouped.get(id)
     if (entry) entry.records.push(record)
     else grouped.set(id, { type, records: [record] })

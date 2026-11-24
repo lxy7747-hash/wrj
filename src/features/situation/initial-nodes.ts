@@ -34,6 +34,8 @@ export interface SituationMapNode {
   latitude: number
   altitude: number
   speed: number
+  /** 位置记录的航向，单位为度，自北顺时针。 */
+  heading?: number
   /** 来源位置的仿真时刻；静态场景配置不提供该值。 */
   time?: number
   positionSource?: 'ENGINE'

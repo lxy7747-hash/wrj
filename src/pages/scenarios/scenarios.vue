@@ -6,11 +6,13 @@ import type { BusinessInformationNodeType, CapabilityState, DeviceParameters, Ge
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { formatScriptExecutionLog } from '../../features/scenarios/script-execution-status'
 import { applyLinkEdit, synchronizePlatformLinkIds } from '../../features/scenarios/link-edit'
+import { effectiveLinkFromPorts, isPlatformPortLinkField, overwriteLegacyLinkFromPorts, projectLinkPortParameters, resolveLinkPortFieldTarget } from '../../features/scenarios/link-port-parameters'
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
 import { createPlatformGrid } from '../../features/scenarios/platform-layout'
-import { PLATFORM_POSITION_RULES, RELAY_DEFAULT_ORIGIN, RELAY_DEFAULT_ROUTE, SATELLITE_GEO_POSITION } from '../../features/scenarios/platform-position-rules'
+import { PLATFORM_POINT_DEFAULT_ALTITUDE, PLATFORM_POSITION_RULES, REAR_DEFAULT_ORIGIN, RELAY_DEFAULT_ORIGIN, RELAY_DEFAULT_ROUTE, SATELLITE_GEO_POSITION } from '../../features/scenarios/platform-position-rules'
 import { saveScriptText } from '../../features/scenarios/script-file'
-import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerReleaseRange } from '../../features/scenarios/jammer-settings'
+import type { ScriptGenerationReceipt as ScriptGenerationResult } from '../../features/scenarios/script-package-preflight'
+import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerBands, readJammerReleaseRange, wattsToDbm } from '../../features/scenarios/jammer-settings'
 import { linkTypeDefaults, RAIN_TIER_OPTIONS, RAIN_TIER_RATES, type RainTier } from '../../features/scenarios/link-calc-defaults'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
@@ -29,10 +31,11 @@ import {
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
-import { useSimulationStore } from '../../stores/simulation'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
+import ScriptPreviewDialog from '../../components/scenarios/ScriptPreviewDialog.vue'
+import ScriptGenerationReceipt from '../../components/scenarios/ScriptGenerationReceipt.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
 import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
 import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
@@ -42,13 +45,14 @@ import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vu
 import TaskPhaseEditor from '../../components/scenarios/TaskPhaseEditor.vue'
 import NativeEsmEditor, { NATIVE_ESM_PROBE_DEFAULTS } from '../../components/scenarios/NativeEsmEditor.vue'
 import { SCENARIO_BASIC_DEFAULTS, scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
+import { readDeviceParameters, TEMPLATE_PLATFORM_TYPES, templatePortAntennaName } from '../../features/scenarios/template-defaults'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
+import { formatValidationFieldLabel, formatValidationIssueMessage } from '../../features/scenarios/validation-field-labels'
 
 const scenarioStore = useScenarioStore()
 const props = defineProps<{ managed?: boolean }>()
 const emit = defineEmits<{ saved: []; back: [] }>()
 const authStore = useAuthStore()
-const simulationStore = useSimulationStore()
 const {
   draft,
   dirty,
@@ -67,11 +71,22 @@ const {
   preflight,
 } = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
+const LINK_PAGE_SIZE = 30
+const linkPage = ref(1)
+const portParametersVisible = ref(false)
+const portParametersError = ref('')
+const portParametersWarning = ref('')
+const deviceFocusPath = ref('')
 const showIds = ref(false)
 const draftReviewed = ref(false)
-const savingScript = ref(false)
+const scriptAction = ref<'save' | 'generate' | null>(null)
+const previewingScript = ref(false)
+const scriptPreviewVisible = ref(false)
 const scriptOutputPath = ref('')
 const scriptGenerationLog = ref<string[]>([])
+const scriptGenerationReceipt = ref<ScriptGenerationResult | null>(null)
+const scriptGenerationReceiptVisible = ref(false)
+const scriptGenerationDialog = ref<InstanceType<typeof ScriptGenerationReceipt> | null>(null)
 /** 日志直接读取本次预览的 mapping.json，避免页面按配置重新推断“已写入”。 */
 function executionLog(): string[] { return script.value === null ? [] : formatScriptExecutionLog(script.value.preview) }
 const validationAttempted = ref(false)
@@ -79,12 +94,17 @@ const touchedFields = ref(new Set<string>())
 watch(() => draft.value?.config.scenario.id, () => {
   validationAttempted.value = false
   touchedFields.value.clear()
+  linkPage.value = 1
+  portParametersVisible.value = false
+  portParametersError.value = ''
+  portParametersWarning.value = ''
 }, { flush: 'sync' })
 let active = true
 const executionLifetime = new AbortController()
 onBeforeUnmount(() => { active = false; executionLifetime.abort() })
 const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
+const otherPlatformNodes = computed(() => draft.value?.config.platforms.filter((_, index) => index !== editingPlatformIndex.value))
 const platformEditor = ref<Platform | null>(null)
 const platformEditorError = ref('')
 const detailPlatformId = ref<string | null>(null)
@@ -98,6 +118,7 @@ watch(draft, () => {
 const linkDialogVisible = ref(false)
 const editingLinkIndex = ref<number | null>(null)
 const linkSettingsVisible = ref(false)
+const linkSettingsPanel = ref<InstanceType<typeof LinkSettingsPanel> | null>(null)
 const seaAreaVisible = ref(false)
 const linkEditorLink = ref<Link | null>(null)
 const linkEditorError = ref('')
@@ -166,6 +187,10 @@ const businessNodeTypeCounts = computed<Record<BusinessInformationNodeType, numb
 const businessNodeTypeCount = computed(() => BUSINESS_INFORMATION_NODE_TYPES.filter((type) => businessNodeTypeCounts.value[type] > 0).length)
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
 const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
+const linkPageCount = computed(() => Math.max(1, Math.ceil((draft.value?.config.links.length ?? 0) / LINK_PAGE_SIZE)))
+const linkPageOffset = computed(() => (linkPage.value - 1) * LINK_PAGE_SIZE)
+const pagedLinks = computed(() => draft.value?.config.links.slice(linkPageOffset.value, linkPageOffset.value + LINK_PAGE_SIZE) ?? [])
+watch(linkPageCount, count => { linkPage.value = Math.min(linkPage.value, count) })
 const linkSettings = computed(() => readLinkSettings(draft.value?.config ?? { platforms: [] }))
 
 /** 写入链路全局设置；settings 为面板提交的配置副本，更新后标记草稿待保存。 */
@@ -178,7 +203,8 @@ const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((
 const liveValidation = computed(() => {
   if (!draft.value) return { valid: true, errors: [], warnings: [] }
   const config = draft.value.config
-  const result = inspectScenarioConfig(config, 'write').result
+  const effectiveConfig = { ...config, links: config.links.map(link => effectiveLinkFromPorts(config, link)) }
+  const result = inspectScenarioConfig(effectiveConfig, 'write').result
   const extensions = inspectScenarioUiExtensions(draft.value.uiExtensions, config.jammers.map(item => item.id), config.sensors.map(item => item.id)).result
   return { valid: result.valid && extensions.valid, errors: [...result.errors, ...extensions.errors], warnings: result.warnings }
 })
@@ -188,12 +214,25 @@ const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].in
 const configurationTab = computed(() => ['scenario', 'platforms', 'links', 'jammers', 'data'].includes(activeTab.value))
 const deviceParametersPanel = ref<InstanceType<typeof DeviceParametersPanel> | null>(null)
 const scriptPending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(scriptState.value))
+const scenarioActionsBusy = computed(() => scriptAction.value !== null || previewingScript.value || pending.value || scriptPending.value)
 const alreadySaved = computed(() => draft.value !== null && draft.value.revision > 0
   && !dirty.value && !draft.value.locked && !pending.value && !scriptPending.value)
+const currentScriptPreview = computed(() => {
+  const current = draft.value
+  const preview = script.value
+  if (!current || !preview || current.locked || dirty.value) return null
+  return preview.scenarioId === current.config.scenario.id
+    && preview.configVersion === `${current.config.scenario.id}-v${current.revision}` ? preview : null
+})
+watch(currentScriptPreview, preview => { if (!preview) scriptPreviewVisible.value = false }, { flush: 'sync' })
 const canMaintainTemplates = computed(() => authStore.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed)
 
 // 校验资格只属于当前草稿；编辑、重载或替换草稿后失效，不把“已保存”等同于“已校验”。
-watch([draft, dirty], () => { draftReviewed.value = false }, { flush: 'sync' })
+watch([draft, dirty], () => {
+  draftReviewed.value = false
+  scriptGenerationReceiptVisible.value = false
+  scriptGenerationReceipt.value = null
+}, { flush: 'sync' })
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -279,7 +318,9 @@ function relativeEditorIssues(result: { errors: ValidationIssue[]; warnings: Val
   const collection = path.slice(0, path.lastIndexOf('['))
   return [...result.errors, ...result.warnings].flatMap(issue => issue.fieldPath.startsWith(`${path}.`)
     ? [{ ...issue, fieldPath: issue.fieldPath.slice(path.length + 1) }]
-    // 整个对象级的问题（如链路端口映射不符）显示在类型字段下。
+    // 端口映射不符是端点组合问题，挂在源、目标节点下，不能显示成链路类型非法。
+    : issue.fieldPath === path && (issue.code === 'TEMPLATE_PORT_MAPPING_INVALID' || issue.code === 'TEMPLATE_PORT_MAPPING_WARNING')
+      ? (['sourcePlatformId', 'targetPlatformId'] as const).map(fieldPath => ({ ...issue, fieldPath }))
     : issue.fieldPath === path ? [{ ...issue, fieldPath: 'type' }]
       // 集合级错误（如数量上限、类型缺失）落到类型或 ID 字段；集合级警告是整场景提示，交由校验面板展示，不占用编辑弹框字段。
       : issue.fieldPath === collection
@@ -296,11 +337,23 @@ function validatePlatformFields(platform: Platform): ValidationIssue[] {
   return relativeEditorIssues(inspectScenarioConfig(config, 'write').result, `platforms[${index}]`)
 }
 
+function withPortInheritance(config: Pick<ScenarioConfig, 'deviceParameters' | 'platforms'>, link: Link): Link {
+  return overwriteLegacyLinkFromPorts(config, link)
+}
+
+function resolveEditorLinkPorts(link: Link) {
+  if (!draft.value) return null
+  const config = draft.value.config
+  const previousId = editingLinkIndex.value === null ? undefined : config.links[editingLinkIndex.value]?.id
+  return projectLinkPortParameters(config, link, previousId)
+}
+
 function validateLinkFields(link: Link, demand?: InformationDemand | null): ValidationIssue[] {
   if (!draft.value) return []
   const config = structuredClone(toRaw(draft.value.config))
   const index = editingLinkIndex.value ?? config.links.length
-  config.links[index] = structuredClone(toRaw(link))
+  config.links = config.links.map(item => effectiveLinkFromPorts(config, item))
+  config.links[index] = effectiveLinkFromPorts(config, withPortInheritance(config, structuredClone(toRaw(link))))
   synchronizePlatformLinkIds(config, link.id)
   let demandIndex = -1
   if (demand) {
@@ -421,10 +474,58 @@ const legacySimSpeedLabel = computed(() => {
     : `当前：${clock}×（旧场景）`
 })
 
-function updateDeviceParameters(value: DeviceParameters): void {
+function formatPortParametersError(errors: readonly ValidationIssue[], config: Pick<ScenarioConfig, 'platforms' | 'links' | 'jammers' | 'sensors'>): string {
+  const firstError = errors[0]
+  if (!firstError) return ''
+  const label = formatValidationFieldLabel(firstError.fieldPath, config)
+  return errors.length > 1
+    ? `共有 ${errors.length} 项端口参数校验未通过，请先修正：${label}（${firstError.message}）`
+    : `${label}：${firstError.message}`
+}
+
+function updatePortParameters(value: DeviceParameters): void {
   if (!draft.value) return
-  draft.value.config.deviceParameters = value
+  const config = draft.value.config
+  config.deviceParameters = value
+  config.links = toRaw(config.links).map(link => overwriteLegacyLinkFromPorts(config, link))
+  portParametersWarning.value = ''
+  if (portParametersError.value) {
+    const remaining = liveValidation.value.errors.filter(issue => issue.fieldPath.startsWith('deviceParameters'))
+    portParametersError.value = formatPortParametersError(remaining, config)
+  }
   markDirty()
+}
+
+async function closePortParameters(): Promise<void> {
+  if (draft.value && !pending.value && !draft.value.locked) {
+    const config = draft.value.config
+    const deviceErrors = liveValidation.value.errors.filter(issue => issue.fieldPath.startsWith('deviceParameters'))
+    if (deviceErrors.length > 0) {
+      const firstError = deviceErrors[0]!
+      portParametersError.value = formatPortParametersError(deviceErrors, config)
+      portParametersWarning.value = ''
+      deviceParametersPanel.value?.revealField(firstError.fieldPath)
+      await nextTick()
+      // 等待切换标签页后 el-table 列完成异步挂载再聚焦。
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      await nextTick()
+      focusValidationField(firstError.fieldPath)
+      return
+    }
+    let changed = false
+    const updatedLinks = toRaw(config.links).map((link) => {
+      const next = overwriteLegacyLinkFromPorts(config, link)
+      if (next !== link && JSON.stringify(next) !== JSON.stringify(link)) changed = true
+      return next
+    })
+    if (changed) {
+      config.links = updatedLinks
+      markDirty()
+    }
+  }
+  portParametersError.value = ''
+  portParametersWarning.value = ''
+  portParametersVisible.value = false
 }
 
 type NaturalNumberKey = 'rainAltitudeLimitM' | 'rainAttenuationDb' | 'simplifiedAttenuationDbPerKm' | 'polarizationMismatchDb'
@@ -541,10 +642,11 @@ function openNewPlatform(preferredType?: PlatformType | 'business' | 'supporting
     ...(targetType === 'COMMUNICATION_SATELLITE' ? { satelliteType: defaultSatelliteType } : {}),
     category: PLATFORM_TYPE_DOMAINS[targetType] ?? (isBusiness ? 'air' : 'space'),
     initialPosition: targetType === 'COMMUNICATION_SATELLITE' ? { ...SATELLITE_GEO_POSITION }
-      : targetType === 'FORWARD_RELAY_NODE' ? { ...RELAY_DEFAULT_ORIGIN } : {
+      : targetType === 'FORWARD_RELAY_NODE' ? { ...RELAY_DEFAULT_ORIGIN }
+      : targetType === 'REAR_COMMAND_NODE' ? { ...REAR_DEFAULT_ORIGIN } : {
       longitude: PLATFORM_POSITION_RULES[targetType]?.minLongitude ?? 0,
       latitude: PLATFORM_POSITION_RULES[targetType]?.minLatitude ?? 0,
-      altitude: 0,
+      altitude: targetType === 'AIRBORNE_MISSION_CLUSTER' ? PLATFORM_POINT_DEFAULT_ALTITUDE : 0,
     },
     waypoints: targetType === 'FORWARD_RELAY_NODE' ? RELAY_DEFAULT_ROUTE.waypoints.map(point => ({ ...point })) : [],
     ...(targetType === 'FORWARD_RELAY_NODE' ? { loiterWaypoints: RELAY_DEFAULT_ROUTE.loiterWaypoints.map(point => ({ ...point })) } : {}),
@@ -754,6 +856,7 @@ function openNewLink(): void {
  * @sideEffects 记录编辑目标并打开对话框；对话框内部创建副本，取消时不会污染草稿。
  */
 function openLinkEditor(link: Link, index: number): void {
+  linkPage.value = Math.floor(index / LINK_PAGE_SIZE) + 1
   // 补默认值前先取原始对象，避免嵌套响应式代理导致弹框的深拷贝失败。
   linkEditorLink.value = { ...toRaw(link), enabled: readLinkEnabled(link, draft.value?.config.linkSettings) }
   editingLinkIndex.value = index
@@ -789,7 +892,10 @@ async function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): Pr
   ))) {
     return showEditorValidationMessage('卫星链路的一端或中继须选择通信卫星。')
   }
-  const editedLink = structuredClone(toRaw(linkEditor))
+  const editedLink = withPortInheritance(draft.value.config, structuredClone(toRaw(linkEditor)))
+  if (editedLink.inheritPortParameters && editedLink.parameterSource?.fields.some(field => isPlatformPortLinkField(editedLink.type, field))) {
+    return showEditorValidationMessage('请先取消链路上的端口参数引用，再改用平台端口参数。')
+  }
   if (!demand) {
     return showEditorValidationMessage('请填写该链路的业务参数。')
   }
@@ -811,6 +917,7 @@ async function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): Pr
     applyLinkEdit(candidate, editedLink, editedDemand, previousLinkId)
     draft.value.config = candidate
     markDirty()
+    if (editingLinkIndex.value === null) linkPage.value = linkPageCount.value
     linkDialogVisible.value = false
     ElMessage.success(editingLinkIndex.value === null ? '链路已新增，保存草稿后生效。' : '链路已更新，保存草稿后生效。')
     return true
@@ -819,6 +926,7 @@ async function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): Pr
   const saved = await scenarioStore.saveLink(editedLink, editedDemand, previousLinkId, executionLifetime.signal)
   if (!active || epoch !== scenarioStore.requestEpoch) return false
   if (!saved) return showEditorValidationMessage(scenarioStore.resultMessage)
+  if (editingLinkIndex.value === null) linkPage.value = linkPageCount.value
   linkDialogVisible.value = false
   ElMessage.success('链路、关联业务及参数引用已保存。')
   return true
@@ -827,12 +935,13 @@ async function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): Pr
 /**
  * 删除指定链路并清理平台反向关联。
  * @param link 需要删除的链路。
- * @param index 链路在当前草稿集合中的位置。
  * @returns 删除成功时返回 `true`。
  * @sideEffects 从草稿移除链路及所有对应平台关联，并设置未保存标记。
  */
-function removeLink(link: Link, index: number): boolean {
+function removeLink(link: Link): boolean {
   if (draft.value === null || pending.value || draft.value.locked) return false
+  const index = draft.value.config.links.indexOf(link)
+  if (index < 0) return false
   if (link.parameterSource) {
     ElMessage.error('该链路仍引用基础数据，请先编辑链路，取消引用并保存后再删除。')
     return false
@@ -856,6 +965,19 @@ function removeLink(link: Link, index: number): boolean {
 /** 读取链路类型的中文名称。 */
 function linkTypeLabel(type: LinkType): string {
   return LINK_TYPE_LABELS[type]
+}
+
+/**
+ * 在链路列表行内切换当前链路启停。
+ * @param link 需要切换的链路（草稿内对象）。
+ * @param enabled 新的启用状态。
+ * @returns 无返回值。
+ * @sideEffects 写入链路 enabled 并标记草稿未保存。
+ */
+function setLinkEnabled(link: Link, enabled: boolean): void {
+  if (draft.value === null || pending.value || draft.value.locked) return
+  link.enabled = enabled
+  markDirty()
 }
 
 /**
@@ -1053,6 +1175,26 @@ function jammerTypeLabel(type: Jammer['type']): string {
   return JAMMER_TYPE_LABELS[type]
 }
 
+function jammerTypeTagType(type: Jammer['type']): 'danger' | 'warning' | 'info' {
+  return type === 'BARRAGE' ? 'danger' : type === 'SPOT' ? 'warning' : 'info'
+}
+
+function formatJammerPowerPrimary(jammer: Jammer): string {
+  if (!Number.isFinite(jammer.defaultPower) || jammer.defaultPower <= 0) return `${jammer.defaultPower} W`
+  const dbm = Number(wattsToDbm(jammer.defaultPower).toFixed(1))
+  const sign = dbm > 0 ? '+' : ''
+  return `${sign}${dbm} dBm`
+}
+
+function formatJammerPowerDetail(jammer: Jammer): string {
+  const watts = Number.isFinite(jammer.defaultPower) ? `${Number(jammer.defaultPower.toPrecision(6))} W` : `${jammer.defaultPower} W`
+  return jammer.eirpDbw === undefined ? watts : `${watts} · EIRP ${jammer.eirpDbw} dBW`
+}
+
+function formatKmCell(meters: number): number {
+  return Number((meters / METERS_PER_KILOMETER).toFixed(2))
+}
+
 function jammerExtension(jammerId: string): JammerUiExtension | undefined {
   return draft.value?.uiExtensions.jammers.find((extension) => extension.jammerId === jammerId)
 }
@@ -1174,7 +1316,15 @@ function createLinkBusiness(link: Link): InformationDemand {
 function validationTargetId(fieldPath: string): string | undefined {
   const portField = /^deviceParameters\.ports\.([^.]+)\.([^.]+)\.([^.]+)$/.exec(fieldPath)
   if (portField) return `port-${portField[1]}-${portField[2]}-${portField[3]}`
-  if (fieldPath.startsWith('deviceParameters.antennaGains.')) return `antenna-gain-${fieldPath.split('.').at(-1)}`
+  if (fieldPath.startsWith('deviceParameters.antennaGains.')) {
+    const antennaName = fieldPath.split('.').at(-1)
+    const ports = readDeviceParameters(draft.value?.config ?? {}).ports
+    for (const type of TEMPLATE_PLATFORM_TYPES) {
+      const port = Object.keys(ports[type]).find(name => name !== 'fiber_link' && templatePortAntennaName(type, name) === antennaName)
+      if (port) return `port-${type}-${port}-peakGainDb`
+    }
+    return `antenna-gain-${antennaName}`
+  }
   const sensorField = /^uiExtensions\.sensors\[(\d+)\]\.(.+)$/.exec(fieldPath)
   if (sensorField) {
     const extension = draft.value?.uiExtensions.sensors[Number(sensorField[1])]
@@ -1182,9 +1332,27 @@ function validationTargetId(fieldPath: string): string | undefined {
     if (sensorField[2] === 'probability') return `sensor-probability-${index}`
   }
   if (fieldPath === 'jammingEnabled') return 'jamming-enabled'
+  const waypointMotionField = /^platforms\[\d+\]\.waypoints\[(\d+)\]\.(heading|acceleration)$/.exec(fieldPath)
+  if (waypointMotionField) return `waypoint-${waypointMotionField[2]}-${waypointMotionField[1]}`
+  const advancedPlatformField = /^platforms\[\d+\]\.(faction|communicationRangeM)$/.exec(fieldPath)?.[1]
+  if (advancedPlatformField) return advancedPlatformField === 'faction' ? 'platform-faction' : 'platform-communication-range'
+  const jammerEnabledMatch = /^uiExtensions\.jammers\[(\d+)\]\.enabled$/.exec(fieldPath)
+  if (jammerEnabledMatch) {
+    const jammerId = draft.value?.uiExtensions.jammers[Number(jammerEnabledMatch[1])]?.jammerId
+    if (jammerId) return `toggle-jammer-${jammerId}`
+  }
+  const jammerBandField = /^jammers\[\d+\]\.weaponBands\[(\d+)\]\.(frequency|bandwidth|mode|spotBandwidthMHz|sweepDutyCycle)$/.exec(fieldPath)
+  if (jammerBandField) {
+    const bandIndex = Number(jammerBandField[1])
+    const field = jammerBandField[2]
+    if (field === 'mode') return bandIndex === 0 ? 'jammer-type' : `jammer-band-mode-${bandIndex}`
+    if (field === 'spotBandwidthMHz') return `jammer-band-spot-bandwidth-${bandIndex}`
+    if (field === 'sweepDutyCycle') return `jammer-band-sweep-duty-${bandIndex}`
+    return bandIndex === 0 ? `jammer-${field}` : `jammer-band-${field}-${bandIndex}`
+  }
   const jammerField = /^(?:jammers|uiExtensions\.jammers)\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (jammerField) return ({ id: 'jammer-id', platformId: 'jammer-platform', type: 'jammer-type', defaultPower: 'jammer-power',
-    direction: 'jammer-direction', elevation: 'jammer-elevation', enabled: 'jammer-enabled', frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', detectionRange: 'jammer-range', jammingRange: 'jammer-jamming-range', releaseRange: 'jammer-release-range', triggerTimeS: 'jammer-trigger-time', detectionDelayS: 'jammer-detection-delay', jammingDurationS: 'jammer-jamming-duration' } as Record<string, string>)[jammerField] ?? `jammer-${jammerField}`
+    direction: 'jammer-direction', elevation: 'jammer-elevation', frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', weaponBands: 'jammer-add-band', detectionRange: 'jammer-range', jammingRange: 'jammer-jamming-range', releaseRange: 'jammer-release-range', triggerTimeS: 'jammer-trigger-time', detectionDelayS: 'jammer-detection-delay', jammingDurationS: 'jammer-jamming-duration' } as Record<string, string>)[jammerField] ?? `jammer-${jammerField}`
   const demandField = /^informationDemand\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (demandField && linkDialogVisible.value) {
     const sharedTarget = ({ direction: 'link-direction', sourcePlatformId: 'link-source', destinationPlatformIds: 'link-target', linkId: 'link-id' } as Record<string, string>)[demandField]
@@ -1196,20 +1364,17 @@ function validationTargetId(fieldPath: string): string | undefined {
   const linkField = /^links\[\d+\]\.(.+)$/.exec(fieldPath)?.[1]
   if (linkField) return ({
     enabled: 'link-enabled',
-    antennaGainCorrectionDb: 'link-gain-correction', coding: 'link-coding',
+    antennaGainCorrectionDb: 'link-gain-correction',
     antiJammingGainDb: 'link-anti-jamming-gain', spatialIsolationDb: 'link-spatial-isolation',
-    berThreshold: 'link-ber-threshold', band: 'link-band',
+    modulation: 'link-modulation', 'laser.modulation': 'laser-modulation', berThreshold: 'link-ber-threshold', band: 'link-band',
     rxFrequency: 'link-rx-frequency', rxBandwidth: 'link-rx-bandwidth', txPolarization: 'link-tx-polarization',
     rxPolarization: 'link-rx-polarization', noiseFigureDb: 'link-noise-figure',
   } as Record<string, string>)[linkField]
   if (fieldPath.startsWith('linkSettings.enabledSatellites')) return 'link-relay-satellite'
-  const ruleField = /^linkSettings\.switchRules\[(\d+)\](?:\.(\w+))?/.exec(fieldPath)
-  if (ruleField) return ruleField[2] ? `switch-rule-${ruleField[1]}-${ruleField[2]}` : 'link-switch-rules'
   const linkCalcField = /^linkSettings\.linkCalc\.(\w+)/.exec(fieldPath)?.[1]
   if (linkCalcField) return `link-calc-${linkCalcField}`
   const hotLinkField = /^linkSettings\.hotLinks\.(forward|reverse)\[(\d+)\]/.exec(fieldPath)
   if (hotLinkField) return `hot-link-${hotLinkField[1]}-${hotLinkField[2]}`
-  if (fieldPath === 'linkSettings.hotLinks.endPlatformType') return 'hot-link-end-type'
   if (fieldPath.startsWith('linkSettings.hotLinks')) return 'hot-link-settings'
   const naturalField = /^scenario\.environment\.(\w+)/.exec(fieldPath)?.[1]
   if (naturalField && NATURAL_ENVIRONMENT_FIELD_KEYS.has(naturalField)) return `scenario-env-${naturalField}`
@@ -1266,36 +1431,58 @@ function focusValidationField(fieldPath: string): void {
  * @sideEffects 切换页签；集合项问题会打开对应编辑弹框并显示中文原因。
  */
 async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
-  // 编号异常定位时展开隐藏字段，不影响正常配置的精简展示。
-  if (issue.fieldPath === 'scenario.id' || /(?:\.id|Ids|\.linkId)$/.test(issue.fieldPath) || issue.code.endsWith('_ID_DUPLICATED')) showIds.value = true
-  const platformIndex = Number(/^platforms\[(\d+)\]/.exec(issue.fieldPath)?.[1])
-  const linkIndex = Number(/^links\[(\d+)\]/.exec(issue.fieldPath)?.[1])
-  const jammerIndex = Number(/^(?:jammers|uiExtensions\.jammers)\[(\d+)\]/.exec(issue.fieldPath)?.[1])
+  let targetPath = issue.fieldPath
+  const linkFieldMatch = /^links\[(\d+)\]\.([^.]+)$/.exec(issue.fieldPath)
+  if (linkFieldMatch && draft.value) {
+    const portTarget = resolveLinkPortFieldTarget(draft.value.config, Number(linkFieldMatch[1]), linkFieldMatch[2]!)
+    if (portTarget && (issue.severity === 'WARNING' || !portTarget.legacyLinkOverrideInvalid)) {
+      targetPath = portTarget.fieldPath
+    }
+  }
 
-  if (issue.fieldPath.startsWith('platforms')) activeTab.value = 'platforms'
-  else if (issue.fieldPath.startsWith('links') || issue.fieldPath.startsWith('linkSettings') || issue.fieldPath.startsWith('informationDemand')) activeTab.value = 'links'
-  else if (issue.fieldPath.startsWith('deviceParameters')) activeTab.value = 'links'
-  else if (issue.fieldPath.startsWith('jammers') || issue.fieldPath.startsWith('uiExtensions.jammers') || issue.fieldPath === 'jammingEnabled') activeTab.value = 'jammers'
-  else if (issue.fieldPath.startsWith('sensors') || issue.fieldPath.startsWith('uiExtensions.sensors')
-    || issue.fieldPath.startsWith('output')) activeTab.value = 'data'
+  // 编号异常定位时展开隐藏字段，不影响正常配置的精简展示。
+  if (targetPath === 'scenario.id' || /(?:\.id|Ids|\.linkId)$/.test(targetPath) || issue.code.endsWith('_ID_DUPLICATED')) showIds.value = true
+  const platformIndex = Number(/^platforms\[(\d+)\]/.exec(targetPath)?.[1])
+  const linkIndex = Number(/^links\[(\d+)\]/.exec(targetPath)?.[1])
+  const jammerIndex = Number(/^(?:jammers|uiExtensions\.jammers)\[(\d+)\]/.exec(targetPath)?.[1])
+
+  if (targetPath.startsWith('platforms')) activeTab.value = 'platforms'
+  else if (targetPath.startsWith('links') || targetPath.startsWith('linkSettings') || targetPath.startsWith('informationDemand')) activeTab.value = 'links'
+  else if (targetPath.startsWith('deviceParameters')) {
+    activeTab.value = 'links'
+    deviceFocusPath.value = targetPath
+    const banner = `${formatValidationFieldLabel(targetPath, draft.value?.config)}：${formatValidationIssueMessage(issue, draft.value?.config)}`
+    if (issue.severity === 'WARNING') {
+      portParametersWarning.value = banner
+      portParametersError.value = ''
+    } else {
+      portParametersError.value = banner
+      portParametersWarning.value = ''
+    }
+    portParametersVisible.value = true
+  }
+  else if (targetPath.startsWith('jammers') || targetPath.startsWith('uiExtensions.jammers') || targetPath === 'jammingEnabled') activeTab.value = 'jammers'
+  else if (targetPath.startsWith('sensors') || targetPath.startsWith('uiExtensions.sensors')
+    || targetPath.startsWith('output')) activeTab.value = 'data'
   else activeTab.value = 'scenario'
   await nextTick()
 
-  if (issue.fieldPath.startsWith('deviceParameters')) {
-    deviceParametersPanel.value?.revealField(issue.fieldPath)
+  if (targetPath.startsWith('deviceParameters')) {
+    deviceParametersPanel.value?.revealField(targetPath)
     await nextTick()
   }
-  if (issue.fieldPath.startsWith('linkSettings')) {
+  if (targetPath.startsWith('linkSettings')) {
     linkSettingsVisible.value = true
+    linkSettingsPanel.value?.revealField(targetPath.slice('linkSettings.'.length))
   }
-  const demandIndex = Number(/^informationDemand\[(\d+)\]/.exec(issue.fieldPath)?.[1])
+  const demandIndex = Number(/^informationDemand\[(\d+)\]/.exec(targetPath)?.[1])
   if (Number.isInteger(demandIndex) && draft.value?.config.informationDemand[demandIndex]) {
     const demand = draft.value.config.informationDemand[demandIndex]!
     const associatedIndex = draft.value.config.links.findIndex(link => link.id === demand.linkId)
     if (associatedIndex >= 0) {
       openLinkEditor(draft.value.config.links[associatedIndex]!, associatedIndex)
       linkEditorError.value = issue.message
-      linkFocusPath.value = issue.fieldPath
+      linkFocusPath.value = targetPath
       return
     }
   }
@@ -1305,15 +1492,16 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
   } else if (Number.isInteger(linkIndex) && draft.value?.config.links[linkIndex] !== undefined) {
     openLinkEditor(draft.value.config.links[linkIndex], linkIndex)
     linkEditorError.value = issue.message
+    linkFocusPath.value = targetPath
   } else if (Number.isInteger(jammerIndex) && draft.value?.config.jammers[jammerIndex] !== undefined) {
     openJammerEditor(draft.value.config.jammers[jammerIndex], jammerIndex)
     jammerEditorError.value = issue.message
-    jammerFocusPath.value = issue.fieldPath
+    jammerFocusPath.value = targetPath
   }
   await nextTick()
   // 等待表格列完成异步挂载后再聚焦。
   await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-  focusValidationField(issue.fieldPath)
+  focusValidationField(targetPath)
 }
 
 /**
@@ -1350,91 +1538,115 @@ async function saveAsTemplate(): Promise<void> {
   }
 }
 
-/**
- * 保存当前场景草稿并通过浮层消息反馈结果。
- * @returns 保存流程结束后兑现且不返回值的 Promise。
- * @sideEffects 校验并保存、生成 TXT，全部成功后自动启动已保存场景；失败时停止后续阶段。
- */
-async function saveScenario(): Promise<void> {
-  if (savingScript.value || pending.value || scriptPending.value) return
+function validateEditorDraft(): boolean {
   validationAttempted.value = true
-  if (!liveValidation.value.valid) {
-    scenarioStore.validation = liveValidation.value
-    scenarioStore.panelState = 'ERROR'
-    scenarioStore.resultCode = 'VALIDATION_FAILED'
-    scenarioStore.resultMessage = `请先修正 ${liveValidation.value.errors.length} 项配置错误。`
-    activeTab.value = 'validation'
-    return
-  }
+  if (liveValidation.value.valid) return true
+  scenarioStore.validation = liveValidation.value
+  scenarioStore.panelState = 'ERROR'
+  scenarioStore.resultCode = 'VALIDATION_FAILED'
+  scenarioStore.resultMessage = `请先修正 ${liveValidation.value.errors.length} 项配置错误。`
+  activeTab.value = 'validation'
+  return false
+}
+
+function persistEditorDraft(): Promise<boolean> {
+  const config = draft.value?.config
+  if (config) config.links = toRaw(config.links).map(link => overwriteLegacyLinkFromPorts(config, link))
+  return scenarioStore.saveScenario()
+}
+
+async function openScriptPreview(): Promise<void> {
+  const initialDraft = draft.value
+  if (!initialDraft || initialDraft.locked || scenarioActionsBusy.value || !validateEditorDraft()) return
+  const epoch = scenarioStore.requestEpoch
+  const userId = authStore.principal?.userId
+  const editorCurrent = () => active && epoch === scenarioStore.requestEpoch && userId === authStore.principal?.userId && !draft.value?.locked
+  previewingScript.value = true
+  try {
+    if (!alreadySaved.value) {
+      const editEpoch = scenarioStore.scriptEpoch
+      try {
+        await ElMessageBox.confirm('脚本预览使用已保存的场景修订。是否保存当前草稿并继续预览？', '保存并预览', {
+          confirmButtonText: '保存并预览', cancelButtonText: '取消', type: 'info',
+        })
+      } catch { return }
+      if (!editorCurrent() || draft.value !== initialDraft || scenarioStore.scriptEpoch !== editEpoch) return
+      const saved = await persistEditorDraft()
+      if (!editorCurrent()) return
+      if (!saved) { activeTab.value = 'validation'; return }
+    }
+    const savedDraft = draft.value
+    scenarioStore.clearScriptPreview()
+    const generated = await generateScriptPreview()
+    if (!editorCurrent() || draft.value !== savedDraft || dirty.value) return
+    if (!generated) {
+      if (panelState.value === 'ERROR') activeTab.value = 'validation'
+      else if (scenarioStore.scriptResultCode !== 'CONFIRMATION_REQUIRED') ElMessage.error(scriptResultMessage.value)
+      return
+    }
+    if (!currentScriptPreview.value) { ElMessage.error('脚本版本与当前场景不一致，请重新生成预览。'); return }
+    scriptPreviewVisible.value = true
+  } finally { previewingScript.value = false }
+}
+
+/** 校验并保存场景，生成 TXT；失败时停止后续阶段。 */
+async function saveScenario(action: 'save' | 'generate' = 'save'): Promise<void> {
+  const initialDraft = draft.value
+  if (!initialDraft || initialDraft.locked || scenarioActionsBusy.value || !validateEditorDraft()) return
   const saved = alreadySaved.value
   const epoch = scenarioStore.requestEpoch
   const userId = authStore.principal?.userId
-  savingScript.value = true
-  draftReviewed.value = false
+  const editorCurrent = () => active && epoch === scenarioStore.requestEpoch && userId === authStore.principal?.userId && !draft.value?.locked
+  const retry = action === 'generate' ? '请重试生成。' : '请重试保存。'
+  scriptAction.value = action
   try {
+    if (action === 'generate' && !saved) {
+      const editEpoch = scenarioStore.scriptEpoch
+      try {
+        await ElMessageBox.confirm('生成脚本使用已保存的场景修订。是否保存当前草稿并生成 TXT？', '保存并生成', {
+          confirmButtonText: '保存并生成', cancelButtonText: '取消', type: 'info',
+        })
+      } catch { return }
+      if (!editorCurrent() || draft.value !== initialDraft || scenarioStore.scriptEpoch !== editEpoch) return
+    }
+    draftReviewed.value = false
     // 未修改的已保存草稿仍须校验和生成脚本，但不重复 PUT 或增加修订号。
-    if (await (saved ? scenarioStore.validateScenario() : scenarioStore.saveScenario())) {
-      if (!active || epoch !== scenarioStore.requestEpoch || userId !== authStore.principal?.userId || !draft.value) return
+    if (await (saved ? scenarioStore.validateScenario() : persistEditorDraft())) {
+      if (!editorCurrent() || !draft.value) return
       const savedDraft = draft.value
-      const simulationEpoch = simulationStore.requestEpoch
-      const current = (allowLocked = false) => active && epoch === scenarioStore.requestEpoch
-        && simulationEpoch === simulationStore.requestEpoch && userId === authStore.principal?.userId
-        && draft.value === savedDraft && !dirty.value && (allowLocked || !savedDraft.locked)
+      const current = () => editorCurrent() && draft.value === savedDraft && !dirty.value
       draftReviewed.value = true
       activeTab.value = validation.value.warnings.length > 0 ? 'validation' : 'scenario'
       const generated = await generateScriptPreview()
       if (!current()) return
-      if (!generated || !script.value || script.value.scenarioId !== savedDraft.config.scenario.id
-        || script.value.configVersion !== `${savedDraft.config.scenario.id}-v${savedDraft.revision}`) {
-        ElMessage.warning(`场景配置已保存，但 TXT 未生成。${!generated ? scriptResultMessage.value : '脚本版本与当前场景不一致。'} 请重试保存。`)
+      const preview = currentScriptPreview.value
+      if (!generated || !preview) {
+        if (action === 'generate' && panelState.value === 'ERROR') activeTab.value = 'validation'
+        ElMessage.warning(`场景配置已保存，但 TXT 未生成。${!generated ? scriptResultMessage.value : '脚本版本与当前场景不一致。'} ${retry}`)
         return
       }
       const scriptEpoch = scenarioStore.scriptEpoch
+      const currentScript = () => current() && scriptEpoch === scenarioStore.scriptEpoch
       try {
-        const path = await saveScriptText(script.value)
-        if (!current()) return
+        const path = await saveScriptText(preview)
+        if (!currentScript()) return
         scriptOutputPath.value = path
-        scriptGenerationLog.value = [`已生成脚本入口：${path}`, `场景修订：${script.value.configVersion}`, ...executionLog(), '预览未执行引擎校验；实际执行包可能按引擎能力适配，以运行记录为准。']
+        const log = [...executionLog(), '预览未执行引擎校验；实际执行包可能按引擎能力适配，以运行记录为准。']
+        scriptGenerationLog.value = [`已生成脚本入口：${path}`, `场景修订：${preview.configVersion}`, ...log]
+        scriptGenerationReceipt.value = { path, version: preview.configVersion, log }
+        if (action === 'generate') scriptGenerationReceiptVisible.value = true
       } catch (error) {
-        if (current()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : '请重试保存。'}`)
+        if (currentScript()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : retry}`)
         return
       }
-      const canContinue = () => current(true) && scriptEpoch === scenarioStore.scriptEpoch
-      if (!canContinue()) return
-      const startFailed = (message: string) => ElMessage.warning(`场景已保存，但未自动运行：${message}`)
-      if (!authStore.authorize('SIMULATION_CONTROL').allowed) {
-        startFailed('当前账号没有仿真控制权限。')
-        return
+      if (action === 'save') {
+        ElMessage.success('场景已保存，TXT 已生成。')
+        if (!saved && props.managed) emit('saved')
       }
-      if (simulationStore.pending || simulationStore.selectingScene) {
-        startFailed('运行控制正在处理中，请稍后重试。')
-        return
-      }
-      // 重新读取运行和保存版本，不沿用先前选中的其他场景，也不恢复已有暂停任务。
-      const selected = await simulationStore.selectScene(savedDraft.config.scenario.id, executionLifetime.signal)
-      if (!canContinue()) return
-      if (!selected) { startFailed(simulationStore.resultMessage); return }
-      if (simulationStore.run?.configLocked || ['RUNNING', 'PAUSED'].includes(simulationStore.uiStatus)) {
-        startFailed('已有仿真任务，请先停止当前任务。')
-        return
-      }
-      if (simulationStore.selectedScene?.revision !== savedDraft.revision) {
-        startFailed('场景版本已变化，请重新加载并保存。')
-        return
-      }
-      const created = await simulationStore.create()
-      // create 会给本场景加锁；自己的运行锁不是草稿失效，但离页／登出／编辑仍会中止。
-      if (!canContinue()) return
-      if (!created) { startFailed(simulationStore.resultMessage); return }
-      const started = await simulationStore.start()
-      if (!canContinue()) return
-      if (!started) { startFailed(simulationStore.resultMessage); return }
-      ElMessage.success('场景已保存，仿真已启动。')
-      if (!saved && props.managed) emit('saved')
     } else {
-      if (active && epoch === scenarioStore.requestEpoch) activeTab.value = 'validation'
+      if (editorCurrent()) activeTab.value = 'validation'
     }
-  } finally { savingScript.value = false }
+  } finally { scriptAction.value = null }
 }
 
 
@@ -1523,14 +1735,33 @@ watch(activeTab, (tab) => {
         </el-button>
         <el-button
           type="primary"
-          :disabled="draft === null || draft?.locked || pending || scriptPending || savingScript"
-          :loading="pending || savingScript"
+          :disabled="draft === null || draft?.locked || scenarioActionsBusy"
+          :loading="scriptAction === 'save' || (scriptAction === null && pending)"
           data-testid="save-scenario"
-          title="保存后自动运行；校验或准备失败时不会启动。"
-          @click="saveScenario"
+          title="校验并保存场景，生成 TXT。"
+          @click="saveScenario()"
         >
           保存
         </el-button>
+        <el-button
+          :disabled="draft === null || draft?.locked || scenarioActionsBusy"
+          :loading="previewingScript"
+          data-testid="generate-script"
+          @click="openScriptPreview"
+        >生成脚本预览</el-button>
+        <el-button
+          :disabled="draft === null || draft?.locked || scenarioActionsBusy"
+          :loading="scriptAction === 'generate'"
+          data-testid="generate-script-file"
+          @click="saveScenario('generate')"
+        >生成脚本</el-button>
+        <el-button
+          :disabled="scenarioActionsBusy || scriptGenerationDialog?.checking"
+          :loading="scriptGenerationDialog?.checking"
+          title="选择已生成的脚本包根目录"
+          data-testid="preflight-script-folder"
+          @click="scriptGenerationDialog?.openFolderPicker()"
+        >执行预检</el-button>
       </div>
     </div>
 
@@ -1661,12 +1892,12 @@ watch(activeTab, (tab) => {
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.rainRateMmPerHour" required label="降雨强度（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
             <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
-            <small class="field-hint">0～100 mm/h，超过 100 按 100 封顶</small>
+            <small :class="{ 'field-hint--hidden': !!issueMessage('scenario.environment.rainRateMmPerHour') }" class="field-hint">0～100 mm/h，超过 100 按 100 封顶</small>
           </el-form-item>
           <el-form-item v-for="field in naturalFields('rain')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
             <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
-            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
+            <small v-if="field.hint" :class="{ 'field-hint--hidden': !!issueMessage(`scenario.environment.${field.key}`) }" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
         </div>
         <h4 class="environment-group__title">云雾参数</h4>
@@ -1677,13 +1908,15 @@ watch(activeTab, (tab) => {
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.cloudAltitudeMinM" label="云层底边高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMinM')">
             <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMinM" :max="30000" controls-position="right" data-testid="scenario-cloud-min" @update:model-value="markDirty" />
+            <small :class="{ 'field-hint--hidden': !!issueMessage('scenario.environment.cloudAltitudeMinM') }" class="field-hint">范围 0～30000 m；顶边高度须高于底边高度。</small>
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.cloudAltitudeMaxM" label="云层顶边高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMaxM')">
             <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMaxM" :max="30000" controls-position="right" data-testid="scenario-cloud-max" @update:model-value="markDirty" />
+            <small :class="{ 'field-hint--hidden': !!issueMessage('scenario.environment.cloudAltitudeMaxM') }" class="field-hint">范围 0～30000 m；须高于云层底边高度。</small>
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.cloudWaterDensityGM3" label="云中含水量（g/m³）" :error="issueMessage('scenario.environment.cloudWaterDensityGM3')">
             <el-input-number v-model="draft.config.scenario.environment.cloudWaterDensityGM3" :step="0.1" controls-position="right" data-testid="scenario-cloud-water" @update:model-value="markDirty" />
-            <small class="field-hint">典型 0.05～2.0 g/m³</small>
+            <small :class="{ 'field-hint--hidden': !!issueMessage('scenario.environment.cloudWaterDensityGM3') }" class="field-hint">典型 0.05～2.0 g/m³</small>
           </el-form-item>
         </div>
         <h4 class="environment-group__title">大气参数</h4>
@@ -1697,7 +1930,7 @@ watch(activeTab, (tab) => {
             <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               :disabled="draft.config.scenario.environment.atmosphereModel === 'itu'"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
-            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
+            <small v-if="field.hint" :class="{ 'field-hint--hidden': !!issueMessage(`scenario.environment.${field.key}`) }" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
         </div>
         <h4 class="environment-group__title">极化失配</h4>
@@ -1705,14 +1938,14 @@ watch(activeTab, (tab) => {
           <el-form-item v-for="field in naturalFields('misc')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
             <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
-            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
+            <small v-if="field.hint" :class="{ 'field-hint--hidden': !!issueMessage(`scenario.environment.${field.key}`) }" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
         </div>
         <h4 class="environment-group__title">海况参数</h4>
         <div class="form-grid form-grid--scenario" data-testid="environment-sea">
           <el-form-item data-field-path="scenario.environment.seaState" required label="海况等级" :error="issueMessage('scenario.environment.seaState')">
             <el-input-number v-model="draft.config.scenario.environment.seaState" :step="1" step-strictly controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
-            <small class="field-hint">1～9 级，0 表示不启用海况损耗</small>
+            <small :class="{ 'field-hint--hidden': !!issueMessage('scenario.environment.seaState') }" class="field-hint">1～9 级，0 表示不启用海况损耗</small>
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.multipathEnabled" class="multipath-field" label="海面多径衰落" :error="issueMessage('scenario.environment.multipathEnabled')">
             <el-switch v-model="draft.config.scenario.environment.multipathEnabled" inline-prompt active-text="启用" inactive-text="禁用"
@@ -1742,7 +1975,7 @@ watch(activeTab, (tab) => {
           <el-form-item v-for="field in naturalFields('sea')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
             <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
-            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
+            <small v-if="field.hint" :class="{ 'field-hint--hidden': !!issueMessage(`scenario.environment.${field.key}`) }" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
         </div>
       </section>
@@ -1808,46 +2041,47 @@ watch(activeTab, (tab) => {
                 <el-tag type="info" data-testid="scenario-selected-satellite">选用卫星：{{ linkSettings.enabledSatellites.TIANTONG ? '天通卫星' : linkSettings.enabledSatellites.SHENTONG ? '神通卫星' : '未选择' }}</el-tag>
               </div>
               <div class="platform-actions">
-                <LinkSettingsPanel :field-message="path => liveFieldMessage(`linkSettings.${path}`)" v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
-                  :links="draft.config.links" :jammers="draft.config.jammers"
+                <el-button data-testid="open-port-parameters" @click="portParametersVisible = true">端口参数设置</el-button>
+                <LinkSettingsPanel ref="linkSettingsPanel" :field-message="path => liveFieldMessage(`linkSettings.${path}`)" v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
+                  :links="draft.config.links"
                   :disabled="pending || draft.locked" :type-options="linkTypeOptions" @update:model-value="updateLinkSettings" />
                 <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-link" @click="openNewLink">新增链路</el-button>
               </div>
             </div>
-            <el-table v-if="activeTab === 'links'" :data="draft.config.links" stripe data-testid="link-table">
+            <el-table v-if="activeTab === 'links'" :key="'link-page-' + linkPage" :data="pagedLinks" stripe data-testid="link-table">
               <el-table-column v-if="showIds" prop="id" label="链路 ID" min-width="120" />
-              <el-table-column v-else type="index" label="序号" width="65" />
+              <el-table-column v-else type="index" :index="linkPageOffset + 1" label="序号" width="65" />
               <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ linkTypeLabel(row.type) }}</template></el-table-column>
               <el-table-column label="链路状态" width="100"><template #default="{ row }">
                 <el-tag :type="readLinkEnabled(row, linkSettings) ? 'success' : 'info'">
                   {{ readLinkEnabled(row, linkSettings) ? '启用' : '停用' }}
                 </el-tag>
               </template></el-table-column>
-              <el-table-column label="源平台" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.sourcePlatformId, showIds) }}</template></el-table-column>
-              <el-table-column label="中继平台" min-width="140"><template #default="{ row }">{{ row.relayPlatformId ? scenarioPlatformLabel(draft.config.platforms, row.relayPlatformId, showIds) : '不经中继' }}</template></el-table-column>
-              <el-table-column label="目标平台" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.targetPlatformId, showIds) }}</template></el-table-column>
-              <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
-              <el-table-column prop="bandwidth" label="带宽（MHz）" min-width="110" />
+              <el-table-column label="启停" width="90"><template #default="{ row, $index }">
+                <el-switch :model-value="readLinkEnabled(row, linkSettings) === true" :disabled="pending || draft.locked"
+                  size="small" inline-prompt active-text="启用" inactive-text="停用"
+                  :data-testid="`link-enabled-toggle-${linkPageOffset + $index}`"
+                  @update:model-value="setLinkEnabled(row, $event)" />
+              </template></el-table-column>
+              <el-table-column label="源节点" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.sourcePlatformId, showIds) }}</template></el-table-column>
+              <el-table-column label="中继节点" min-width="140"><template #default="{ row }">{{ row.relayPlatformId ? scenarioPlatformLabel(draft.config.platforms, row.relayPlatformId, showIds) : '不经中继' }}</template></el-table-column>
+              <el-table-column label="目标节点" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.targetPlatformId, showIds) }}</template></el-table-column>
+              <el-table-column label="频率（MHz）" min-width="110"><template #default="{ row }">{{ effectiveLinkFromPorts(draft.config, row).frequency }}</template></el-table-column>
+              <el-table-column label="带宽（MHz）" min-width="110"><template #default="{ row }">{{ effectiveLinkFromPorts(draft.config, row).bandwidth }}</template></el-table-column>
               <el-table-column label="方向" width="80"><template #default="{ row }">{{ linkDirectionLabels[row.direction] }}</template></el-table-column>
               <el-table-column label="操作" fixed="right" width="140">
                 <template #default="{ row, $index }">
-                  <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-link-${$index}`" @click="openLinkEditor(row, $index)">编辑</el-button>
-                  <el-popconfirm title="确认删除该链路及其业务配置？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeLink(row, $index)">
-                    <template #reference><el-button link type="danger" :disabled="pending || draft.locked" :data-testid="`delete-link-${$index}`">删除</el-button></template>
+                  <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-link-${linkPageOffset + $index}`" @click="openLinkEditor(row, linkPageOffset + $index)">编辑</el-button>
+                  <el-popconfirm title="确认删除该链路及其业务配置？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeLink(row)">
+                    <template #reference><el-button link type="danger" :disabled="pending || draft.locked" :data-testid="`delete-link-${linkPageOffset + $index}`">删除</el-button></template>
                   </el-popconfirm>
                 </template>
               </el-table-column>
             </el-table>
 
-            <details class="scenario-advanced" data-testid="scenario-device-advanced"
-              :open="liveValidation.errors.some(issue => issue.fieldPath.startsWith('deviceParameters'))">
-              <summary>平台默认参数与天线（高级）</summary>
-              <p class="field-hint">平台共享参数须与关联链路一致。</p>
-            <DeviceParametersPanel v-if="activeTab === 'links'" ref="deviceParametersPanel" :model-value="draft.config.deviceParameters" :disabled="pending || draft.locked"
-              :field-message="liveFieldMessage" :parameter-catalog="scenarioStore.parameterCatalog" :parameter-catalog-state="scenarioStore.parameterCatalogState"
-              :parameter-catalog-message="scenarioStore.parameterCatalogMessage" :reference-disabled="draft.revision === 0"
-              @load-parameters="scenarioStore.loadParameterCatalog()" @update:model-value="updateDeviceParameters" />
-            </details>
+            <el-pagination v-if="activeTab === 'links' && linkPageCount > 1" v-model:current-page="linkPage" :page-size="LINK_PAGE_SIZE"
+              :total="draft.config.links.length" layout="total, prev, pager, next"
+              class="scenario-link-pagination" aria-label="链路列表分页" data-testid="link-pagination" />
           </section>
         </el-tab-pane>
 
@@ -1870,27 +2104,54 @@ watch(activeTab, (tab) => {
               </div>
             </div>
             <el-table v-if="activeTab === 'jammers'" :data="draft.config.jammers" stripe data-testid="jammer-table">
-              <el-table-column v-if="showIds" prop="id" label="设备 ID"/>
-              <el-table-column v-else type="index" label="序号" width="65" />
-              <el-table-column label="类型" ><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
+              <el-table-column v-if="showIds" prop="id" label="设备 ID" min-width="120" />
+              <el-table-column v-else type="index" label="序号" width="60" />
               <el-table-column label="所属干扰节点" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.platformId, showIds) }}</template></el-table-column>
-              <el-table-column prop="frequency" label="频率（MHz）" />
-              <el-table-column prop="bandwidth" label="带宽（MHz）" />
-              <el-table-column prop="defaultPower" label="发射功率（W）"  />
-              <el-table-column label="探测范围（km）"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
-              <el-table-column label="侦测最小距离（km）"><template #default="{ row }">{{ Number(((row.detectionMinimumRange ?? 1000) / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
-              <el-table-column label="干扰范围（km）"><template #default="{ row }">{{ Number((row.jammingRange / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
-              <el-table-column label="释放范围（km）"><template #default="{ row }">{{ Number((readJammerReleaseRange(row) / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
-              <el-table-column label="方向（°）"><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
-              <el-table-column label="触发时间（秒）"><template #default="{ row }">{{ row.triggerTimeS ?? '未设置' }}</template></el-table-column>
-              <el-table-column label="干扰延迟（秒）"><template #default="{ row }">{{ row.detectionDelayS ?? '未设置' }}</template></el-table-column>
-              <el-table-column label="持续时长（秒）"><template #default="{ row }">{{ row.jammingDurationS ?? '未设置' }}</template></el-table-column>
-              <el-table-column label="启用">
+              <el-table-column label="干扰样式" width="100">
+                <template #default="{ row }">
+                  <el-tag size="small" effect="plain" :type="jammerTypeTagType(row.type)">{{ jammerTypeLabel(row.type) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="干扰频段" min-width="210">
+                <template #default="{ row }">
+                  <template v-if="readJammerBands(row).length <= 1">
+                    <div class="jammer-table__value">{{ readJammerBands(row)[0]?.frequency ?? row.frequency }} MHz</div>
+                    <div class="jammer-table__sub">
+                      带宽 {{ readJammerBands(row)[0]?.bandwidth ?? row.bandwidth }} MHz<template v-if="readJammerBands(row)[0]?.mode === 'SPOT'"> · 瞄准 {{ readJammerBands(row)[0]?.spotBandwidthMHz }} MHz</template><template v-else-if="readJammerBands(row)[0]?.mode === 'SWEEP'"> · 占空比 {{ readJammerBands(row)[0]?.sweepDutyCycle }}</template>
+                    </div>
+                  </template>
+                  <div v-else class="jammer-table__bands">
+                    <div v-for="(band, bandIndex) in readJammerBands(row)" :key="bandIndex" class="jammer-table__band">
+                      <span class="jammer-table__value">{{ band.frequency }} MHz</span>
+                      <span class="jammer-table__sub">/ {{ band.bandwidth }} MHz · {{ jammerTypeLabel(band.mode) }}<template v-if="band.mode === 'SPOT'">（{{ band.spotBandwidthMHz }} MHz）</template><template v-else-if="band.mode === 'SWEEP'">（{{ band.sweepDutyCycle }}）</template></span>
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="干扰功率" min-width="150">
+                <template #default="{ row }">
+                  <div class="jammer-table__value">{{ formatJammerPowerPrimary(row) }}</div>
+                  <div class="jammer-table__sub">{{ formatJammerPowerDetail(row) }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="探测范围" min-width="135">
+                <template #default="{ row }">
+                  <div class="jammer-table__value">{{ formatKmCell(row.detectionRange) }} km</div>
+                  <div class="jammer-table__sub">最小 {{ formatKmCell(row.detectionMinimumRange ?? 1000) }} km</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="干扰 / 释放范围" min-width="155">
+                <template #default="{ row }">
+                  <div class="jammer-table__value">干扰 {{ formatKmCell(row.jammingRange) }} km</div>
+                  <div class="jammer-table__sub">释放 {{ formatKmCell(readJammerReleaseRange(row)) }} km</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="启用" width="76">
                 <template #default="{ row }">
                   <el-switch :model-value="jammerExtension(row.id)?.enabled" :disabled="pending || draft.locked" :data-testid="`toggle-jammer-${row.id}`" @update:model-value="setJammerEnabled(row.id, $event)" />
                 </template>
               </el-table-column>
-              <el-table-column label="操作" fixed="right" align="center">
+              <el-table-column label="操作" width="110" fixed="right" align="center">
                 <template #default="{ row, $index }">
                   <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-jammer-${$index}`" @click="openJammerEditor(row, $index)">编辑</el-button>
                   <el-popconfirm title="确认删除该干扰设备？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeJammer(row, $index)">
@@ -1903,51 +2164,7 @@ watch(activeTab, (tab) => {
           </section>
         </el-tab-pane>
 
-        <el-tab-pane label="传感器" name="data" lazy>
-          <section class="console-panel scenario-section" aria-labelledby="scenario-sensor-title">
-            <div class="section-heading">
-<!--              <div>-->
-<!--                <p class="section-kicker">探测配置</p>-->
-<!--                <h3 id="scenario-sensor-title">传感器</h3>-->
-<!--              </div>-->
-              <el-tag type="primary">{{ draft.config.sensors.length }} 个</el-tag>
-              <div class="platform-actions"><el-button type="primary" data-testid="add-sensor" @click="addSensor">新增传感器</el-button></div>
-            </div>
-            <el-table :data="draft.config.sensors" stripe data-testid="sensor-table">
-              <el-table-column prop="id" label="传感器 ID"/>
-              <el-table-column label="类型"><template #default>ESM</template></el-table-column>
-              <el-table-column label="归属平台" min-width="160">
-                <template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].platformId`)"><el-select v-model="row.platformId" :data-testid="`sensor-platform-${$index}`" @change="synchronizeAllSensorIds"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></el-form-item></template>
-              </el-table-column>
-              <el-table-column label="最低频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].frequencyRange.min`)"><el-input-number v-model="row.frequencyRange.min" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></el-form-item></template></el-table-column>
-              <el-table-column label="最高频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].frequencyRange.max`)"><el-input-number v-model="row.frequencyRange.max" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></el-form-item></template></el-table-column>
-              <el-table-column label="探测范围（m）" min-width="90"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].detectionRange`)"><el-input-number v-model="row.detectionRange" :disabled="pending || draft.locked" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></el-form-item></template></el-table-column>
-              <el-table-column label="方向（规划值）" min-width="220">
-                <template #default="{ row, $index }">
-                  <el-form-item class="scenario-table-field" :error="liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].direction`)"><div class="sensor-direction-editor">
-                    <el-select :model-value="sensorDirectionMode(row.id)" :disabled="pending || draft.locked" :data-testid="`sensor-direction-mode-${$index}`" @change="setSensorDirectionMode(row.id, $event)">
-                      <el-option label="全向" value="OMNI" />
-                      <el-option label="定向" value="DIRECTIONAL" />
-                    </el-select>
-                    <el-input-number v-if="sensorDirectionMode(row.id) === 'DIRECTIONAL'" :model-value="sensorExtension(row.id)?.direction" :disabled="pending || draft.locked" controls-position="right" :data-testid="`sensor-direction-${$index}`" @update:model-value="setSensorDirection(row.id, $event)" />
-                  </div></el-form-item>
-                </template>
-              </el-table-column>
-              <el-table-column label="专业与规划参数" min-width="300"><template #default="{ row, $index }">
-                <NativeEsmEditor :field-message="path => liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].esm.${path}`)" :sensor-id="row.id" :model-value="sensorExtension(row.id)?.esm" :disabled="pending || draft.locked" @update:model-value="setNativeEsm(row.id, $event)" />
-                <details class="scenario-advanced" :data-testid="`sensor-planning-${$index}`" :open="Boolean(liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].probability`))">
-                  <summary>规划探测概率</summary>
-                  <el-form-item label="规划概率" class="scenario-table-field" :error="liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].probability`)">
-                    <el-input-number :model-value="sensorExtension(row.id)?.probability" :step="0.01" :disabled="pending || draft.locked" controls-position="right" :data-testid="`sensor-probability-${$index}`" @update:model-value="setSensorExtensionValue(row.id, 'probability', $event ?? Number.NaN)" />
-                  </el-form-item>
-                </details>
-              </template></el-table-column>
-              <el-table-column label="启用"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].enabled`)"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></el-form-item></template></el-table-column>
-              <el-table-column label="操作" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
-            </el-table>
-          </section>
-          <!-- 输出参数由 app.config.ts 管理，不在场景表单中展示。 -->
-        </el-tab-pane>
+        <!-- 传感器页已并入“干扰设备”：侦测（ESM）参数在干扰设备编辑框中配置；config.sensors 仅为兼容旧场景保留，不再提供编辑入口。 -->
 
       </el-tabs>
 
@@ -1959,6 +2176,7 @@ watch(activeTab, (tab) => {
             :result-message="resultMessage"
             :validation="validation"
             :completed="validationCompleted"
+            :config="draft?.config"
             @locate="locateValidationIssue"
           />
           <ScriptPreview
@@ -1979,7 +2197,6 @@ watch(activeTab, (tab) => {
             :can-maintain="false"
             :allow-apply="true"
             :pending="templatePending"
-            :draft-available="draft !== null"
             :draft-locked="draft?.locked ?? false"
             :templates="templates"
             :state="templateState"
@@ -1998,7 +2215,6 @@ watch(activeTab, (tab) => {
         :can-maintain="false"
         :allow-apply="true"
         :pending="templatePending"
-        :draft-available="false"
         :draft-locked="false"
         :templates="templates"
         :state="templateState"
@@ -2013,6 +2229,14 @@ watch(activeTab, (tab) => {
         <el-button @click="activeTab = 'templates'">选择场景模板</el-button>
       </el-empty>
     </div>
+
+    <ScriptPreviewDialog v-model="scriptPreviewVisible" :script="currentScriptPreview" :draft="draft" />
+    <ScriptGenerationReceipt
+      ref="scriptGenerationDialog"
+      v-model="scriptGenerationReceiptVisible"
+      :receipt="scriptGenerationReceipt"
+      :current-scene="draft ? { scenarioId: draft.config.scenario.id, revision: draft.revision, dirty } : null"
+    />
 
     <el-dialog
       :model-value="detailPlatform !== null"
@@ -2045,6 +2269,7 @@ watch(activeTab, (tab) => {
       :show-ids="showIds"
       v-model="platformDialogVisible"
       :platform="platformEditor"
+      :existing-nodes="otherPlatformNodes"
       :editing="editingPlatformIndex !== null"
       :error="platformEditorError"
       :pending="pending"
@@ -2071,6 +2296,7 @@ watch(activeTab, (tab) => {
       :pending="pending"
       :locked="draft?.locked ?? false"
       :platforms="draft?.config.platforms ?? []"
+      :resolve-port-parameters="resolveEditorLinkPorts"
       :link-type-options="linkTypeOptions"
       :link-direction-labels="linkDirectionLabels"
       :minimum-step="LINK_MHZ_MINIMUM_STEP"
@@ -2086,6 +2312,51 @@ watch(activeTab, (tab) => {
       @frequency-input="trackLinkFrequencyInput"
       @bandwidth-input="trackLinkBandwidthInput"
     />
+
+    <el-dialog
+      v-model="portParametersVisible"
+      class="scenario-dialog"
+      title="端口参数设置"
+      width="min(1680px, calc(100vw - 2rem))"
+      top="5vh"
+      destroy-on-close
+      append-to-body
+      data-testid="port-parameters-dialog"
+      @opened="deviceFocusPath && focusValidationField(deviceFocusPath)"
+      @closed="deviceFocusPath = ''; portParametersError = ''; portParametersWarning = ''"
+    >
+      <p class="field-hint">采用平台端口参数的链路会随此处更新。同一平台类型的节点共用一组端口参数。</p>
+      <el-alert
+        v-if="portParametersError"
+        type="error"
+        :closable="false"
+        :title="portParametersError"
+        show-icon
+        data-testid="port-parameters-error"
+        style="margin-bottom: 0.75rem"
+      />
+      <el-alert
+        v-else-if="portParametersWarning"
+        type="warning"
+        :closable="false"
+        :title="portParametersWarning"
+        show-icon
+        data-testid="port-parameters-warning"
+        style="margin-bottom: 0.75rem"
+      />
+      <DeviceParametersPanel
+        v-if="draft"
+        ref="deviceParametersPanel"
+        section="all"
+        :model-value="draft.config.deviceParameters"
+        :disabled="pending || draft.locked"
+        :field-message="liveFieldMessage"
+        @update:model-value="updatePortParameters"
+      />
+      <template #footer>
+        <el-button type="primary" data-testid="close-port-parameters" @click="closePortParameters">完成</el-button>
+      </template>
+    </el-dialog>
 
     <JammerEditorDialog
       :validate="validateJammerFields"
@@ -2253,6 +2524,10 @@ watch(activeTab, (tab) => {
   padding: 1.1rem;
 }
 
+.scenario-link-pagination {
+  margin-top: 0.75rem;
+}
+
 .section-heading {
   margin-bottom: 1rem;
   padding-bottom: 0.75rem;
@@ -2368,6 +2643,9 @@ watch(activeTab, (tab) => {
   font-size: 0.75rem;
 }
 
+.field-hint--hidden { visibility: hidden; }
+.field-hint--single-line { white-space: nowrap; }
+:deep(.el-form-item.is-error:has(.field-hint--hidden) .el-form-item__error) { transform: translateY(-1.5em); }
 .field-hint {
   width: 100%;
   color: var(--console-text-muted);
@@ -2407,6 +2685,37 @@ watch(activeTab, (tab) => {
 /* 文档字段名较长，加宽标签列，避免不换行标签溢出。 */
 .environment-section .form-grid--scenario :deep(.el-form-item) {
   grid-template-columns: 10.5rem minmax(0, 1fr);
+}
+
+.jammer-table__value {
+  color: var(--console-text);
+  font-size: 13px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.jammer-table__sub {
+  margin-top: 2px;
+  color: var(--console-text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+
+.jammer-table__bands {
+  display: grid;
+  gap: 2px;
+}
+
+.jammer-table__band {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.jammer-table__band .jammer-table__sub {
+  margin-top: 0;
 }
 
 @media (max-width: 960px) {

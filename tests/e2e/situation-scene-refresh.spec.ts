@@ -48,11 +48,11 @@ test('所选场景刷新和跨页返回保留抽屉，恢复失败仍重试原�
     await expect(panel).toBeVisible()
     await expect(panel.locator('tr[data-link-id]')).toHaveCount(draft.config.links.length)
     await expect(panel.getByText('全链路状态', { exact: true })).toBeVisible()
-    await expect(panel.getByText('干扰 / 侦测设备', { exact: true })).toBeVisible()
     await expect(panel.getByText('同帧事件', { exact: true })).toBeVisible()
+    await expect(panel.getByRole('tab', { name: '干扰侦测', exact: true })).toBeVisible()
     await expect(page.getByTestId(`focus-node-${draft.config.platforms[0].id}`)).toBeVisible()
     // SNR/BER 列默认隐藏（MAP_CONFIG.showLinkQualityColumns），状态始终是最后一列。
-    await expect(panel.locator('tr[data-link-id="L-MW-01"] td').last()).toHaveText('暂无数据')
+    await expect(panel.locator('tr[data-link-id="L-MW-01"] td').last()).toHaveText('中断')
   }
   await verifyScene()
   await page.reload()

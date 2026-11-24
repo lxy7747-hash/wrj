@@ -137,7 +137,7 @@ describe('装备参数库', () => {
     expect(modulation().props()).toMatchObject({ clearable: true, allowCreate: false })
     expect(modulation().findAllComponents({ name: 'ElOption' }).map(option => option.props('value'))).toEqual(['BPSK', 'QPSK'])
     expect(wrapper.findAll('.equipment-editor .el-form-item__label').map(label => label.text()))
-      .toEqual(['编号', '类型', '频率下限（MHz）', '频率上限（MHz）', '调制方式', '发射带宽（MHz）', '发射功率（W）', '数据速率（Mbps）', 'BER 阈值'])
+      .toEqual(['编号', '类型', '频率下限（MHz）', '频率上限（MHz）', '调制方式', '发射带宽（MHz）', '发射功率（W）', '数据速率（Mbps）', '误码率阈值'])
     expect(wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'equipment-threshold')!.props())
       .toMatchObject({ step: 0.000001 })
     await wrapper.get('[data-testid="equipment-save"]').trigger('click')
@@ -344,12 +344,12 @@ describe('装备参数库', () => {
       ['发射带宽（MHz）', () => number('equipment-bandwidth').vm.$emit('update:modelValue', 0), () => number('equipment-bandwidth').props('modelValue'), '发射带宽必须为有限正数', () => number('equipment-bandwidth').vm.$emit('update:modelValue', 10)],
       ['发射功率（W）', () => number('equipment-power').vm.$emit('update:modelValue', -1), () => number('equipment-power').props('modelValue'), '发射功率须为非负有限数值', () => number('equipment-power').vm.$emit('update:modelValue', 20)],
       ['数据速率', () => select('equipment-data-rate').vm.$emit('update:modelValue', 1), () => select('equipment-data-rate').props('modelValue'), '数据速率与设备类型不一致', () => select('equipment-data-rate').vm.$emit('update:modelValue', 2)],
-      ['BER 阈值', () => number('equipment-threshold').vm.$emit('update:modelValue', 1.1), () => number('equipment-threshold').props('modelValue'), 'BER 阈值必须在 0～1', () => number('equipment-threshold').vm.$emit('update:modelValue', 0.1)],
+      ['误码率阈值', () => number('equipment-threshold').vm.$emit('update:modelValue', 1.1), () => number('equipment-threshold').props('modelValue'), '误码率阈值必须在 0～1', () => number('equipment-threshold').vm.$emit('update:modelValue', 0.1)],
     ]
     for (const [label, setInvalid, value, message, reset] of cases) {
       setInvalid()
       await flushPromises()
-      expect(value()).toEqual(label === '调制方式' ? 'OOK' : label === 'BER 阈值' ? 1.1 : label === '发射带宽（MHz）' || label === '频率下限（MHz）' ? 0 : label === '发射功率（W）' ? -1 : label === '频率上限（MHz）' ? 99 : 1)
+      expect(value()).toEqual(label === '调制方式' ? 'OOK' : label === '误码率阈值' ? 1.1 : label === '发射带宽（MHz）' || label === '频率下限（MHz）' ? 0 : label === '发射功率（W）' ? -1 : label === '频率上限（MHz）' ? 99 : 1)
       expect(error(label)).toContain(message)
       expect(save().attributes('disabled')).toBeDefined()
       reset()

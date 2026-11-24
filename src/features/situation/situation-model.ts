@@ -1,6 +1,7 @@
 import type {
   DetectionEvent,
   CompositeLossEvidence,
+  LinkDirection,
   LinkStatusSummary,
   PlatformStatus,
   ScenarioConfig,
@@ -27,6 +28,7 @@ export interface SituationLinkView {
   sourceName: string
   destinationName: string
   type: LinkStatusSummary['linkType']
+  direction?: LinkDirection
   snrDb: number
   ber: number
   updatedAt: number
@@ -107,6 +109,33 @@ const BUSINESS_NODE_TYPES = new Set<PlatformStatus['type']>([
 export function getPlatformName(platformId: string, frame = SITUATION_FRAME_F00042): string {
   return frame.platforms.find((platform) => platform.platformId === platformId)?.name
     ?? platformId
+}
+
+const QUALITY_NODE_ALIAS_TYPES: Readonly<Record<string, PlatformStatus['type']>> = {
+  rear_comm_vehicle: 'REAR_COMMAND_NODE',
+  command_vehicle: 'GROUND_CLUSTER_COMMAND_NODE',
+  relay: 'FORWARD_RELAY_NODE',
+  forward_relay: 'FORWARD_RELAY_NODE',
+  relay_uav: 'FORWARD_RELAY_NODE',
+  mission_uav: 'AIRBORNE_MISSION_CLUSTER',
+}
+
+export function qualityNodeOptionLabel(name: string, index: number, platformId = name, type?: string): string {
+  const label = name.trim()
+  if (label !== '暂无数据' && /\p{Script=Han}/u.test(label)) return label
+
+  const id = platformId.trim().toLowerCase()
+  const base = id.replace(/[_-]?\d+$/u, '')
+  const aliasType = Object.hasOwn(QUALITY_NODE_ALIAS_TYPES, base) ? QUALITY_NODE_ALIAS_TYPES[base] : undefined
+  const category = type && Object.hasOwn(PLATFORM_TYPE_LABELS, type) ? type as PlatformStatus['type'] : aliasType
+  if (!category) return `节点 ${index + 1}`
+
+  const typeLabel = category === 'FORWARD_RELAY_NODE' ? '中继节点'
+    : category === 'AIRBORNE_MISSION_CLUSTER' ? '作业无人机' : PLATFORM_TYPE_LABELS[category]
+  const serial = /\d+$/u.exec(id)?.[0]
+  if (serial) return `${typeLabel} ${serial.padStart(2, '0')}`
+  if (id === 'relay' || id === 'rear_comm_vehicle' || id === 'command_vehicle') return typeLabel
+  return `${typeLabel} ${String(index + 1).padStart(2, '0')}`
 }
 
 /**
@@ -252,6 +281,8 @@ export function selectSituationLinks(frame = SITUATION_FRAME_F00042): SituationL
     const linkId = resolveLinkId(summary, frame)
     const projection = getProjection(linkId, summary, frame)
     const detailed = frame.links.find((link) => link.linkId === linkId) ?? null
+    const configured = SCENARIO_LINKS.find(link => link.id === linkId && link.type === summary.linkType
+      && link.sourcePlatformId === summary.sourcePlatform && link.targetPlatformId === summary.destPlatform)
 
     return {
       frameId: frame.frameId,
@@ -259,6 +290,7 @@ export function selectSituationLinks(frame = SITUATION_FRAME_F00042): SituationL
       sourceName: getPlatformName(summary.sourcePlatform, frame),
       destinationName: getPlatformName(summary.destPlatform, frame),
       type: summary.linkType,
+      direction: configured?.direction,
       snrDb: summary.currentSnr,
       ber: summary.currentBer,
       updatedAt: summary.updatedAt,

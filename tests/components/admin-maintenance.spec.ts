@@ -12,12 +12,15 @@ import { useAuthStore } from '../../src/stores/auth'
 
 let wrapper: VueWrapper | undefined
 
-/** 根据中文按钮文字操作当前面板，避免依赖布局顺序。 */
-async function selectBackupRow(backupId: string): Promise<void> {
+function restoreButton(backupId: string) {
   const row = wrapper!.findAll('[data-testid="backup-table"] .el-table__row').find((item) => item.text().includes(backupId))
-  const button = row?.findAll('button').find((item) => item.text() === '选择恢复')
+  const button = row?.findAll('button').find((item) => item.text() === '恢复')
   expect(button).toBeDefined()
-  await button!.trigger('click')
+  return button!
+}
+
+async function restoreBackupRow(backupId: string): Promise<void> {
+  await restoreButton(backupId).trigger('click')
   await flushPromises()
 }
 
@@ -175,9 +178,9 @@ describe('P7 系统管理面板', () => {
   })
 
   it.each([
-    { section: 'master', component: MasterDataPanel, data: fixtures.masterData, content: 'MW-COMM', refresh: '刷新' },
-    { section: 'backup', component: BackupRestoreWizard, data: fixtures.backups, content: 'PREBACKUP-002', refresh: '刷新记录' },
-  ] as const)('$section 加载成功不显示常驻提示，加载中和失败仍可见', async ({ section, component, data, content, refresh }) => {
+    { section: 'master', component: MasterDataPanel, data: fixtures.masterData, content: 'MW-COMM', refresh: '刷新', loadingInTable: false },
+    { section: 'backup', component: BackupRestoreWizard, data: fixtures.backups, content: 'PREBACKUP-002', refresh: '刷新记录', loadingInTable: true },
+  ] as const)('$section 加载成功不显示常驻提示，加载中和失败仍可见', async ({ section, component, data, content, refresh, loadingInTable }) => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
     useAuthStore().role = 'ADMIN'
@@ -189,7 +192,12 @@ describe('P7 系统管理面板', () => {
     await router.push('/admin')
     wrapper = mount(component, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
-    expect(wrapper.get(`[data-testid="${section}-feedback"]`).text()).toContain('正在加载数据。')
+    if (loadingInTable) {
+      expect(wrapper.find(`[data-testid="${section}-feedback"]`).exists()).toBe(false)
+      expect(wrapper.get(`[data-testid="${section}-table"] .el-loading-mask`).text()).toContain('正在加载数据。')
+    } else {
+      expect(wrapper.get(`[data-testid="${section}-feedback"]`).text()).toContain('正在加载数据。')
+    }
     resolveLoad({ ok: true, json: async () => ({ ok: true, data,
       meta: { requestId: 'REQ-MAINTENANCE', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: Array.isArray(data) ? data.length : 1 },
     }) } as Response)
@@ -573,20 +581,18 @@ describe('P7 系统管理面板', () => {
     wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
     await click('创建备份')
-    expect(wrapper.get('[data-testid="backup-plan"] form').classes()).toContain('maintenance-toolbar')
-    expect((wrapper.get('[data-testid="backup-plan"] form').element as HTMLFormElement).style.marginBottom).toBe('16px')
+    expect(wrapper.find('[data-testid="backup-plan"]').exists()).toBe(false)
     const copy = confirm.mock.calls[0]![0]
     expect(copy).not.toMatch(/Mock|不生成文件/i)
-    expect(copy).toContain('不包含原始数据文件、密码配置或密钥')
-    expect(copy).toContain('账号验证信息')
-    expect(copy).toContain('备份未加密，请妥善保管')
+    expect(copy).toContain('备份名称：手动备份\n备份范围：场景、模板、账号、角色权限、历史归档和运行配置')
+    expect(copy).toContain('备份文件含账号验证信息，未加密，请妥善保管。')
+    expect(copy).not.toContain('SHA-256')
     expect(wrapper.text()).not.toContain('列表沿用已登记的校验结果')
     expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('2026-08-06 18:08:00')
     expect(run).not.toHaveBeenCalled()
     await click('创建备份')
     expect(run).toHaveBeenLastCalledWith('BACKUP', '', '手动备份')
-    await selectBackupRow('PREBACKUP-002')
-    await click('恢复所选备份')
+    await restoreBackupRow('PREBACKUP-002')
     expect(run).toHaveBeenLastCalledWith('RESTORE', 'PREBACKUP-002', undefined)
     store.restoreResult = { prebackupId: 'PREBACKUP-002', integrityValid: false, result: 'FAILURE', progress: 0, rolledBack: false, generated: false }
     await flushPromises()
@@ -652,7 +658,7 @@ describe('P7 系统管理面板', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
-  it('Mock 恢复成功后切换来源清除旧结果，来源提示只弹出一次而不占据页面', async () => {
+  it('Mock 恢复成功后取消另一行的恢复，保留此前的结果且不发请求', async () => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
     useAuthStore().$patch({ role: 'ADMIN' })
@@ -669,31 +675,21 @@ describe('P7 系统管理面板', () => {
       .mockResolvedValueOnce(response({ ...context, state: 'CONFIRMED' }))
       .mockResolvedValueOnce(response({ prebackupId: 'PREBACKUP-002', integrityValid: true, progress: 100, result: 'SUCCESS', rolledBack: false, generated: false }))
     vi.stubGlobal('fetch', fetchMock)
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
-    const info = vi.spyOn(ElMessage, 'info').mockReturnValue({ close: vi.fn() })
+    const confirm = vi.spyOn(ElMessageBox, 'confirm')
+      .mockResolvedValueOnce('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+      .mockRejectedValueOnce('cancel')
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
     await router.push('/admin')
     wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
-    expect(info).not.toHaveBeenCalled()
-    await selectBackupRow('PREBACKUP-002')
-    expect(info).toHaveBeenCalledExactlyOnceWith('恢复来源已切换，请确认后执行恢复。')
-    expect(wrapper.find('[data-testid="backup-feedback"]').exists()).toBe(false)
-    await selectBackupRow('PREBACKUP-002')
-    expect(info).toHaveBeenCalledTimes(1)
-    await click('恢复所选备份')
+    await restoreBackupRow('PREBACKUP-002')
     expect(store.restoreResult?.result).toBe('SUCCESS')
     expect(wrapper.get('[data-testid="restore-result"]').text()).toContain('成功')
 
-    wrapper.getComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', 'BACKUP-CORRUPT-001')
-    await flushPromises()
-    expect(store.restoreResult).toBeNull()
-    expect(wrapper.find('[data-testid="restore-result"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="backup-feedback"]').exists()).toBe(false)
-    expect(info).toHaveBeenCalledTimes(2)
-    expect(info).toHaveBeenLastCalledWith('恢复来源已切换，请确认后执行恢复。')
-    expect(store.maintenance.backup.state).toBe('EMPTY')
-    expect(store.maintenance.backup.message).toBe('')
+    await restoreBackupRow('BACKUP-CORRUPT-001')
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(store.restoreResult?.result).toBe('SUCCESS')
+    expect(wrapper.get('[data-testid="restore-result"]').text()).toContain('成功')
     expect(fetchMock).toHaveBeenCalledTimes(4)
   })
 
@@ -702,7 +698,7 @@ describe('P7 系统管理面板', () => {
     vi.mocked(store.loadMaintenance).mockRestore()
     const auth = useAuthStore()
     auth.$patch({ principal: { userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN', permissions: ['BACKUP_RESTORE'] }, role: 'ADMIN' })
-    const backup = { backupId: 'BACKUP-SQLITE', status: 'VALID', checksum: 'A'.repeat(64), createdAt: fixtures.epoch }
+    const backup = { backupId: 'BACKUP-SQLITE', name: '现场备份', format: 'SYSTEM_SQLITE_V2', status: 'VALID', checksum: 'A'.repeat(64), createdAt: fixtures.epoch }
     const context = { confirmationId: 'CONF-SQLITE', actor: 'admin', role: 'ADMIN', createdAt: fixtures.epoch, expiresAt: '2026-08-06T08:05:00Z' }
     const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
       meta: { requestId: 'REQ-SQLITE', generatedAt: fixtures.epoch, page: 1, pageSize: 1, total: 1 },
@@ -718,12 +714,13 @@ describe('P7 系统管理面板', () => {
     await router.push('/admin')
     wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
-    expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('旧主库备份')
-    await click('选择恢复')
-    await click('恢复所选备份')
+    await restoreBackupRow(backup.backupId)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    await click('恢复所选备份')
+    await restoreBackupRow(backup.backupId)
     expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('审计与文件读取记录保留'), '恢复备份', expect.anything())
+    expect(confirm.mock.calls.at(-1)?.[0]).toContain('备份名称：现场备份')
+    expect(confirm.mock.calls.at(-1)?.[0]).toContain('创建时间：2026-08-06 16:00:00')
+    expect(confirm.mock.calls.at(-1)?.[0]).toContain('恢复范围：场景、模板、账号、角色权限、历史归档和运行配置')
     expect(confirm.mock.calls.at(-1)?.[0]).toContain('账号及密码将恢复到备份时的状态，之后新增的账号可能消失')
     expect(confirm.mock.calls.at(-1)?.[0]).toContain('请确认掌握备份中的管理员账号和密码')
     expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({ operation: 'RESTORE', backupId: 'BACKUP-SQLITE', confirmationId: 'CONF-SQLITE' })
@@ -732,14 +729,14 @@ describe('P7 系统管理面板', () => {
     expect(message).toHaveBeenCalledWith('SQLite 数据已恢复，审计记录保留，请重新登录。')
   })
 
-  it('恢复来源显示名称、时间和类型且最新优先；正式 INVALID 禁用，Mock 失败演示仍可提交', async () => {
+  it('备份记录最新优先，表内恢复按钮按备份状态启用，底部选择入口已移除', async () => {
     const store = useAdminStore()
     useAuthStore().role = 'ADMIN'
     const formal = { status: 'VALID' as const, checksum: 'A'.repeat(64), format: 'SYSTEM_SQLITE_V1' as const }
     store.backups = [
       { ...formal, backupId: 'OLD', name: '旧系统快照', createdAt: '2026-09-20T00:00:00Z' },
       { ...formal, backupId: 'INVALID-SQLITE', name: '无效系统快照', createdAt: '2026-09-21T00:30:00Z', status: 'INVALID' },
-      { ...formal, backupId: 'LATEST', name: '最新系统快照', createdAt: '2026-09-21T01:00:00Z' },
+      { ...formal, backupId: 'LATEST', name: '最新系统快照', createdAt: '2026-09-21T01:00:00Z', format: 'SYSTEM_SQLITE_V2' },
       { ...formal, backupId: 'MAIN', name: '旧主库快照', createdAt: '2026-09-20T02:00:00Z', format: 'MAIN_SQLITE_V1' },
       { backupId: 'MOCK-INVALID', status: 'INVALID_FIXTURE', checksum: 'MOCK-INVALID', createdAt: fixtures.epoch },
     ]
@@ -749,24 +746,19 @@ describe('P7 系统管理面板', () => {
     await router.push('/admin')
     wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
-    const options = wrapper.findAllComponents({ name: 'ElOption' })
-    expect(options.map(option => option.props('value'))).toEqual(['LATEST', 'INVALID-SQLITE', 'MAIN', 'OLD', 'MOCK-INVALID'])
-    expect(options[0]!.props('label')).toBe('最新系统快照 · 2026-09-21 09:00:00 · 系统备份')
-    expect(options[1]!.props('disabled')).toBe(true)
-    expect(options[2]!.props('disabled')).toBe(true)
-    expect(options[4]!.props('disabled')).toBe(false)
-    const invalidRow = wrapper.findAll('tr').find(row => row.text().includes('INVALID-SQLITE'))!
-    expect(invalidRow.find('button').attributes('disabled')).toBeDefined()
-    const select = wrapper.getComponent({ name: 'ElSelect' })
-    select.vm.$emit('update:modelValue', 'INVALID-SQLITE')
-    await flushPromises()
-    expect(wrapper.get('[data-testid="backup-restore"]').attributes('disabled')).toBeDefined()
-    await click('恢复所选备份')
+    const rows = wrapper.findAll('[data-testid="backup-table"] .el-table__row')
+    expect(rows.map(row => row.get('code').text())).toEqual(['LATEST', 'INVALID-SQLITE', 'MAIN', 'OLD', 'MOCK-INVALID'])
+    for (const text of ['最新系统快照', '2026-09-21 09:00:00', '四库备份']) expect(rows[0]!.text()).toContain(text)
+    for (const text of ['旧系统快照', '2026-09-20 08:00:00', '历史六库备份']) expect(rows[3]!.text()).toContain(text)
+    for (const text of ['恢复来源', '恢复所选备份', '已选目标']) expect(wrapper.text()).not.toContain(text)
+    expect(restoreButton('INVALID-SQLITE').attributes('disabled')).toBeDefined()
+    expect(restoreButton('MAIN').attributes('disabled')).toBeDefined()
+    expect(restoreButton('MOCK-INVALID').attributes('disabled')).toBeUndefined()
+    await restoreBackupRow('INVALID-SQLITE')
+    await restoreBackupRow('MAIN')
     expect(confirm).not.toHaveBeenCalled()
     expect(run).not.toHaveBeenCalled()
-    select.vm.$emit('update:modelValue', 'MOCK-INVALID')
-    await flushPromises()
-    await click('恢复所选备份')
+    await restoreBackupRow('MOCK-INVALID')
     expect(run).toHaveBeenCalledExactlyOnceWith('RESTORE', 'MOCK-INVALID', undefined)
   })
 

@@ -155,6 +155,8 @@ describe('D3 报告证据 HTTP 接口', () => {
       const series = await api.get(`${base}&seriesId=state:L-1:gxb`).set(headers).expect(200)
       expect(series.body.data).toMatchObject({ unit: 'dB', rawCount: 2, pointCount: 2, sampling: 'FULL' })
       expect(series.body.data.points.map((point: { value: number }) => point.value)).toEqual([12, 9])
+      const ber = await api.get(`${base}&seriesId=state:L-1:ber`).set(headers).expect(200)
+      expect(ber.body.data).toMatchObject({ unit: 'BER' })
       await api.get(`${base}&seriesId=bogus`).set(headers).expect(422)
       await api.get(`${base}&seriesId=state:L-1:gxb&maxPoints=5001`).set(headers).expect(422)
     } finally { if (server.httpServer.listening) await server.close() }
@@ -170,6 +172,9 @@ describe('D3 报告证据 HTTP 接口', () => {
       expect(content).toContain('L-1')
       expect(content).toContain('state')
       expect(content).toContain('生成时刻')
+      expect(content).toContain('误码率 · state:L-1:ber')
+      expect(content).toContain('单位：比率')
+      expect(content).toContain('<th>误码率</th>')
       await api.post(`/api/v1/reports/${reportId}/evidence/export`).set(headers)
         .send({ resultId: record.resultId, sourceSha256: 'd'.repeat(64), format: 'HTML' }).expect(409)
       // PDF 实际生成（无中文字体时服务端明确失败，不返回伪成功文件）。

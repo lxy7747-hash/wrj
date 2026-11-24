@@ -97,15 +97,16 @@ export async function exportLocalReport(directory: string, report: Report, forma
   if (!isLocalReport(report) || !['HTML', 'PDF', 'CSV'].includes(format)) throw new Error('不支持的真实报告或导出格式。')
   const verifiedAt = new Date().toISOString()
   const watermark = `本地文件统计 · 二级 · 导出人 ${actor} · ${verifiedAt}`
-  const tables = localReportTables(report.localEvidence)
+  const tables = localReportTables(report.localEvidence, format === 'CSV')
+  const berLabel = format === 'CSV' ? 'BER' : '误码率'
   const quality = report.localEvidence.quality === undefined ? undefined : qualityReportView(report.localEvidence.quality, report.localEvidence)
   const engine = report.localEvidence.engineFrameArchive
   const engineCsv = report.localEvidence.engineCsv
   const qualityConnectivityRates = report.localEvidence.qualityConnectivityRates ?? quality?.connectivityRates ?? []
   const notes = ['本报告只陈述文件记录；登记关联、设备启停、消息收发均不等于物理链路质量。', quality === undefined && engine === undefined
-    ? '没有 SNR、BER、接收功率或链路质量证据，不计算连通率、丢包率和干扰效果；不关联未经证实的场景/运行。'
+    ? `没有 SNR、${berLabel}、接收功率或链路质量证据，不计算连通率、丢包率和干扰效果；不关联未经证实的场景/运行。`
     : quality === undefined
-      ? '段级 GXB、BER、接收功率和损耗仅来自已归档引擎帧；不补 SNR，不合并为逻辑链路，不计算规范质量文件的连通率或干扰效果。'
+      ? `段级 GXB、${berLabel}、接收功率和损耗仅来自已归档引擎帧；不补 SNR，不合并为逻辑链路，不计算规范质量文件的连通率或干扰效果。`
       : '质量指标和曲线仅来自报告中绑定的已导入测量文件；采样缺口不外推，干扰时长仅统计来源明确标注为活动的连续观测区间。']
   if (engine?.detailTruncated) notes.push(`引擎归档报告明细仅保留 ${engine.retainedDetailRows} 行；完整 JSONL 需按执行结果和来源 SHA-256 下载核查，截取明细不代表完整统计。`)
   if (engine?.aggregate) notes.push(`引擎汇总基于完整归档流：唯一单段有效样本 ${engine.aggregate.uniqueSingleSegmentCount} 条；路由切换仅计实际记录 ${engine.aggregate.switchCount} 条，不代表切换成功率。`)
@@ -129,7 +130,7 @@ export async function exportLocalReport(directory: string, report: Report, forma
     rows: parameterRows.length ? parameterRows : [['当前结果未保存参数快照', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据']],
   }]
   const engineSections = engine === undefined ? [] : [{ title: '引擎链路段实测（仅已接收帧）',
-    columns: ['轮次', '帧', '时刻（秒）', '段标识', '源端', '目标端', 'GXB（dB）', 'BER', '接收功率（dBm）', '接收功率（dBW）', '总复合损耗（dB，原值）'],
+    columns: ['轮次', '帧', '时刻（秒）', '段标识', '源端', '目标端', 'GXB（dB）', berLabel, '接收功率（dBm）', '接收功率（dBW）', '总复合损耗（dB，原值）'],
     rows: engine.segmentRows.length ? engine.segmentRows.map(row => [String(row.engineEpoch), String(row.frameId), String(row.simulationTime), row.segment.linkId,
       `${row.segment.sourceName ?? '暂无数据'}:${row.segment.sourcePort ?? '暂无数据'}`, `${row.segment.targetName ?? '暂无数据'}:${row.segment.targetPort ?? '暂无数据'}`,
       String(row.segment.quality.gxbDb ?? '暂无数据'), String(row.segment.quality.ber ?? '暂无数据'), String(row.segment.quality.rxPowerDbm ?? '暂无数据'), String(row.segment.quality.rxPowerDbw ?? '暂无数据'), String(row.segment.losses.totalDb ?? '暂无数据')])
@@ -160,7 +161,7 @@ export async function exportLocalReport(directory: string, report: Report, forma
     ...(quality === undefined ? [] : quality.series.flatMap(series => [
       { title: `GXB 随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'dB', rows: series.gxbCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
       { title: `SNR 随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'dB', rows: series.snrCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
-      { title: `误码率随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'BER', rows: series.berCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
+      { title: `误码率随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: '比率', rows: series.berCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
     ])),
     ...(engine === undefined ? [] : (() => {
       const groups = new Map<string, typeof engine.segmentRows>()
@@ -172,7 +173,7 @@ export async function exportLocalReport(directory: string, report: Report, forma
       }
       return [...groups.entries()].flatMap(([identity, rows]) => [
       ...(rows.some(row => row.segment.quality.gxbDb !== null) ? [{ title: `引擎段 GXB 随时间变化 · ${identity}`, kind: 'LINE' as const, sourceRange: `引擎帧归档 · SHA-256 ${engine.sourceSha256} · 结果 ${source?.resultId ?? report.reportId}`, unit: 'dB', rows: rows.filter(row => row.segment.quality.gxbDb !== null).map((row, index, values) => ({ label: reportTime(row.simulationTime), time: row.simulationTime, value: row.segment.quality.gxbDb!, breakBefore: index > 0 && row.frameId !== values[index - 1]!.frameId + ENGINE_FRAME_ID_STEP })) }] : []),
-      ...(rows.some(row => row.segment.quality.ber !== null) ? [{ title: `引擎段 BER 随时间变化 · ${identity}`, kind: 'LINE' as const, sourceRange: `引擎帧归档 · SHA-256 ${engine.sourceSha256} · 结果 ${source?.resultId ?? report.reportId}`, unit: 'BER', rows: rows.filter(row => row.segment.quality.ber !== null).map((row, index, values) => ({ label: reportTime(row.simulationTime), time: row.simulationTime, value: row.segment.quality.ber!, breakBefore: index > 0 && row.frameId !== values[index - 1]!.frameId + ENGINE_FRAME_ID_STEP })) }] : []),
+      ...(rows.some(row => row.segment.quality.ber !== null) ? [{ title: `引擎段误码率随时间变化 · ${identity}`, kind: 'LINE' as const, sourceRange: `引擎帧归档 · SHA-256 ${engine.sourceSha256} · 结果 ${source?.resultId ?? report.reportId}`, unit: '比率', rows: rows.filter(row => row.segment.quality.ber !== null).map((row, index, values) => ({ label: reportTime(row.simulationTime), time: row.simulationTime, value: row.segment.quality.ber!, breakBefore: index > 0 && row.frameId !== values[index - 1]!.frameId + ENGINE_FRAME_ID_STEP })) }] : []),
       ])
     })()),
     { title: '各链路有效观测区间连通率', kind: 'RADAR', unit: '%', sourceRange: qualityRange, rows: qualityConnectivityRates.map(row => ({ label: row.linkId, value: row.value })) },
@@ -220,13 +221,22 @@ export async function exportEvidenceReport(directory: string, input: {
   const verifiedAt = new Date().toISOString()
   const watermark = `本地报告证据 · ${input.sourceLabel} · 导出人证据 · ${verifiedAt}`
   const notes = [`来源：${input.sourceLabel}（SHA-256 ${input.sourceSha256}）`, `筛选范围：${input.filterLabel}`, '曲线与明细均来自同一已固定来源摘要；抽样点已标注，不代表完整逐帧实测。']
-  const scopedCharts = input.charts.map(chart => ({ ...chart, scope: `${chart.sourceRange}；单位：${chart.unit}；生成时刻：${input.generatedTime}` }))
+  const scopedCharts = input.charts.map(chart => {
+    const isBer = chart.unit === 'BER'
+    const unit = isBer ? '比率' : chart.unit
+    return { ...chart, title: isBer ? `误码率 · ${chart.title}` : chart.title, unit,
+      scope: `${chart.sourceRange}；单位：${unit}；生成时刻：${input.generatedTime}` }
+  })
+  const sections = input.sections.map(section => ({
+    ...section,
+    columns: section.columns.map(column => column === 'ber' ? '误码率' : column === 'oldBer' ? '原误码率' : column === 'newBer' ? '新误码率' : column),
+  }))
   const content = input.format === 'PDF'
-    ? await createLocalReportPdf({ title: '报告证据导出', notes, sections: input.sections, charts: scopedCharts, chartScope: input.filterLabel })
+    ? await createLocalReportPdf({ title: '报告证据导出', notes, sections, charts: scopedCharts, chartScope: input.filterLabel })
     : '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>报告证据导出</title>' +
       notes.map(note => `<p>${escapeHtml(note)}</p>`).join('') +
       scopedCharts.map(chart => chart.kind === 'LINE' ? reportCurveSvg(chart, chart.scope) : reportChartSvg(chart, chart.scope)).join('') +
-      input.sections.map(section => `<h2>${escapeHtml(section.title)}</h2><table><thead><tr>${section.columns.map(text => `<th>${escapeHtml(text)}</th>`).join('')}</tr></thead><tbody>${section.rows.map(row => `<tr>${row.map(text => `<td>${escapeHtml(text)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('') + '</html>'
+      sections.map(section => `<h2>${escapeHtml(section.title)}</h2><table><thead><tr>${section.columns.map(text => `<th>${escapeHtml(text)}</th>`).join('')}</tr></thead><tbody>${section.rows.map(row => `<tr>${row.map(text => `<td>${escapeHtml(text)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('') + '</html>'
   const root = resolve(directory)
   await mkdir(root, { recursive: true })
   const owned = await mkdtemp(join(root, 'evidence-'))

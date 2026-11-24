@@ -57,7 +57,13 @@ const scenarios = [
   draft.config.linkSettings.messageIntervalS = 5
   draft.config.linkSettings.linkCalc.updateIntervalS = 5
   draft.config.jammers = draft.config.jammers.map(readJammerParameters)
-  draft.config.deviceParameters = readDeviceParameters(draft.config)
+  const deviceParameters = readDeviceParameters(draft.config)
+  // 2026-11-06 快照的 C 波段链路仍使用 4500 / 4000 MHz，导出时同步到对应端口避免与链路冲突。
+  for (const type of ['MISSION_UAV_PLATFORM', 'COMMAND_VEHICLE_PLATFORM'] as const) {
+    Object.assign(deviceParameters.ports[type]!.c_band_uplink!, { txFrequency: 4500, rxFrequency: 4500 })
+    Object.assign(deviceParameters.ports[type]!.c_band_downlink!, { txFrequency: 4000, rxFrequency: 4000 })
+  }
+  draft.config.deviceParameters = deviceParameters
   return draft
 })
 
@@ -65,6 +71,8 @@ const spot = scenarios[1]!.config
 const alignedLink = spot.links.find(link => link.enabled && link.type === 'DATALINK' && link.band === 'C' && link.direction === 'FORWARD' && link.frequency === 4500)
 assert(alignedLink, `${spot.scenario.id} links：缺少已启用的 C 上行 4500 MHz 链路`)
 Object.assign(spot.jammers[0]!, { type: 'SPOT', bandwidth: 5, frequency: alignedLink.frequency })
+// 生成器按 weaponBands 输出干扰方式与频段，首个频段须与顶层瞄准参数同步。
+Object.assign(spot.jammers[0]!.weaponBands![0]!, { mode: 'SPOT', bandwidth: 5, frequency: alignedLink.frequency, spotBandwidthMHz: 5 })
 scenarios[2]!.config.linkSettings!.linkCalc!.updateIntervalS = 1
 
 // 先校验整批并在内存中序列化；任何场景或脚本断言失败都不创建目录、不写文件。
@@ -107,12 +115,16 @@ for (const [index, draft] of scenarios.entries()) {
     assert.equal(jammers.length, 2, 'jammer_param.jammers：应包含两台干扰设备')
     for (const [jammerIndex, source] of draft.config.jammers.entries()) {
       assert.equal(source.radarPower, 1000, `jammers[${jammerIndex}].radarPower：快照须显式保存 1000 W`)
+      // 带宽按 weapon_band_params 输出，不再有顶层 weapon_bandwidth_mhz。
+      const band = jammers[jammerIndex].weapon_band_params?.[0] ?? {}
+      const spotMode = source.type === 'SPOT'
       assert.deepEqual({ mode: jammers[jammerIndex].mode, power_w: jammers[jammerIndex].power_w,
-        weapon_power_w: jammers[jammerIndex].weapon_power_w, weapon_bandwidth_mhz: jammers[jammerIndex].weapon_bandwidth_mhz,
-        spot_bandwidth_mhz: jammers[jammerIndex].spot_bandwidth_mhz },
-      { mode: source.type === 'SPOT' ? 'spot' : 'broadband', power_w: 1000,
-        weapon_power_w: source.defaultPower, weapon_bandwidth_mhz: source.bandwidth,
-        spot_bandwidth_mhz: source.type === 'SPOT' ? 5 : 20 }, `jammer_param.jammers[${jammerIndex}]：参数与快照不一致`)
+        weapon_power_w: jammers[jammerIndex].weapon_power_w, spot_bandwidth_mhz: jammers[jammerIndex].spot_bandwidth_mhz,
+        band_mode: band.mode, band_bandwidth_mhz: band.bandwidth_mhz, band_spot_bandwidth_mhz: band.spot_bandwidth_mhz },
+      { mode: spotMode ? 'spot' : 'broadband', power_w: 1000,
+        weapon_power_w: source.defaultPower, spot_bandwidth_mhz: spotMode ? 5 : 20,
+        band_mode: spotMode ? 'spot' : 'broadband', band_bandwidth_mhz: source.bandwidth,
+        band_spot_bandwidth_mhz: spotMode ? 5 : 0 }, `jammer_param.jammers[${jammerIndex}]：参数与快照不一致`)
     }
     for (const [file, content] of Object.entries(files)) {
       if (file.endsWith('.txt')) assert(!/PLAT-|SUP-/u.test(content), `${file}：残留原平台编号`)

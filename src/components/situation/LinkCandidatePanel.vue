@@ -73,7 +73,7 @@ const candidateRows = computed(() => candidates.value.map((candidate) => ({
 
         <div class="candidate-table-wrap">
           <table class="candidate-table">
-            <thead><tr><th>候选链路</th><th>方向</th><th>质量状态</th><th>可用状态</th><th>BER</th><th>干扰影响</th><th>稳定历史</th></tr></thead>
+            <thead><tr><th>候选链路</th><th>方向</th><th>质量状态</th><th>可用状态</th><th>误码率</th><th>干扰影响</th><th>稳定历史</th></tr></thead>
             <tbody>
               <tr v-for="candidate in candidateRows" :key="candidate.linkId" :data-candidate-id="candidate.linkId">
                 <td><strong>{{ candidate.linkId }}</strong><small>{{ candidate.link?.sourceName }} → {{ candidate.link?.destinationName }}</small></td>

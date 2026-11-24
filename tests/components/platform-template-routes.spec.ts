@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { describe, expect, it, vi } from 'vitest'
-import type { Platform, PlatformType, ValidationIssue } from '../../src/contracts/domain-models'
+import type { Platform, PlatformType, TemplateRoutePoint, ValidationIssue } from '../../src/contracts/domain-models'
 import PlatformEditorDialog from '../../src/components/scenarios/PlatformEditorDialog.vue'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import { createTemplateScenario } from '../fixtures/template-scenario'
@@ -42,6 +42,17 @@ function mountEditor(platform: Platform, options: { editing?: boolean, validate?
 
 type Wrapper = ReturnType<typeof mountEditor>
 
+const mapPoint = { longitude: 120.1, latitude: 23.95, altitude: 3300, speed: 1 }
+
+async function addMapPoints(wrapper: Wrapper, route: 'waypoint' | 'loiter-waypoint', points: TemplateRoutePoint[]) {
+  await wrapper.get(`[data-testid="add-${route}"]`).trigger('click')
+  const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
+  expect(picker.props('modelValue')).toBe(true)
+  expect(picker.props('route')).toMatchObject({ loiter: route === 'loiter-waypoint' })
+  picker.vm.$emit('confirm-route', points.map(point => ({ ...point })))
+  await flushPromises()
+}
+
 async function setNumber(wrapper: Wrapper, testId: string, value: number): Promise<void> {
   await wrapper.get(`[data-testid="${testId}"] input`).setValue(String(value))
 }
@@ -61,27 +72,27 @@ async function applied(wrapper: Wrapper): Promise<Platform> {
 }
 
 describe('PlatformEditorDialog 盘旋航点与返航', () => {
-  it('三类新增航点速度均默认 1 m/s，输入下限为 1，后续新增不沿用已修改的速度', async () => {
+  it('地图新增航点沿用点值，返航新增默认 200 m/s，输入下限为 1，后续新增不沿用已修改的速度', async () => {
     const platform = airPlatform()
     const wrapper = mountEditor(platform)
-    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    await addMapPoints(wrapper, 'waypoint', [mapPoint])
     expect(wrapper.get('[data-testid="waypoint-speed-0"] input').element).toHaveProperty('value', '1')
     await setNumber(wrapper, 'waypoint-speed-0', 20)
-    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
-    await wrapper.get('[data-testid="add-loiter-waypoint"]').trigger('click')
+    await addMapPoints(wrapper, 'waypoint', [{ ...mapPoint, longitude: 120.15 }])
+    await addMapPoints(wrapper, 'loiter-waypoint', [{ ...mapPoint }, { ...mapPoint, longitude: 120.2 }])
     expect(wrapper.get('[data-testid="loiter-speed-0"] input').element).toHaveProperty('value', '1')
     await setNumber(wrapper, 'loiter-speed-0', 50)
-    await wrapper.get('[data-testid="add-loiter-waypoint"]').trigger('click')
     await wrapper.get('[data-testid="return-enabled"]').trigger('click')
     await setNumber(wrapper, 'return-time', 600)
     await wrapper.get('[data-testid="add-return-waypoint"]').trigger('click')
-    expect(wrapper.get('[data-testid="return-speed-0"] input').element).toHaveProperty('value', '1')
+    expect(wrapper.get('[data-testid="return-speed-0"] input').element).toHaveProperty('value', '200')
     await setNumber(wrapper, 'return-speed-0', 60)
     await wrapper.get('[data-testid="add-return-waypoint"]').trigger('click')
 
-    for (const list of ['waypoint', 'loiter', 'return']) {
+    const secondSpeed = { waypoint: 1, loiter: 1, return: 200 } as const
+    for (const list of ['waypoint', 'loiter', 'return'] as const) {
       const speed = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === `${list}-speed-1`)!
-      expect(speed.props('modelValue')).toBe(1)
+      expect(speed.props('modelValue')).toBe(secondSpeed[list])
       expect(speed.props('min')).toBe(1)
       await setNumber(wrapper, `${list}-speed-1`, 0.5)
       await wrapper.get(`[data-testid="${list}-speed-1"] input`).trigger('blur')
@@ -103,9 +114,7 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     expect(wrapper.get('#platform-loiter-title').text()).toBe('盘旋航点（0）')
     expect(wrapper.text()).toContain('盘旋航点在航线末尾循环飞行')
 
-    await wrapper.get('[data-testid="add-loiter-waypoint"]').trigger('click')
-    await wrapper.get('[data-testid="add-loiter-waypoint"]').trigger('click')
-    // 无普通航点时首点取初始位置，速度默认 1 m/s。
+    await addMapPoints(wrapper, 'loiter-waypoint', [mapPoint, { ...mapPoint, longitude: 120.2 }])
     expect(wrapper.get('[data-testid="loiter-altitude-0"] input').element).toHaveProperty('value', '3300')
     expect(wrapper.get('[data-testid="loiter-speed-0"] input').element).toHaveProperty('value', '1')
     await setNumber(wrapper, 'loiter-longitude-0', 120.1)
@@ -136,7 +145,7 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     wrapper.unmount()
   })
 
-  it('盘旋航点可地图选点，回填经纬度且高度按选点框提示置 0', async () => {
+  it('盘旋航点可逐点微调经纬度，保留高度和速度', async () => {
     const platform = airPlatform()
     platform.loiterWaypoints = [
       { longitude: 120, latitude: 24, altitude: 3000, speed: 50 },
@@ -152,8 +161,26 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     await flushPromises()
     expect(picker.props('modelValue')).toBe(false)
     const result = await applied(wrapper)
-    expect(result.loiterWaypoints![1]).toEqual({ longitude: 121.5, latitude: 25.25, altitude: 0, speed: 55 })
+    expect(result.loiterWaypoints![1]).toEqual({ ...platform.loiterWaypoints[1], longitude: 121.5, latitude: 25.25 })
     expect(result.loiterWaypoints![0]).toEqual(platform.loiterWaypoints[0])
+    wrapper.unmount()
+  })
+
+  it('地图仅拖动已有盘旋点也能确认，保留点数、顺序及原有高度和速度', async () => {
+    const platform = airPlatform()
+    platform.loiterWaypoints = [{ ...mapPoint, altitude: 3000, speed: 25 }, { ...mapPoint, longitude: 120.3, altitude: 3500, speed: 30 }]
+    const wrapper = mountEditor(platform)
+    await wrapper.get('[data-testid="add-loiter-waypoint"]').trigger('click')
+    const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
+    const moved = { longitude: 120.5, latitude: 24 }
+    picker.vm.$emit('confirm-route', [], new Map([[1, moved]]))
+    await flushPromises()
+
+    expect(picker.props('modelValue')).toBe(false)
+    expect((await applied(wrapper)).loiterWaypoints).toEqual([
+      platform.loiterWaypoints[0], { ...platform.loiterWaypoints[1], ...moved },
+    ])
+    expect(platform.loiterWaypoints[1]!.longitude).toBe(120.3)
     wrapper.unmount()
   })
 
@@ -248,7 +275,7 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="loiter-section"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="return-section"]').exists()).toBe(true)
-    await wrapper.get('[data-testid="add-loiter-waypoint"]').trigger('click')
+    await addMapPoints(wrapper, 'loiter-waypoint', [mapPoint, { ...mapPoint, longitude: 120.2 }])
     await wrapper.get('[data-testid="pick-loiter-0"]').trigger('click')
     const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
     expect(picker.props('modelValue')).toBe(true)
@@ -284,7 +311,7 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     picker.vm.$emit('confirm', { longitude: 118.2, latitude: 24.5 })
     await flushPromises()
     let result = await applied(wrapper)
-    expect(result.returnPlan).toEqual({ timeS: 1200, waypoints: [{ longitude: 118.2, latitude: 24.5, altitude: 0, speed: 80 }] })
+    expect(result.returnPlan).toEqual({ timeS: 1200, waypoints: [{ longitude: 118.2, latitude: 24.5, altitude: 3000, speed: 80 }] })
 
     await wrapper.get('[data-testid="return-enabled"]').trigger('click')
     await flushPromises()
@@ -390,40 +417,57 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     wrapper.unmount()
   })
 
-  it('批量新增无人机时不显示也不提交盘旋与返航', async () => {
+  it('批量新增无人机时可配置盘旋与返航并验证后提交', async () => {
     const wrapper = mountEditor(airPlatform(), { editing: false })
-    await wrapper.get('[data-testid="add-loiter-waypoint"]').trigger('click')
+    await setNumber(wrapper, 'platform-quantity', 3)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="loiter-section"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="return-section"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="batch-route-hint"]').text()).toContain('新增后可逐个调整')
+    const loiterWaypoints = [mapPoint, { ...mapPoint, longitude: 120.2 }]
+    await addMapPoints(wrapper, 'loiter-waypoint', loiterWaypoints)
     await wrapper.get('[data-testid="return-enabled"]').trigger('click')
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    expect(wrapper.emitted('invalid')?.at(-1)).toEqual(['返航时刻必须大于 0 且早于仿真结束时刻。'])
+    await setNumber(wrapper, 'return-time', 600)
+    await wrapper.get('[data-testid="add-return-waypoint"]').trigger('click')
     await flushPromises()
-    const quantity = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'platform-quantity')!
-    quantity.vm.$emit('update:modelValue', 3)
-    await flushPromises()
-    expect(wrapper.find('[data-testid="loiter-section"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="return-section"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="batch-route-hint"]').text()).toContain('批量新增时不配置盘旋航点和返航路线')
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     const [platform, count] = wrapper.emitted('apply')!.at(-1)! as [Platform, number]
     expect(count).toBe(3)
-    expect(Object.hasOwn(platform, 'loiterWaypoints')).toBe(false)
-    expect(Object.hasOwn(platform, 'returnPlan')).toBe(false)
-    // 数量改回 1 时编辑内容仍在。
-    quantity.vm.$emit('update:modelValue', 1)
-    await flushPromises()
-    expect(wrapper.find('[data-testid="loiter-speed-0"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="return-time"]').exists()).toBe(true)
+    expect(platform.loiterWaypoints).toEqual(loiterWaypoints)
+    expect(platform.returnPlan).toEqual({ timeS: 600, waypoints: [{ ...airPlatform().initialPosition, altitude: 3000, speed: 200 }] })
     wrapper.unmount()
   })
 
-  it('普通航点保留航向、加速度和到达时间，不显示脚本提示，平台初始航向也已删除', async () => {
+  it('普通航点的航向、加速度和必填字段在同一张表中，盘旋和返航入口独立', async () => {
     const wrapper = mountEditor(structuredClone(fixtureSource.scenario.platforms[3]) as Platform)
     await flushPromises()
-    expect(wrapper.find('[data-testid="waypoint-speed-0"]').exists()).toBe(true)
-    for (const restored of ['waypoint-heading-0', 'waypoint-acceleration-0', 'waypoint-arrival-0']) {
-      expect(wrapper.find(`[data-testid="${restored}"]`).exists()).toBe(true)
+    const table = wrapper.get('[data-testid="waypoint-table"]')
+    for (const field of ['speed', 'arrival', 'heading', 'acceleration']) {
+      expect(table.find(`[data-testid="waypoint-${field}-0"]`).exists()).toBe(true)
     }
-    for (const removed of ['waypoint-legacy-hint', 'platform-heading']) {
+    for (const section of ['loiter-section', 'return-section']) {
+      expect(wrapper.find(`[data-testid="${section}"]`).exists()).toBe(true)
+      expect(table.find(`[data-testid="${section}"]`).exists()).toBe(false)
+    }
+    for (const removed of ['waypoint-advanced', 'waypoint-legacy-hint', 'platform-heading']) {
       expect(wrapper.find(`[data-testid="${removed}"]`).exists()).toBe(false)
     }
+    wrapper.unmount()
+  })
+
+  it.each(['heading', 'acceleration'])('确认时在航点表内显示 %s 字段错误', async (field) => {
+    const platform = airPlatform()
+    platform.waypoints = [{ ...mapPoint, arrivalTime: 120 }]
+    const wrapper = mountEditor(platform, { validate: () => [
+      { severity: 'ERROR', code: 'WAYPOINT_FIELD_INVALID', message: '航点参数数值无效。', fieldPath: `waypoints[0].${field}` },
+    ] })
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    const item = wrapper.get(`[data-testid="waypoint-${field}-0"]`).element.closest('.el-form-item')!
+    await vi.waitFor(() => expect(item.textContent).toContain('航点参数数值无效。'))
     wrapper.unmount()
   })
 })
@@ -437,7 +481,10 @@ it('普通航点地图选点只改位置，保留运动字段；可选数值清�
   await wrapper.get('[data-testid="pick-waypoint-0"]').trigger('click')
   wrapper.getComponent({ name: 'WaypointMapPicker' }).vm.$emit('confirm', { longitude: 120.5, latitude: 24.5 })
   await flushPromises()
-  expect((await applied(wrapper)).waypoints[0]).toEqual({ longitude: 120.5, latitude: 24.5, altitude: 0, speed: 40, arrivalTime: 120, heading: 90, acceleration: 2 })
+  expect((await applied(wrapper)).waypoints[0]).toEqual({ longitude: 120.5, latitude: 24.5, altitude: 3000, speed: 40, arrivalTime: 120, heading: 90, acceleration: 2 })
+  await setNumber(wrapper, 'waypoint-heading-0', 135)
+  await setNumber(wrapper, 'waypoint-acceleration-0', 2.5)
+  expect((await applied(wrapper)).waypoints[0]).toMatchObject({ heading: 135, acceleration: 2.5 })
   for (const field of ['heading', 'acceleration']) {
     const control = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === `waypoint-${field}-0`)!
     control.vm.$emit('update:modelValue', undefined)

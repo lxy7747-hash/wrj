@@ -96,12 +96,14 @@ describe('本地场景导入候选', () => {
     input.links[0]!.reverseEndpoints = true
     // 新模板微波端口只支持“无人机 ↔ 后方指挥节点”：FILE-A 显式映射到已有后方节点 CMD-01。
     Object.assign(input.nodes[0]!, { targetId: 'CMD-01', type: 'REAR_COMMAND_NODE' })
-    Object.assign(input.initial.nodes[0]!, { longitude: 118.9, latitude: 24.5, altitude: 20 })
+    const rearPosition = { longitude: -45, latitude: -12, altitude: 20 }
+    Object.assign(input.initial.nodes[0]!, rearPosition)
     const result = buildLocalSceneImport(draft.data.config, input)
     expect(result.errors).toEqual([])
     expect(result.config!.links.at(-1)).toMatchObject({ id: 'FILE-MW', type: 'MICROWAVE', sourcePlatformId: 'FILE-B', targetPlatformId: 'CMD-01', frequency: 2000 })
     expect(result.config!.informationDemand.at(-1)).toMatchObject({ linkId: 'FILE-MW', sourcePlatformId: 'FILE-B', destinationPlatformIds: ['CMD-01'] })
     expect(result.config!.platforms.find(p => p.id === 'CMD-01')!.linkIds).toContain('FILE-MW')
+    expect(result.config!.platforms.find(p => p.id === 'CMD-01')!.initialPosition).toEqual(rearPosition)
     expect(projection.save('SCN-001', { config: result.config, uiExtensions: draft.data.uiExtensions, expectedRevision: draft.data.revision }).ok).toBe(true)
     const loaded = projection.get('SCN-001')
     expect(loaded.ok && loaded.data.config).toEqual(result.config)
@@ -117,9 +119,8 @@ describe('本地场景导入候选', () => {
     ['无最新位置', (s: ImportInput) => { s.nodes[1]!.useLatest = true }, '.position'],
     ['最新位置倒退', (s: ImportInput) => { s.nodes[0]!.useLatest = true; s.initial.nodes[0]!.time = 10 }, '.position'],
     ['最新位置未读完整', (s: ImportInput) => { s.nodes[0]!.useLatest = true; s.positions!.hasMore = true }, '.position'],
-    ['后方指挥坐标越界', (s: ImportInput) => { s.nodes[0]!.type = 'REAR_COMMAND_NODE' }, '.position'],
     ['中继坐标越界', (s: ImportInput) => { s.nodes[0]!.type = 'FORWARD_RELAY_NODE'; s.initial.nodes[0]!.longitude = 116.999999 }, '.position'],
-    ['干扰站坐标越界', (s: ImportInput) => { s.nodes[0]!.type = 'GROUND_JAMMER_DETECTION_STATION' }, '.position'],
+    ['干扰站经度超出全球范围', (s: ImportInput) => { s.nodes[0]!.type = 'GROUND_JAMMER_DETECTION_STATION'; s.initial.nodes[0]!.longitude = 180.000001 }, 'source'],
     ['负高度不静默截断', (s: ImportInput) => { s.initial.nodes[0]!.altitude = -0.0001 }, 'altitude'],
     ['卫星子类型缺失', (s: ImportInput) => { s.nodes[0]!.type = 'COMMUNICATION_SATELLITE' }, 'satelliteType'],
     ['缺少链路参数', (s: ImportInput) => { s.links[0]!.selected = true }, 'links'],
@@ -137,10 +138,8 @@ describe('本地场景导入候选', () => {
   })
 
   it.each([
-    ['REAR_COMMAND_NODE', 118.5, 120, 24, 25, 0],
     ['AIRBORNE_MISSION_CLUSTER', 117, 122, 21, 26, 4000],
     ['FORWARD_RELAY_NODE', 117, 122, 21, 26, 3200],
-    ['GROUND_JAMMER_DETECTION_STATION', 121.2, 121.8, 24.8, 25.4, 0],
   ] as const)('%s 边界可导入，越界拒绝且原配置不变', (type, minLon, maxLon, minLat, maxLat, altitude) => {
     const base = config()
     const before = structuredClone(base)
@@ -166,6 +165,40 @@ describe('本地场景导入候选', () => {
       expect(result.config).toBeUndefined()
       expect(result.errors).toContainEqual(expect.objectContaining({ fieldPath: 'nodes[0].position' }))
       expect(base).toEqual(before)
+    }
+  })
+
+  it('后方指挥节点、地面干扰站与机载干扰平台可导入全球合法坐标，超出有效范围时拒绝', () => {
+    const base = config()
+    const before = structuredClone(base)
+    for (const [type, coordsList] of [
+      ['REAR_COMMAND_NODE', [[0, 0, 0], [-180, -90, 0], [180, 90, 20]]],
+      ['GROUND_JAMMER_DETECTION_STATION', [[121.371465, 24.614799, 0], [-180, -90, 0], [180, 90, 120]]],
+      ['AIRBORNE_JAMMER_PLATFORM', [[119.8, 24.2, 3000], [-180, -90, 0], [180, 90, 5000]]],
+    ] as const) {
+      const target = base.platforms.find(p => p.type === type)?.id ?? 'NEW-AIR-JAMMER'
+      for (const [longitude, latitude, altitude] of coordsList) {
+        const input = source()
+        input.nodes[0]!.targetId = target
+        input.nodes[0]!.type = type
+        input.nodes[1]!.selected = false
+        Object.assign(input.initial.nodes[0]!, { longitude, latitude, altitude })
+        const result = buildLocalSceneImport(base, input)
+        expect(result.errors).toEqual([])
+        expect(result.config!.platforms.find(p => p.id === target)!.initialPosition).toEqual({ longitude, latitude, altitude })
+        expect(base).toEqual(before)
+      }
+      for (const [longitude, latitude] of [[-180.000001, 24], [180.000001, 24], [120, -90.000001], [120, 90.000001]] as const) {
+        const input = source()
+        input.nodes[0]!.targetId = target
+        input.nodes[0]!.type = type
+        input.nodes[1]!.selected = false
+        Object.assign(input.initial.nodes[0]!, { longitude, latitude, altitude: 0 })
+        const result = buildLocalSceneImport(base, input)
+        expect(result.config).toBeUndefined()
+        expect(result.errors).toContainEqual(expect.objectContaining({ fieldPath: 'source' }))
+        expect(base).toEqual(before)
+      }
     }
   })
 
@@ -292,7 +325,7 @@ describe('本地场景导入正式 Store / 组件流程', () => {
   it('未知类型只显示待选项，越界节点明确不导入，取消全选后不能导入', async () => {
     const initial = source().initial
     initial.nodes[0]!.type = 'UNKNOWN'
-    initial.nodes[1]!.type = 'Command_Vehicle_PLATFORM'
+    initial.nodes[1]!.longitude = 123
     fetchMock.mockResolvedValueOnce(envelope(initial))
     await open()
     expect(dialog().get('[data-testid="local-import-summary"]').text()).toContain('未导入 2 个')

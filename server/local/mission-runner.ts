@@ -13,6 +13,7 @@ import { MissionGenerationError } from '../scripts/mission-generator.js'
 import type { LocalMissionResults } from './mission-results.js'
 import { MissionGuard } from './mission-guard.js'
 import { readMissionProcesses } from './mission-process-inspection.js'
+import { MissionMessageReader } from './mission-message-reader.js'
 import { MissionPositionReader } from './mission-position-reader.js'
 import { ContinuousTimeSeriesWriter } from './continuous-time-series.js'
 
@@ -136,6 +137,7 @@ export async function resolveMissionOutputDirectory(entryPath: string): Promise<
 export class LocalMissionRunner implements MissionExecution {
   private readonly guard: MissionGuard
   private readonly positions = new MissionPositionReader()
+  private readonly messages = new MissionMessageReader()
   /** 引擎路径在服务进程内不变，探测结果缓存；探测异常时下次重试。 */
   private linkCalcSupport?: Promise<boolean>
 
@@ -178,6 +180,7 @@ export class LocalMissionRunner implements MissionExecution {
     const linkCalcAvailable = this.forceLinkStub ? false : await this.hasLinkCalc()
     const entryPath = await writeMissionPackage(this.directory, draft, !linkCalcAvailable, this.outputDirectory)
     this.positions.attach(runId, draft, entryPath)
+    this.messages.attach(runId, draft, entryPath)
     const cwd = dirname(entryPath)
     const logPath = join(cwd, 'mission-console.log')
     const log = await open(logPath, 'wx')
@@ -287,7 +290,12 @@ export class LocalMissionRunner implements MissionExecution {
       throw new Error('mission 启动未确认；请检查本机进程与未结清记录。')
     }
     const process: MissionProcess = {
-      pid: child.pid!, startedAt, entryPath, outputDirectory, engineManifest, readPositions: () => this.positions.read(runId), completed,
+      pid: child.pid!, startedAt, entryPath, outputDirectory, engineManifest,
+      readPositions: () => this.positions.read(runId),
+      readMessages: (afterCursor = 0, options) => this.messages.read(runId, afterCursor, {
+        simulationEnded: options?.simulationEnded ?? exited,
+      }),
+      completed,
       readConsoleLog: () => readConsoleLogTail(logPath),
       ...(this.runTimeoutMs > 0 ? { timeoutMs: this.runTimeoutMs } : {}),
       dataFailure: continuous.failed.then(error => `连续时序留存失败：${error.message}；已请求停止本任务。`),

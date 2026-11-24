@@ -4,7 +4,7 @@ import { lstat, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { once } from 'node:events'
 import { finished } from 'node:stream/promises'
-import type { LocalReportEvidence, LocalReportFilter, LocalReportFilterResult, Report } from '../../src/contracts/domain-models.js'
+import type { LocalReportEvidence, LocalReportFilter, LocalReportFilterResult, LocalSwitchEvent, Report } from '../../src/contracts/domain-models.js'
 import { EVENTS_CSV_HEADER } from '../../src/contracts/domain-models.js'
 import type { AfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
 import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
@@ -126,6 +126,15 @@ export async function filterMissionReport(directory: string, snapshot: MissionRe
   const includePhaseEnd = phase?.endTimeS === report.localEvidence.endTimeS && !phases.some(item => item.startTimeS === phase?.endTimeS)
   const inRange = (time: number) => time >= rangeStart && time <= rangeEnd
     && (!phase || time < phase.endTimeS || includePhaseEnd)
+  const { nodeId, linkId } = filter
+  const { detectionEvents: savedDetections, switchEvents: savedSwitches, ...baseEvidence } = report.localEvidence
+  const switchesInRange = savedSwitches?.filter(event => inRange(event.time))
+  const switchesById = nodeId || linkId ? new Map(switchesInRange?.map(event => [event.eventId, event])) : undefined
+  const switchIdsMatchedByIndex = new Set<string>()
+  const nodeLinkIds = new Set(nodeId && switchesById?.size ? manifest.links.filter(item => item.nodes.includes(nodeId)).map(item => item.id) : [])
+  const switchTouchesNode = (event: LocalSwitchEvent) => !nodeId
+    || [event.fromLinkId, event.toLinkId].some(id => id !== null && nodeLinkIds.has(id))
+  const switchTouchesLink = (event: LocalSwitchEvent) => !linkId || event.fromLinkId === linkId || event.toLinkId === linkId
   const allowedNodes = new Set(filter.nodeId ? [filter.nodeId] : link ? link.nodes : nodeIds), counts = new Map<string, number>(), relatedNodeIds = new Set<string>(), timeline: LocalReportFilterResult['timeline'] = [], connections: LocalReportEvidence['connections'] = [], deviceEvents: LocalReportEvidence['deviceEvents'] = []
   let rows = 0, selected = 0, totalTimeline = 0; const hash = createHash('sha256')
   let source: Awaited<ReturnType<typeof readStableUtf8Lines>>
@@ -136,8 +145,15 @@ export async function filterMissionReport(directory: string, snapshot: MissionRe
     const needsLinkMembership = filter.linkId !== undefined && (row.linkId !== undefined || !!row.linkIds?.length)
     if (manifest.version === 1 && needsLinkMembership && /^(?:COMM_|MESSAGE_|LINK_|EXCHANGE_COMPLETED$)/u.test(row.type)
       && [row.device, row.sourceDeviceId, row.targetDeviceId].some((device): device is string => typeof device === 'string' && !!device && !isArchivedDeviceId(device))) throw new Error('FILTER_UNSUPPORTED')
-    const touches = !filter.nodeId || row.subject === filter.nodeId || row.target === filter.nodeId
-    if (!touches || (filter.linkId && row.linkId !== filter.linkId && !row.linkIds?.includes(filter.linkId)) || !inRange(row.time)) return
+    if (!inRange(row.time)) return
+    const touches = !nodeId || row.subject === nodeId || row.target === nodeId
+    const matchesLink = !linkId || row.linkId === linkId || row.linkIds?.includes(linkId)
+    // 补足同一归档事件的节点或链路归属，不另造时间线事件。
+    const savedSwitch = switchesById?.get(row.id)
+    const matchesSwitch = savedSwitch?.time === row.time
+      && (touches || switchTouchesNode(savedSwitch)) && (matchesLink || switchTouchesLink(savedSwitch))
+    if (matchesSwitch) switchIdsMatchedByIndex.add(row.id)
+    if (!matchesSwitch && (!touches || !matchesLink)) return
     selected += 1; counts.set(row.type, (counts.get(row.type) ?? 0) + 1); totalTimeline += 1
     if (timeline.length < 500) timeline.push({ id: row.id, time: row.time, type: row.type, subject: row.subject ?? '未提供', ...(row.target ? { target: row.target } : {}), ...(row.device ? { device: row.device } : {}), ...(row.stage ? { stage: row.stage } : {}) })
     if (connections.length < DETAIL_LIMIT && row.type === 'LINK_ADDED_TO_MANAGER' && row.subject && row.target) { if (!allowedNodes.has(row.subject)) relatedNodeIds.add(row.subject); if (!allowedNodes.has(row.target)) relatedNodeIds.add(row.target); connections.push({ eventId: row.id, time: row.time, scope: row.scope ?? (row.subject === row.target ? 'INTERNAL' : 'INTER_PLATFORM'), sourcePlatformId: row.subject, sourceDeviceId: row.sourceDeviceId ?? row.device ?? '未提供', targetPlatformId: row.target, targetDeviceId: row.targetDeviceId ?? '未提供' }) }
@@ -150,11 +166,11 @@ export async function filterMissionReport(directory: string, snapshot: MissionRe
     ? { messageDetailsComplete: false as const, messageDetailEventCount: [...counts].filter(([type]) => type.startsWith('MESSAGE_')).reduce((sum, [, count]) => sum + count, 0) }
     : {}
   // 侦测规范事件按同一时间与节点范围收窄；事件类型须仍在筛选后的分类计数中，避免引用已排除的记录。
-  const detectionEvents = report.localEvidence.detectionEvents?.filter(row => inRange(row.time) && counts.has(row.type)
+  const detectionEvents = savedDetections?.filter(row => inRange(row.time) && counts.has(row.type)
     && allowedNodes.has(row.platformId) && (!filter.nodeId || row.platformId === filter.nodeId || row.targetPlatformId === filter.nodeId))
-  const { detectionEvents: _unfiltered, ...baseEvidence } = report.localEvidence
+  const switchEvents = switchesInRange?.filter(event => switchIdsMatchedByIndex.has(event.eventId) || (switchTouchesNode(event) && switchTouchesLink(event)))
   const evidence: LocalReportEvidence = { ...baseEvidence, ...messageEvidence, startTimeS: rangeStart, endTimeS: rangeEnd, simulationComplete: counts.has('SIMULATION_COMPLETE'), nodes, ...(relatedNodeIds.size ? { relatedNodeIds: [...relatedNodeIds].sort() } : {}), positionCount: nodes.reduce((sum, node) => sum + node.positionCount, 0), eventCount: selected, eventCounts: [...counts].sort(([type], [other]) => type.localeCompare(other)).map(([type, count]) => ({ type, count })), connections, deviceEvents,
-    ...(detectionEvents?.length ? { detectionEvents } : {}) }
+    ...(detectionEvents?.length ? { detectionEvents } : {}), ...(switchEvents === undefined ? {} : { switchEvents }) }
   const filtered: Report = { ...report, localEvidence: evidence }; if (!isLocalReport(filtered)) throw new Error('FILTER_UNSUPPORTED')
   timeline.sort((a, b) => a.time - b.time || a.id.localeCompare(b.id))
   return { report: filtered, filter, timeline, timelineTotal: totalTimeline, stages: phases.map(item => item.id), links: manifest.links.map(item => item.id).sort() }

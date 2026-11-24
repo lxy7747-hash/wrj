@@ -18,7 +18,7 @@ OpenAPI **1.12.0**，HTTP 操作数量及现有主题不变。`LinkMetricPayload
 
 `AVAILABLE/RISK/INVALID` 分别映射 `UP/DEGRADED/DOWN`，未知状态保留为 `UNKNOWN`；不重新执行本机判定。缺测字段为 null，事件、原因和业务字符串保持开放。`EngineFrameSnapshot.engineEpoch` 为必填非负安全整数，由本项目服务从 0 计数。帧号从正数归零或重连首个有效帧号回退时递增轮次，清空初始热链缓存；前端同步清空引擎帧、事件、切换和告警历史。更小轮次拒绝，同轮次重复／倒序帧丢弃，普通递增帧重连保留初始热链。丢弃日志按原因每 10 秒最多一条，包含累计次数。设备段可关联多个场景链路，未匹配时保留原始名字，不推测整条多跳链路状态。
 
-归一化转换 km→m、dBW→dBm、bps→Mbps、海里→m。2026-11-09 按 `websocketNew` 确认：`sim_time_s` 实际为毫秒，入口转换为秒；探测频率字段 `freq_band_hz` 实际为 GHz，转换为 Hz，干扰机同名字段保持 Hz。链路频率读取 `frequency_ghz`，兼容旧字段名 `frequency`。新增参数可展示和归档，固定值用于流程测试；真实计算与控制闭环单独待验证。详见 [websocketNew 适配与待验证清单](../docs/websocketNew适配与待验证清单_20261109.md)。
+归一化转换 km→m、dBW→dBm、bps→Mbps、海里→m。2026-11-09 按 `websocketNew` 确认：`sim_time_s` 实际为毫秒，入口转换为秒；探测频率字段 `freq_band_hz` 与干扰机同名字段均为 Hz，直接使用（2026-11-24 更新，此前探测频率按 GHz 转换）。链路频率读取 `frequency_ghz`，兼容旧字段名 `frequency`。新增参数可展示和归档，固定值用于流程测试；真实计算与控制闭环单独待验证。详见 [websocketNew 适配与待验证清单](../docs/websocketNew适配与待验证清单_20261109.md)。
 
 | 文件 | 当前 SHA-256 |
 |---|---|
@@ -174,9 +174,9 @@ OpenAPI 更新至 **1.8.9**（83 操作 / 40 写操作不变），`ScenarioConfi
 | `contracts/mock-api.openapi.yaml` | `E1539F2E1A9A6E191898201B90D7A3D295D80F8E6AF358B0088B63E35C7BD951` |
 | `../scripts/contracts/openapi-schema.snapshot.ts` | `5FC376A1AAC8A51D7DA06AAF58824FC8C3D5FC1D2B6B01E9B6CB8D3BCDE17F88` |
 
-## 环境参数、数传波段与阶段切换规则（2026-10-08，历史冻结记录）
+## 环境参数、数传波段与阶段切换规则（2026-10-08，历史冻结记录；阶段切换规则已删除）
 
-OpenAPI 更新至 **1.8.8**（83 操作 / 40 写操作不变），仅扩展组件 schema：`Environment` 新增云层高度、云中液态水密度与海面区域 `seaPolygon`；`Link.band`（C/L）仅允许 `DATALINK` 携带；`ScenarioLinkSettings.switchRules` 引用新组件 `LinkSwitchRule`，距离条件必须带 `distanceThresholdM` 且不得带 `jammerId`，干扰条件反之。新字段均可缺省，旧场景读取不受影响。运行时校验另行要求规则目标链路与端点业务同方向，该约束跨对象引用，不在 schema 中表达。同步领域类型、schema snapshot 与合同负例；fixture 未改。回退须同时恢复合同、领域类型与共享校验。
+OpenAPI 当时更新至 **1.8.8**（83 操作 / 40 写操作不变），仅扩展组件 schema：`Environment` 新增云层高度、云中液态水密度与海面区域 `seaPolygon`；`Link.band`（C/L）仅允许 `DATALINK` 携带；当时 `ScenarioLinkSettings.switchRules` 引用 `LinkSwitchRule`。该规则组件、领域类型和界面已删除，下面的哈希只记录 2026-10-08 的文件，不代表当前合同。云层、海面区域和数传波段仍保留。
 
 | 文件 | 当前 SHA-256 |
 |---|---|
@@ -479,3 +479,16 @@ Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus、离线 Leaflet�
 | `../scripts/contracts/contract-documents.ts` | `AC972B9C9424B6F2D03C17D90801177635D3E80553525D5734773D4E49D50150` |
 | `../tests/contracts/equipment-contract.spec.ts` | `BBBFB7F9D560467449430B63FB4552B1DC00B2306586DFCB462EF5BC8893BF75` |
 | `../tests/contracts/openapi-contract.spec.ts` | `2E263783B4599088F27AA618AF39B07E884351F85365DB45F73B9D7AB311F62C` |
+
+### 场景链路继承平台端口参数（冻结记录）
+
+`Link` 新增可选 `inheritPortParameters: true`，仅用于非激光链路。继承时按链路两端的平台类型与端口读取收发参数，保留链路原有字段。旧场景省略标记时继续按既有规则读取。更新后的服务可读取旧场景，使用新标记的场景需要配套版本。接口数量和确定性夹具保持原样。
+
+以下是更新后工作区的文件 SHA-256。两份 TypeScript 合同均包含这次 `Link` 扩展，其字节校验仍会报告此前已存在的 `EngineFrameArchiveSummary.detailDeferred` 差异。
+
+| 文件 | SHA-256 |
+|---|---|
+| `contracts/domain-models.ts` | `DBDAAA68069D4BAF63E02F52D8BF3DFF56BF4BC047C2AC6B5ED6F62C651879E2` |
+| `../src/contracts/domain-models.ts` | `C6E6EAE78B46172F8EA50FC5A125B54C3682F0D10F77260AEA196FC5F43C9DF1` |
+| `contracts/mock-api.openapi.yaml` | `1C01C86F0586D4E9BFE048CCA056F21AA5CA0E6D4D2D9DA466BFA5B89F71634A` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `19F6B744079D028B5CB8FF9A27306BB7870CC44BCB36BFC2AA8C22262630B90C` |

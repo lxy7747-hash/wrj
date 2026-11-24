@@ -77,7 +77,7 @@ export function equipmentLinkIssues(record: EquipmentParameter): Partial<Record<
     }
   }
   if (configured(record.berThreshold) && (typeof record.berThreshold !== 'number' || !Number.isFinite(record.berThreshold) || record.berThreshold < 0 || record.berThreshold > 1)) {
-    errors.berThreshold = 'BER 阈值必须在 0～1 之间。'
+    errors.berThreshold = '误码率阈值必须在 0～1 之间。'
   }
   return errors
 }

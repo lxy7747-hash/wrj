@@ -1,5 +1,5 @@
 import type { EngineFrameArchiveSummary, LocalReportEvidence, LocalReportFilter, Report, TaskPhase } from '../../contracts/domain-models'
-import { isLocalReport, resolvePhaseRange, withinPhaseRange } from './local-report'
+import { isEngineFrameArchive, isLocalReport, resolvePhaseRange, withinPhaseRange } from './local-report'
 
 function rangeFor(evidence: LocalReportEvidence, filter?: LocalReportFilter, phases?: TaskPhase[], reportEndTimeS?: number) {
   return resolvePhaseRange(evidence, filter, phases, reportEndTimeS ?? evidence.endTimeS)
@@ -40,8 +40,8 @@ export function filterEngineFrameArchive(archive: EngineFrameArchiveSummary, evi
 export function attachEngineFrameArchive(report: Report, archive: EngineFrameArchiveSummary, filter?: LocalReportFilter, phases?: TaskPhase[], reportEndTimeS?: number): Report {
   if (!isLocalReport(report)) throw new Error('只有本地真实报告可附加引擎帧归档。')
   if (!/^[a-f0-9]{64}$/u.test(archive.sourceSha256)) throw new Error('引擎帧归档来源摘要无效。')
-  const localEvidence: LocalReportEvidence = { ...report.localEvidence, engineFrameArchive: filterEngineFrameArchive(archive, report.localEvidence, filter, phases, reportEndTimeS) }
-  const attached: Report = { ...report, localEvidence }
-  if (!isLocalReport(attached)) throw new Error('附加后的引擎帧归档未通过边界校验。')
-  return attached
+  const filteredArchive = filterEngineFrameArchive(archive, report.localEvidence, filter, phases, reportEndTimeS)
+  if (!isEngineFrameArchive(filteredArchive)) throw new Error('附加后的引擎帧归档未通过边界校验。')
+  const localEvidence: LocalReportEvidence = { ...report.localEvidence, engineFrameArchive: filteredArchive }
+  return { ...report, localEvidence }
 }

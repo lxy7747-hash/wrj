@@ -8,7 +8,7 @@ export const APP_CONFIG = {
   /** 系统管理可选入口；只控制显隐，不改变路由和角色权限。 */
   systemManagement: {
     // 测试大纲 GNZB-22～28 需要以下入口可见；只控制显隐，路由和权限不变。
-    showMasterData: true, // 基础数据管理，含设备参数、体制、字典和枚举
+    showMasterData: false, // 基础数据管理，含设备参数、体制、字典和枚举
     showDatabaseBackup: true, // 数据库备份 / 恢复
     showSimulationData: false, // 仿真数据管理
     showRuntimeStatus: false, // 系统运行状态

@@ -3,31 +3,99 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
+import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import ReplayTimeline from '../../components/replays/ReplayTimeline.vue'
 import MissionResults from '../../components/situation/MissionResults.vue'
 import EngineFramePanel from '../../components/situation/EngineFramePanel.vue'
-import type { ReplayState } from '../../contracts/domain-models'
+import type { Link, ReplayState } from '../../contracts/domain-models'
 import { useReplayStore } from '../../stores/replay'
-import { selectReplayNodes } from '../../features/replays/local-replay'
 import { selectFileCommunicationLinks } from '../../features/situation/file-communication-links'
+import { readLinkEnabled } from '../../features/scenarios/link-settings'
+import {
+  localizeReplayTimelineMarkers,
+  selectReplayConfiguredLinks,
+  selectReplayLiveMessageFlows,
+  selectReplayMapNodes,
+} from '../../features/replays/replay-situation'
+import type { PositionUpdate } from '../../features/situation/position-updates'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 
 const replayStore = useReplayStore()
 const route = useRoute()
 const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
 const resultId = computed(() => typeof route.query.resultId === 'string' ? route.query.resultId : undefined)
-const { replay, events, state, speed, selectedEventId, resultMessage, localSnapshot, engineHistory, engineLoading } = storeToRefs(replayStore)
+const {
+  replay,
+  events,
+  state,
+  speed,
+  selectedEventId,
+  resultMessage,
+  localSnapshot,
+  engineHistory,
+  engineLoading,
+  configuredJammers,
+  scenarioConfig,
+} = storeToRefs(replayStore)
 const historyTab = ref('quality')
-const nodeNames = computed(() => Object.fromEntries((localSnapshot.value?.initial.nodes ?? []).map(node => [node.platformId, node.name])))
-const fileNodes = computed(() => localSnapshot.value ? selectReplayNodes(localSnapshot.value, replay.value?.currentTimeS ?? 0) : [])
-// 以回放游标筛选登记，不使用实时位置时刻，向后定位时也移除未来关联。
-const fileLinks = computed(() => selectFileCommunicationLinks(localSnapshot.value?.initial.connections ?? [], replay.value?.currentTimeS ?? 0))
+const currentTimeS = computed(() => replay.value?.currentTimeS ?? 0)
+const useSceneSituationMode = computed(() => Boolean(scenarioConfig.value && engineHistory.value?.frameCount))
+const nodeNames = computed(() => Object.fromEntries([
+  ...(localSnapshot.value?.initial.nodes ?? []).map(node => [node.platformId, node.name] as const),
+  ...(scenarioConfig.value?.platforms ?? []).map(platform => [platform.id, platform.name] as const),
+]))
+const mapNodes = computed(() => selectReplayMapNodes(localSnapshot.value, scenarioConfig.value, currentTimeS.value, Boolean(scenarioConfig.value)))
+const sceneLinkView = computed(() => (useSceneSituationMode.value && scenarioConfig.value && engineHistory.value
+  ? selectReplayConfiguredLinks(scenarioConfig.value, engineHistory.value)
+  : null))
+const mapConfiguredLinks = computed(() => sceneLinkView.value?.configuredLinks)
+const mapFocusLinks = computed(() => sceneLinkView.value?.focusLinks ?? [])
+const configuredLinkStatuses = computed(() => sceneLinkView.value?.statuses)
+const configuredLinkSwitches = computed(() => sceneLinkView.value?.switches)
+const liveMessageFlows = computed(() => (useSceneSituationMode.value && engineHistory.value?.engineFrame
+  ? selectReplayLiveMessageFlows(localSnapshot.value?.initial.messageLinks, currentTimeS.value, speed.value, state.value === 'PLAYING')
+  : []))
+const localizedTimelineMarkers = computed(() => localizeReplayTimelineMarkers(
+  engineHistory.value?.timelineMarkers,
+  scenarioConfig.value,
+  nodeNames.value,
+))
+// 以回放游标筛选登记，不使用实时位置时刻，向后定位时也移除未来关联；场景引擎回放模式改由配置链路呈现。
+const fileLinks = computed(() => (useSceneSituationMode.value
+  ? []
+  : selectFileCommunicationLinks(localSnapshot.value?.initial.connections ?? [], currentTimeS.value)))
 const focusTarget = ref<SituationMapFocusTarget | null>(null)
 const selectedNodeId = ref('')
+const selectedLinkId = ref('')
+const linkDialogVisible = ref(false)
+const mapFullscreen = ref(false)
 const sliderTime = ref(0)
 const sliderDragging = ref(false)
 const fileSeekRevision = ref(0)
 const loading = computed(() => state.value === 'LOADING')
+const selectedConfiguredLink = computed(() => {
+  const link = scenarioConfig.value?.links.find(item => item.id === selectedLinkId.value)
+  return link ? { ...link, enabled: readLinkEnabled(link, scenarioConfig.value!.linkSettings) } : null
+})
+const selectedEngineSegments = computed(() => engineHistory.value?.engineFrame?.links.filter(segment => segment.linkIds.includes(selectedLinkId.value)) ?? [])
+const linkNodePositions = computed<PositionUpdate[]>(() => mapNodes.value.map(node => ({
+  time: typeof node.time === 'number' ? node.time : currentTimeS.value,
+  platformId: node.platformId,
+  longitude: node.longitude,
+  latitude: node.latitude,
+  altitude: node.altitude,
+  speed: node.speed,
+  heading: node.heading,
+})))
+
+function openConfiguredLinkDetails(link: Link): void {
+  selectedLinkId.value = link.id
+  linkDialogVisible.value = true
+}
+
+watch(selectedConfiguredLink, link => {
+  if (!link) linkDialogVisible.value = false
+})
 
 /** 将回放状态转换为中文。 */
 function replayStateLabel(value: ReplayState): string {
@@ -89,11 +157,13 @@ async function changeSpeed(value: number): Promise<void> {
 async function reload(): Promise<void> {
   sliderDragging.value = false
   focusTarget.value = null
+  selectedLinkId.value = ''
+  linkDialogVisible.value = false
   await replayStore.loadLocalFile(archiveId.value, resultId.value)
 }
 
 /** 选中节点仍存在时保留高亮；时间变化不自动重置视图或选择。 */
-watch(fileNodes, (nodes) => {
+watch(mapNodes, (nodes) => {
   if (!nodes.some((node) => node.platformId === selectedNodeId.value)) selectedNodeId.value = nodes[0]?.platformId ?? ''
 }, { immediate: true })
 
@@ -111,7 +181,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="replays-page" aria-label="历史回放">
+  <section class="replays-page" :class="{ 'replays-page--map-fullscreen': mapFullscreen }" aria-label="历史回放">
     <header class="replays-page__header">
       <MissionResults view="replay" />
 <!--      <div>-->
@@ -142,15 +212,25 @@ onBeforeUnmount(() => {
       <section class="replay-view" aria-label="回放视窗">
         <OfflineSituationMap
           :key="`${localSnapshot.initial.sha256}:${localSnapshot.sha256}`"
+          :source-key="`${localSnapshot.initial.sha256}:${localSnapshot.sha256}`"
           :frame="null"
           :engine-frame="engineHistory?.engineFrame"
           engine-source-label="历史引擎数据"
           :position-replay="localSnapshot"
-          :initial-nodes="fileNodes"
+          :initial-nodes="mapNodes"
+          :configured-links="mapConfiguredLinks"
+          :focus-links="mapFocusLinks"
+          :configured-link-statuses="configuredLinkStatuses"
+          :configured-link-switches="configuredLinkSwitches"
+          :configured-jammers="configuredJammers ?? undefined"
+          :configured-environment="scenarioConfig?.scenario?.environment"
+          :live-message-flows="liveMessageFlows"
+          :live-flow-playing="state === 'PLAYING'"
+          :live-flow-key="`${localSnapshot.initial.sha256}:${localSnapshot.sha256}:${fileSeekRevision}`"
           :file-links="fileLinks"
-          :file-message-links="localSnapshot.initial.messageLinks"
-          :file-device-events="localSnapshot?.initial.deviceEvents"
-          :file-time="replay?.currentTimeS ?? 0"
+          :file-message-links="useSceneSituationMode ? [] : localSnapshot.initial.messageLinks"
+          :file-device-events="useSceneSituationMode ? [] : localSnapshot?.initial.deviceEvents"
+          :file-time="currentTimeS"
           :file-playing="state === 'PLAYING'"
           :file-speed="speed"
           :file-seek-revision="fileSeekRevision"
@@ -158,57 +238,82 @@ onBeforeUnmount(() => {
           :selected-node-id="selectedNodeId"
           :focus-target="focusTarget"
           @select-node="selectedNodeId = $event"
+          @select-configured-link="openConfiguredLinkDetails"
+          @fullscreen-change="mapFullscreen = $event"
         />
         <div class="replay-view__badge">{{ engineHistory?.frameCount ? '历史回放' : '文件回放' }} · {{ formatTime(replay.currentTimeS) }}</div>
       </section>
 
-      <aside class="replay-event-detail" aria-label="回放数据" data-testid="replay-event-detail">
-          <div class="panel-title"><strong>回放数据</strong><span>{{ fileNodes.length }} 个节点</span></div>
-          <dl>
-            <div><dt>初始化来源</dt><dd>{{ localSnapshot.initial.fileName }}</dd></div>
-            <div><dt>位置记录</dt><dd>{{ localSnapshot.recordCount }} 条</dd></div>
-            <div><dt>位置更新节点</dt><dd>{{ localSnapshot.tracks.length }} 个</dd></div>
+      <aside class="replay-event-detail" :class="{ 'replay-event-detail--engine': Boolean(engineHistory) }" aria-label="回放数据" data-testid="replay-event-detail">
+        <div class="replay-summary">
+          <div class="panel-title">
+            <div class="panel-title__left">
+              <strong>回放数据</strong>
+              <span v-if="resultId" class="panel-title__hint">正在回放所选运行</span>
+              <span v-else-if="!archiveId" class="panel-title__hint">可重新加载新增记录</span>
+            </div>
+            <span class="panel-title__meta">{{ mapNodes.length }} 个节点</span>
+          </div>
+          <dl class="replay-summary__stats">
+            <div :title="localSnapshot.initial.fileName">
+              <dt>初始化来源</dt>
+              <dd>{{ localSnapshot.initial.fileName }}</dd>
+            </div>
+            <div>
+              <dt>位置记录</dt>
+              <dd>{{ localSnapshot.recordCount }} 条</dd>
+            </div>
+            <div>
+              <dt>位置更新节点</dt>
+              <dd>{{ localSnapshot.tracks.length }} 个</dd>
+            </div>
           </dl>
           <div class="replay-node-field">
             <label for="replay-node-select">节点定位</label>
             <div class="replay-node-location">
-              <el-select id="replay-node-select" :model-value="selectedNodeId" aria-label="回放节点定位" @update:model-value="locateFileNode">
-                <el-option v-for="node in fileNodes" :key="node.platformId" :value="node.platformId" :label="node.name" />
+              <el-select id="replay-node-select" size="small" :model-value="selectedNodeId" aria-label="回放节点定位" @update:model-value="locateFileNode">
+                <el-option v-for="node in mapNodes" :key="node.platformId" :value="node.platformId" :label="node.name" />
               </el-select>
-              <el-button :disabled="!selectedNodeId" @click="locateFileNode(selectedNodeId)">定位</el-button>
+              <el-button size="small" :disabled="!selectedNodeId" @click="locateFileNode(selectedNodeId)">定位</el-button>
             </div>
           </div>
-          <p v-if="archiveId" data-testid="replay-archive-source">归档：{{ archiveId }}。重新加载仍查看此归档。</p>
-          <p v-else-if="resultId">正在回放所选运行。</p>
-          <p v-else>点击「重新加载」可读取新增记录。</p>
-          <p>图中通信关联不代表链路已接通。</p>
+          <p v-if="archiveId" class="replay-summary__note" data-testid="replay-archive-source">归档：{{ archiveId }}。重新加载仍查看此归档。</p>
+          <p v-if="!useSceneSituationMode" class="replay-summary__note">图中通信关联不代表链路已接通。</p>
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
           <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"
             :description="localSnapshot.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`).join('；')" type="warning" :closable="false" />
-          <section v-if="engineHistory" class="replay-history" aria-label="历史引擎数据" data-testid="replay-engine-history">
-            <div class="panel-title"><strong>历史引擎数据</strong><span>{{ engineHistory.frameCount }} 帧</span></div>
-            <el-select v-if="engineHistory.epochs.length > 1" :model-value="engineHistory.engineEpoch" aria-label="引擎轮次" @update:model-value="replayStore.selectEngineEpoch">
-              <el-option v-for="epoch in engineHistory.epochs" :key="epoch.engineEpoch" :value="epoch.engineEpoch" :label="`轮次 ${epoch.engineEpoch + 1} · ${epoch.frameCount} 帧`" />
-            </el-select>
-            <p v-if="engineLoading" role="status">正在读取对应时刻的历史数据…</p>
-            <p v-if="!engineHistory.engineFrame">{{ engineHistory.frameCount ? '当前时刻尚未收到引擎帧。' : '本次运行没有收到引擎帧。' }}</p>
-            <template v-else>
-              <p v-if="engineHistory.historyTruncated">事件、切换和告警分别显示游标前最近 200 条；完整数据仍保存在历史归档中。</p>
-              <el-tabs v-model="historyTab" class="replay-history__tabs">
-                <el-tab-pane label="质量指标" name="quality"><EngineFramePanel section="quality" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
-                <el-tab-pane label="干扰与探测" name="jammers"><EngineFramePanel section="jammers" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
-                <el-tab-pane label="选路与告警" name="decisions"><EngineFramePanel section="decisions" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
-                <el-tab-pane label="事件" name="events"><EngineFramePanel section="events" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
-              </el-tabs>
-            </template>
-          </section>
-          <p v-else-if="resultId && !engineLoading">本次结果没有引擎帧归档，保留文件轨迹回放。</p>
+        </div>
+
+        <section v-if="engineHistory" class="replay-history" aria-label="历史引擎数据" data-testid="replay-engine-history">
+          <div class="panel-title replay-history__title">
+            <strong>历史引擎数据</strong>
+            <div class="replay-history__meta">
+              <span v-if="engineLoading" class="replay-history__loading" role="status">读取中…</span>
+              <el-select v-if="engineHistory.epochs.length > 1" size="small" class="replay-history__epoch" :model-value="engineHistory.engineEpoch" aria-label="引擎轮次" @update:model-value="replayStore.selectEngineEpoch">
+                <el-option v-for="epoch in engineHistory.epochs" :key="epoch.engineEpoch" :value="epoch.engineEpoch" :label="`轮次 ${epoch.engineEpoch + 1} · ${epoch.frameCount} 帧`" />
+              </el-select>
+              <span class="panel-title__meta">{{ engineHistory.frameCount }} 帧</span>
+            </div>
+          </div>
+          <p v-if="!engineHistory.engineFrame" class="replay-history__empty">{{ engineHistory.frameCount ? '当前时刻尚未收到引擎帧。' : '本次运行没有收到引擎帧。' }}</p>
+          <template v-else>
+            <p v-if="engineHistory.historyTruncated" class="replay-history__note">事件、切换和告警分别显示游标前最近 200 条；完整数据仍保存在历史归档中。</p>
+            <el-tabs v-model="historyTab" class="replay-history__tabs">
+              <el-tab-pane label="质量指标" name="quality"><EngineFramePanel section="quality" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+              <el-tab-pane label="干扰与探测" name="jammers"><EngineFramePanel section="jammers" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+              <el-tab-pane label="选路与告警" name="decisions"><EngineFramePanel section="decisions" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+              <el-tab-pane label="事件" name="events"><EngineFramePanel section="events" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+            </el-tabs>
+          </template>
+        </section>
+        <p v-else-if="resultId && !engineLoading" class="replay-summary__note">本次结果没有引擎帧归档，保留文件轨迹回放。</p>
       </aside>
 
       <section class="replay-controls" aria-label="回放控制">
         <ReplayTimeline
           :replay="replay"
           :events="events"
+          :engine-markers="localizedTimelineMarkers"
           :selected-event-id="selectedEventId"
           @select="selectedEventId = $event"
           @seek="seek"
@@ -243,6 +348,17 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </main>
+
+    <LinkQualityDialog
+      v-model="linkDialogVisible"
+      :link="null"
+      :configured-link="selectedConfiguredLink"
+      :engine-segments="selectedEngineSegments"
+      :engine-frame="engineHistory?.engineFrame"
+      engine-source-label="历史引擎数据"
+      :node-positions="linkNodePositions"
+      :platforms="scenarioConfig?.platforms ?? []"
+    />
   </section>
 </template>
 
@@ -255,6 +371,21 @@ onBeforeUnmount(() => {
   grid-template-rows: auto minmax(0, 1fr);
   color: var(--console-text);
   background: var(--console-bg-elevated);
+}
+
+.replays-page--map-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  width: 100vw;
+  height: 100dvh;
+}
+/* 全屏时隐藏右侧回放数据栏，让地图占满主区域；顶部运行结果和底部回放控制保留。 */
+.replays-page--map-fullscreen .replay-event-detail {
+  display: none;
+}
+.replays-page--map-fullscreen .replays-page__body {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .replays-page__header {
@@ -314,10 +445,7 @@ onBeforeUnmount(() => {
   padding: 1rem;
 }
 
-.replays-page__body--engine { grid-template-columns: minmax(0, 1fr) minmax(22rem, 38%); }
-.replay-history { min-width: 0; margin-top: 1rem; }
-.replay-history__tabs { min-width: 0; }
-.replay-history__tabs :deep(.el-tabs__content) { overflow: visible; }
+.replays-page__body--engine { grid-template-columns: minmax(0, 1fr) minmax(24rem, 36%); }
 
 .replay-view,
 .replay-event-detail,
@@ -348,18 +476,53 @@ onBeforeUnmount(() => {
   color: var(--console-text-muted);
   background: color-mix(in srgb, var(--console-bg-elevated) 88%, transparent);
   font-size: var(--console-font-size-min);
+  font-variant-numeric: tabular-nums;
 }
 
 .replay-event-detail {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  padding: 0.75rem;
-  overflow: auto;
+  padding: 0.65rem 0.75rem;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.replay-event-detail--engine {
+  overflow: hidden;
+}
+
+.replay-summary {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 0.5rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--console-border);
 }
 
 .panel-title {
   justify-content: space-between;
-  padding-bottom: 0.6rem;
+  padding-bottom: 0.45rem;
   border-bottom: 1px solid var(--console-border);
+}
+
+.panel-title__left {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.panel-title__hint {
+  color: var(--console-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-title__meta {
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-title span,
@@ -367,47 +530,60 @@ onBeforeUnmount(() => {
   color: var(--console-text-muted);
   font-size: var(--console-font-size-min);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
-.replay-event-detail dl {
+.replay-summary__stats {
   display: grid;
-  gap: 0;
-  margin: 0.5rem 0 0;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 0.85fr);
+  gap: 0.45rem;
+  margin: 0;
 }
 
-.replay-event-detail dl > div {
-  display: grid;
-  grid-template-columns: 6.5rem minmax(0, 1fr);
-  gap: 0.75rem;
-  padding: 0.55rem 0;
-  border-bottom: 1px solid var(--console-border);
+.replay-summary__stats > div {
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--console-border) 80%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--console-bg-elevated) 72%, transparent);
 }
 
-.replay-event-detail dt {
+.replay-summary__stats dt {
   color: var(--console-text-muted);
+  font-size: 11px;
+  line-height: 1.3;
   white-space: nowrap;
 }
 
-.replay-event-detail dd {
-  margin: 0;
-  overflow-wrap: anywhere;
+.replay-summary__stats dd {
+  margin: 0.15rem 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .replay-node-field {
-  display: grid;
+  display: flex;
+  align-items: center;
   gap: 0.5rem;
-  padding: 0.85rem 0;
-  border-bottom: 1px solid var(--console-border);
 }
 
 .replay-node-field label {
+  flex: none;
   color: var(--console-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .replay-node-location {
   display: flex;
+  flex: 1;
+  min-width: 0;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .replay-node-location :deep(.el-select) {
@@ -417,14 +593,104 @@ onBeforeUnmount(() => {
 
 .replay-node-location :deep(.el-button) {
   flex: none;
-  padding-inline: 0.75rem;
+  padding-inline: 0.65rem;
 }
 
-.replay-event-detail > p {
-  margin: 0.75rem 0;
+.replay-summary__note,
+.replay-history__empty,
+.replay-history__note {
+  margin: 0;
   color: var(--console-text-muted);
   font-size: var(--console-font-size-min);
-  line-height: 1.7;
+  line-height: 1.5;
+}
+
+.replay-history {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+}
+
+.replay-history__title {
+  flex: 0 0 auto;
+  min-height: 1.75rem;
+  padding-bottom: 0.4rem;
+}
+
+.replay-history__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.replay-history__loading {
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--console-cyan, #4bd9f2) 55%, transparent);
+  border-radius: 999px;
+  color: var(--console-cyan, #4bd9f2) !important;
+  background: color-mix(in srgb, var(--console-cyan, #4bd9f2) 12%, transparent);
+  font-size: 11px !important;
+}
+
+.replay-history__epoch {
+  width: 9rem;
+}
+
+.replay-history__tabs {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.replay-history__tabs :deep(.el-tabs__header) {
+  flex: 0 0 auto;
+  margin: 0 0 0.45rem;
+}
+
+.replay-history__tabs :deep(.el-tabs__item) {
+  height: 2rem;
+  line-height: 2rem;
+  padding: 0 0.65rem;
+  font-size: 13px;
+}
+
+.replay-history__tabs :deep(.el-tabs__content) {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-right: 0.2rem;
+}
+
+.replay-history__tabs :deep(.el-tab-pane) {
+  min-height: 100%;
+}
+
+.replay-history__tabs :deep(.quality-card-panel) {
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+.replay-history__tabs :deep(.quality-card-view) {
+  margin: 2px 0 6px;
+}
+
+.replay-history__tabs :deep(.quality-card-filters) {
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.replay-history__tabs :deep(.quality-card-filters .el-form-item__label) {
+  margin-bottom: 2px;
+  line-height: 1.3;
+  font-size: 11px;
 }
 
 .replay-controls {
@@ -461,6 +727,10 @@ onBeforeUnmount(() => {
   .replay-event-detail,
   .replay-controls {
     grid-column: 1;
+  }
+
+  .replay-event-detail--engine {
+    overflow: visible;
   }
 
   .replay-controls__toolbar {

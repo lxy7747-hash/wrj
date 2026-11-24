@@ -168,8 +168,19 @@ it('最新两条无时间字段报文经 WS 接收与 JSONL 往返保留全部�
   const restored = (await readFile((await archive.getFile(run.runId, saved.sourceSha256))!, 'utf8')).trim().split('\n').map((line: string) => JSON.parse(line))
   expect(restored).toEqual(frames)
   const csv = (await archive.finalizeCsv(run.runId, scope, {}))!
-  expect(csv.files).toEqual([])
-  expect(csv.missing.map((file: { fileName: string }) => file.fileName)).toHaveLength(5)
+  expect(csv.files).toMatchObject([
+    { fileName: 'link_switch.csv', rowCount: 0, status: 'COMPLETE' },
+    { fileName: 'link_state.csv', rowCount: 10, status: 'PARTIAL' },
+    { fileName: 'link_loss.csv', rowCount: 10, status: 'PARTIAL' },
+  ])
+  expect(csv.missing).toMatchObject([
+    { fileName: 'link_quality.csv', status: 'SOURCE_MISSING' },
+    { fileName: 'events.csv', status: 'SOURCE_MISSING' },
+  ])
+  for (const name of ['link_state.csv', 'link_loss.csv']) {
+    const file = (await archive.getCsvFile(run.runId, saved.sourceSha256, name))!
+    expect(await readFile(file, 'utf8')).toContain('暂无数据')
+  }
 })
 
 it('websocketNew 四帧经本地 WS 转发保留新增字段、统一秒值，仅从本轮历史恢复旧路径', async () => {
@@ -227,15 +238,24 @@ it('本地上游 → link.metric → 订阅端，绑定实例、共享段和中�
   raw.link_calc.links.push({ ...raw.link_calc.links[0]!, link_id: 'hop1', tx_port: 'c_up', rx_platform: 'relay', rx_port: 'c_up' },
     { ...raw.link_calc.links[0]!, link_id: 'hop2', tx_platform: 'relay', tx_port: 'c_up', rx_port: 'c_up' },
     { ...raw.link_calc.links[0]!, link_id: 'unbound', tx_platform: 'unknown' })
-  socket.send(JSON.stringify({ ...raw, runId: 'RUN-ATTACK', taskId: 'TASK-OTHER' }))
+  const first = raw.link_calc.links[0]!
+  const linkCalc = {
+    ...raw.link_calc,
+    links: [{ ...first, quality: { ...first.quality, margin_db: 35.62, delay_ms: 1.369 } }, ...raw.link_calc.links.slice(1)],
+    path_quality: [{ path_id: 'PATH-1', gxb_db: 9.5, ber: 1.2e-7, margin_db: 26.3, delay_ms: 1.26, rate_bps: 2356 }],
+  }
+  socket.send(JSON.stringify({ ...raw, link_calc: linkCalc, runId: 'RUN-ATTACK', taskId: 'TASK-OTHER' }))
   await vi.waitFor(() => expect(messages).toHaveLength(2))
   expect(messages[1]).toMatchObject({ taskId: 'TASK-001', frameId: 'F-ENGINE-4800', payload: { kind: 'ENGINE_FRAME', runId: 'RUN-ENGINE', engineEpoch: 0, links: [
-    { sourcePlatformId: 'PLAT-001', targetPlatformId: 'SUP-001', linkIds: ['L-DIRECT'] },
+    { sourcePlatformId: 'PLAT-001', targetPlatformId: 'SUP-001', linkIds: ['L-DIRECT'], quality: { marginDb: 35.62, delayMs: 1.369 } },
     { linkIds: ['L-RELAY','L-SHARED'] }, { linkIds: ['L-RELAY','L-SHARED'] }, { sourceName: 'unknown', linkIds: [] },
-  ] } })
+  ], pathQuality: [{ pathId: 'PATH-1', gxbDb: 9.5, ber: 1.2e-7, marginDb: 26.3, delayMs: 1.26, rateBps: 2356 }] } })
   const next: any = structuredClone(raw); next.frame_id++; delete next.link_manager.init_routing_result
   socket.send(JSON.stringify(next)); await vi.waitFor(() => expect(messages).toHaveLength(3))
   expect(messages[2].payload.initRouting).toEqual(messages[1].payload.initRouting)
+  expect(messages[2].payload).not.toHaveProperty('pathQuality')
+  expect(messages[2].payload.links[0].quality).not.toHaveProperty('marginDb')
+  expect(messages[2].payload.links[0].quality).not.toHaveProperty('delayMs')
   const closed = once(browser, 'close'); browser.close(); await closed
   const resumed = new WebSocket(`ws://127.0.0.1:${http.address().port}/ws/v1?role=OPERATOR`, { origin: 'http://127.0.0.1:5173' })
   cleanups.push(() => resumed.terminate())
@@ -443,6 +463,41 @@ it('停止清除重连 timer 和监听，不能在运行结束后重建连接', 
   await new Promise(resolve => setTimeout(resolve, 1100)); expect(reconnect).not.toHaveBeenCalled()
 })
 
+it('本机控制等待连接归属验证，重连归属不匹配时仍接收数据', async () => {
+  const { server, url } = await upstream(), publish = vi.fn()
+  let acceptFirst!: (owned: boolean) => void
+  const firstCheck = new Promise<boolean>(resolve => { acceptFirst = resolve })
+  const verifyMissionPeer = vi.fn().mockReturnValueOnce(firstCheck).mockResolvedValue(false)
+  const client = new EngineSnapshotClient(url, publish, vi.fn(), undefined, verifyMissionPeer)
+  cleanups.push(() => client.stop())
+
+  const connected = once(server, 'connection')
+  expect(client.start(run, manifest, 777)).toBe(true)
+  const [first] = await connected
+  await vi.waitFor(() => expect(verifyMissionPeer).toHaveBeenCalledTimes(1))
+  expect(client.controlState(run.runId)).toBeUndefined()
+  await expect(client.sendControl(run.runId, 'pause')).rejects.toThrow('未发送')
+
+  acceptFirst(true)
+  await vi.waitFor(() => expect(client.controlState(run.runId)?.connected).toBe(true))
+  const received = once(first, 'message')
+  await client.sendControl(run.runId, 'pause')
+  expect(JSON.parse((await received)[0].toString())).toEqual({ msg_type: 'sim_control', action: 'pause' })
+
+  const reconnected = once(server, 'connection')
+  first.terminate()
+  const [next] = await reconnected
+  const unexpectedControl = vi.fn()
+  next.on('message', unexpectedControl)
+  await vi.waitFor(() => expect(verifyMissionPeer).toHaveBeenCalledTimes(2))
+  expect(verifyMissionPeer.mock.calls[0]?.[0].localPort).not.toBe(verifyMissionPeer.mock.calls[1]?.[0].localPort)
+  expect(client.controlState(run.runId)).toMatchObject({ connected: false, delivery: 'UNKNOWN', action: 'pause' })
+  await expect(client.sendControl(run.runId, 'resume')).rejects.toThrow('未发送')
+  next.send(JSON.stringify(sample))
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledWith(run.runId, expect.objectContaining({ frameId: 4800 })))
+  expect(unexpectedControl).not.toHaveBeenCalled()
+})
+
 it('可选配置只接受 ws/wss 地址，不含凭据与片段', () => {
   expect(readLinkEngineWsUrl(undefined)).toBeUndefined(); expect(readLinkEngineWsUrl('  ')).toBeUndefined()
   expect(readLinkEngineWsUrl('ws://127.0.0.1:8080/ws/v1')).toBe('ws://127.0.0.1:8080/ws/v1')
@@ -568,4 +623,26 @@ it('mission 运行日志在 HTTP 初始读取后通过 mission.log 增量推送'
   expect(message).not.toHaveProperty('simulationTime')
   expect(message).not.toHaveProperty('frameId')
   finish({ code: 0 })
+})
+
+it('引擎绕过配置中继发射端到端直连段时兜底绑定原 linkIds 且不覆盖精确中继映射', async () => {
+  const { server, url } = await upstream(), frames: EngineFrameSnapshot[] = []
+  const client = new EngineSnapshotClient(url, (_id: string, frame: EngineFrameSnapshot) => { frames.push(frame) })
+  cleanups.push(() => client.stop())
+  const connected = once(server, 'connection'); expect(client.start(run, manifest)).toBe(true)
+  const [socket] = await connected
+  const raw = structuredClone(sample)
+  raw.link_calc.links.push(
+    { ...raw.link_calc.links[0]!, link_id: 'bypassed_direct', tx_port: 'c_up', rx_port: 'c_up' },
+    { ...raw.link_calc.links[0]!, link_id: 'hop1', tx_port: 'c_up', rx_platform: 'relay', rx_port: 'c_up' },
+    { ...raw.link_calc.links[0]!, link_id: 'unknown_direct', tx_platform: 'unknown', tx_port: 'c_up', rx_port: 'c_up' },
+  )
+  socket.send(JSON.stringify(raw))
+  await vi.waitFor(() => expect(frames).toHaveLength(1))
+  expect(frames[0]!.links).toMatchObject([
+    { sourcePlatformId: 'PLAT-001', targetPlatformId: 'SUP-001', linkIds: ['L-DIRECT'] },
+    { linkId: 'bypassed_direct', sourcePlatformId: 'PLAT-001', targetPlatformId: 'SUP-001', linkIds: ['L-RELAY', 'L-SHARED'] },
+    { linkId: 'hop1', sourcePlatformId: 'PLAT-001', targetPlatformId: 'PLAT-002', linkIds: ['L-RELAY', 'L-SHARED'] },
+    { linkId: 'unknown_direct', sourceName: 'unknown', linkIds: [] },
+  ])
 })

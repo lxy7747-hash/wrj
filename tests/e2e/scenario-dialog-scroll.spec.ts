@@ -60,6 +60,28 @@ async function assertDialogFits(page: Page, selector: string): Promise<void> {
   expect(fits.bodyOverflow).toMatch(/auto|scroll/)
 }
 
+async function addRoutePoints(page: Page, list: 'waypoint' | 'loiter-waypoint', count: number): Promise<void> {
+  await page.getByTestId(`add-${list}`).click()
+  const map = page.getByTestId('waypoint-map')
+  await expect(map).toHaveClass(/leaflet-container/)
+  const box = await map.boundingBox()
+  if (!box) throw new Error('航点地图未显示')
+  const confirm = page.getByTestId('confirm-waypoint-batch')
+  for (let index = 0; index < count; index += 1) {
+    if (index === 0) await map.press('Enter')
+    else await map.click({ position: {
+      x: Math.round(box.width / 2 + (index % 4) * 30),
+      y: Math.round(box.height / 2 + Math.floor(index / 4) * 30),
+    } })
+    await expect(page.getByTestId('waypoint-batch-status')).toContainText(`本次已选 ${index + 1} 个点`)
+    if (list === 'loiter-waypoint' && index === 0) await expect(confirm).toBeDisabled()
+  }
+  await expect(map.locator('.waypoint-map-dialog__number--added')).toHaveCount(count)
+  await assertDialogFits(page, '.waypoint-map-dialog.el-dialog')
+  await confirm.click()
+  await expect(page.getByTestId('waypoint-map-dialog')).toBeHidden()
+}
+
 test('场景配置长表单只在弹框内部滚动，头尾操作保持可见', async ({ page }, testInfo) => {
   const directory = await mkdtemp(join(tmpdir(), 'wrj-scenario-dialog-scroll-'))
   const scenes = new ScenarioSqliteStorage(join(directory, 'scenarios.db'))
@@ -79,8 +101,33 @@ test('场景配置长表单只在弹框内部滚动，头尾操作保持可见',
     // AIR-01 同时支持普通、盘旋航点及返航路线，全部经由公开编辑动作添加。
     await page.getByTestId('edit-platform-3').click()
     const platformDialog = '.platform-editor-dialog.el-dialog'
-    for (let index = 0; index < 8; index += 1) await page.getByTestId('add-waypoint').click()
-    for (let index = 0; index < 6; index += 1) await page.getByTestId('add-loiter-waypoint').click()
+    const longitude = page.getByTestId('waypoint-longitude-0').locator('input')
+    const altitude = page.getByTestId('waypoint-altitude-0').locator('input')
+    const originalLongitude = await longitude.inputValue()
+    const originalAltitude = await altitude.inputValue()
+    await page.getByTestId('add-waypoint').click()
+    const existingPoint = page.getByTitle('拖动第 1 个航点', { exact: true })
+    await existingPoint.click()
+    const status = page.getByTestId('waypoint-batch-status')
+    await expect(status).toContainText('本次已选 0 个点')
+    const marker = await existingPoint.boundingBox()
+    if (!marker) throw new Error('已有航点标记未显示')
+    const x = marker.x + marker.width / 2
+    const y = marker.y + marker.height / 2
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x + 30, y, { steps: 5 })
+    await page.mouse.up()
+    await expect(status).toContainText('已移动 1 个已有点')
+    await expect(status).toContainText('本次已选 0 个点')
+    await expect(longitude).toHaveValue(originalLongitude)
+    await page.getByTestId('confirm-waypoint-batch').click()
+    await expect(longitude).not.toHaveValue(originalLongitude)
+    await expect(altitude).toHaveValue(originalAltitude)
+    await expect(page.getByTestId('waypoint-map-dialog')).toBeHidden()
+
+    await addRoutePoints(page, 'waypoint', 8)
+    await addRoutePoints(page, 'loiter-waypoint', 6)
     await page.getByTestId('return-enabled').click()
     for (let index = 0; index < 6; index += 1) await page.getByTestId('add-return-waypoint').click()
     await expect(page.getByTestId('return-table')).toBeVisible()

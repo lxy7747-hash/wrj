@@ -208,3 +208,26 @@ it('回放 API 只读取授权结果所属运行，拒绝替换场景或运行�
     for (const query of ['time=-1', 'time=no', 'time=5&epoch=-1', 'time=5&runId=RUN-OTHER', 'time=5&scenarioId=SCN-B']) await api.get(`${route}?${query}`).set(headers).expect(400)
   } finally { await app.close() }
 })
+
+it('回放接口在 t=0 即返回整轮运行的关键事件时间轴索引（侦测、受扰、告警、切换）', async () => {
+  const { archive } = await setup(), session = await archive.begin(scope)
+  const detectFrame = frame(10)
+  detectFrame.events = [
+    { type: 'esm_info', pathId: '', uavNames: ['mission_uav_03'], jammerNames: ['jammer_station_01'], uavIds: [], jammerIds: [] },
+    { type: 'into_jamm', pathId: '', uavNames: ['mission_uav_03'], jammerNames: ['jammer_station_01'], uavIds: [], jammerIds: [] },
+  ]
+  const switchFrame = { ...adaptEngineFrameSnapshot({ ...alarmSample, frame_id: 20 }).data!, runId: scope.runId }
+  switchFrame.routing.alarms = [{ pathId: 'P1', linkId: 'L1', message: '微波受扰中断' }]
+  await session.append(detectFrame)
+  await session.append(switchFrame)
+  await session.close()
+
+  const atZero = (await archive.replay(scope.runId, scope, 0))!
+  expect(atZero.engineFrame).toBeNull()
+  expect(atZero.timelineMarkers).toEqual([
+    expect.objectContaining({ kind: 'DETECTION', time: 10, label: '目标侦测', detail: '地面干扰站 1 → 无人节点 3' }),
+    expect.objectContaining({ kind: 'JAMMING', time: 10, label: '进入干扰', detail: '地面干扰站 1 → 无人节点 3' }),
+    expect.objectContaining({ kind: 'SWITCH', time: 20, label: '链路切换', detail: '切至 微波/数传（无人节点 2）' }),
+    expect.objectContaining({ kind: 'ALARM', time: 20, label: '受扰告警', detail: '微波受扰中断' }),
+  ])
+})

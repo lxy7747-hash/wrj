@@ -223,6 +223,18 @@ function readDeleteResult(payload: unknown): DeleteResult | undefined {
     : undefined
 }
 
+function readPasswordResetResult(payload: unknown): { reset: boolean; objectId: string } | undefined {
+  const data = unwrapData(payload)
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  if (Object.keys(data).some((key) => key !== 'reset' && key !== 'objectId')) return undefined
+  const candidate = data as { reset?: unknown; objectId?: unknown }
+  return typeof candidate.reset === 'boolean'
+    && typeof candidate.objectId === 'string'
+    && candidate.objectId.length >= 1
+    ? { reset: candidate.reset, objectId: candidate.objectId }
+    : undefined
+}
+
 function isPageMeta(value: unknown): value is PageMeta {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   if (Object.keys(value).some((key) => !META_KEYS.has(key)) || Object.keys(value).length !== META_KEYS.size) return false
@@ -768,10 +780,27 @@ export const useAdminStore = defineStore('admin', {
       }
     },
 
-    /** 恢复来源改变时清除上一来源的结果，保留备份目录。 */
-    clearRestoreResult(): void {
-      this.restoreResult = null
-      this.maintenance.backup = { state: 'EMPTY', message: '恢复来源已切换，请确认后执行恢复。', fieldPath: '' }
+    /** 删除指定备份记录及服务端快照文件。 */
+    async deleteBackup(backupId: string): Promise<boolean> {
+      if (this.maintenanceConfirmation !== null || ['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.backup.state)) return false
+      const epoch = this.maintenanceEpoch
+      this.maintenance.backup = { state: 'EXECUTING', message: '正在删除备份。', fieldPath: '' }
+      try {
+        const payload = await requestMaintenance(`admin/backups/${encodeURIComponent(backupId)}`, { method: 'DELETE' })
+        if (epoch !== this.maintenanceEpoch) return false
+        const deleted = readDeleteResult(payload)
+        if (!deleted?.deleted || deleted.objectId !== backupId) throw new Error('删除结果与目标备份不一致。')
+        this.backups = this.backups.filter((item) => item.backupId !== backupId)
+        this.maintenance.backup = { state: 'SUCCESS', message: '备份记录已删除。', fieldPath: '' }
+        return true
+      } catch (error) {
+        if (epoch !== this.maintenanceEpoch) return false
+        const failure = readFailure(error)
+        this.showMaintenanceError('backup', failure?.error.code === 'NOT_FOUND' && failure.error.fieldPath === undefined
+          ? new Error('当前后端未提供删除备份接口。请确认后端已更新并重启后再试。')
+          : error)
+        return false
+      }
     },
 
     async loadBackupPlan(): Promise<boolean> {
@@ -996,6 +1025,50 @@ export const useAdminStore = defineStore('admin', {
         status,
       }
       return this.mutateUser(user, 'CREATE', user, password)
+    },
+
+    /**
+     * 由管理员将其他账号的密码重置为默认密码（123456），并撤销该账号现有会话。
+     * @param user 待重置密码的目标用户。
+     * @returns 重置成功时为 `true`，失败时为 `false`。
+     * @sideEffects 更新面板状态与结果信息；不修改列表中的角色或状态投影。
+     */
+    async resetUserPassword(user: User): Promise<boolean> {
+      const epoch = this.requestEpoch
+      this.panelState = 'LOADING'
+      await Promise.resolve()
+      if (epoch !== this.requestEpoch) return false
+      this.panelState = 'VALIDATING'
+      try {
+        await Promise.resolve()
+        if (epoch !== this.requestEpoch) return false
+        this.panelState = 'EXECUTING'
+        const auth = useAuthStore()
+        const url = `${resolveMockOrigin()}/api/v1/admin/users/${encodeURIComponent(user.userId)}/reset-password`
+        const response = await apiFetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Demo-Role': auth.role,
+          },
+        })
+        if (epoch !== this.requestEpoch) return false
+        this.panelState = 'VALIDATING'
+        const payload: unknown = await response.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidResponseError()
+        const resetResult = readPasswordResetResult(payload)
+        if (resetResult === undefined || !resetResult.reset || resetResult.objectId !== user.userId) {
+          throw new InvalidResponseError()
+        }
+        this.panelState = 'SUCCESS'
+        this.resultCode = 'SUCCESS'
+        this.resultMessage = `用户 ${user.username} 的密码已重置为 123456。`
+        return true
+      } catch (error) {
+        if (epoch === this.requestEpoch) this.showPanelError(error, '重置用户密码失败。')
+        return false
+      }
     },
 
     /** Loads a server-sorted page without allowing older page requests to replace it. */

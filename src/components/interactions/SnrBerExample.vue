@@ -100,8 +100,8 @@ onMounted(() => {
     <template #header>
       <div class="quality-example__header">
         <div>
-          <p class="eyebrow">T-XQ-012 · SNR/BER 计算</p>
-          <h3 id="snr-ber-title">SNR/BER 固定算例</h3>
+          <p class="eyebrow">T-XQ-012 · SNR 与误码率计算</p>
+          <h3 id="snr-ber-title">SNR 与误码率固定算例</h3>
         </div>
         <el-tag :type="stateType" effect="dark" data-testid="snr-ber-state">{{ stateLabel }}</el-tag>
       </div>
@@ -109,7 +109,7 @@ onMounted(() => {
 
     <el-skeleton v-if="displayState === 'LOADING'" :rows="4" animated />
     <el-alert v-else-if="displayState === 'VALIDATING'" type="warning" :closable="false" show-icon title="正在校验计算输入、模型版本和同帧关系" />
-    <el-result v-else-if="displayState === 'ERROR'" icon="error" title="SNR/BER 证据不可用" :sub-title="errorMessage">
+    <el-result v-else-if="displayState === 'ERROR'" icon="error" title="SNR 与误码率证据不可用" :sub-title="errorMessage">
       <template #extra><el-button type="primary" @click="reload">重新加载</el-button></template>
     </el-result>
     <el-empty v-else-if="displayState === 'EMPTY'" description="当前帧没有 L-MW-01 质量计算结果">
@@ -117,11 +117,11 @@ onMounted(() => {
     </el-empty>
 
     <div v-else-if="link && loss && telemetryStore.frame" class="quality-example__content" :data-frame-id="telemetryStore.frame.frameId">
-      <div class="quality-example__metrics" aria-label="SNR 与 BER 固定算例指标">
+      <div class="quality-example__metrics" aria-label="SNR 与误码率固定算例指标">
         <article><span>接收功率 Pr</span><strong>{{ link.receivedPower }} dBm</strong></article>
         <article><span>噪声功率 N</span><strong>{{ loss.noisePowerDbm }} dBm</strong></article>
         <article><span>信噪比 SNR</span><strong>{{ link.snr }} dB</strong></article>
-        <article><span>误码率 BER</span><strong>{{ formatBer(link.ber) }}</strong></article>
+        <article><span>误码率</span><strong>{{ formatBer(link.ber) }}</strong></article>
       </div>
 
       <el-alert
@@ -142,7 +142,7 @@ onMounted(() => {
       </el-descriptions>
 
       <p class="quality-example__boundary">
-        数据来自仿真固定帧；浏览器只校验输入、结果、模型映射和同帧关系，不在前端复现 SNR/BER 求解算法。
+        数据来自仿真固定帧；浏览器只校验输入、结果、模型映射和同帧关系，不在前端复现 SNR 与误码率求解算法。
       </p>
     </div>
   </el-card>

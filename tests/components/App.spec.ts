@@ -18,8 +18,10 @@ const mapControllerMock = vi.hoisted(() => ({
     setFilePlayback: vi.fn(),
     setFileDeviceStates: vi.fn(),
     setConfiguredLinks: vi.fn(),
+    setFocusLinks: vi.fn(),
     setConfiguredLinkStatuses: vi.fn(),
     setConfiguredJammers: vi.fn(),
+    setConfiguredEnvironment: vi.fn(),
     setSelectedNodeId: vi.fn(),
     focusTarget: vi.fn(),
     setLayerVisible: vi.fn(),
@@ -153,25 +155,24 @@ describe('App shell', () => {
         permissions: ['BUSINESS_READ'],
       })
       const router = createAppRouter(createMemoryHistory(), pinia)
-      await router.push(role === 'ADMIN' ? '/admin' : '/admin/data-exchange')
+      await router.push(role === 'ADMIN' ? '/admin' : '/admin?section=scenario-templates')
       await router.isReady()
       const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus], stubs: { RouterView: true } } })
       try {
         const items = wrapper.findAll('[aria-label="系统管理导航"] .el-menu-item').map(item => item.text())
-        const hasEntry = role === 'ADMIN' || key === 'showDataExchange'
-        expect(wrapper.find('nav a[href^="/admin"]').exists()).toBe(hasEntry)
+        expect(wrapper.find('nav a[href^="/admin"]').exists()).toBe(true)
         if (role === 'ADMIN') {
           expect(items).toHaveLength(4)
           expect(items).toEqual(expect.arrayContaining(['场景模板维护', '操作审计日志', '账号管理', label]))
           expect(items).not.toContain('装备参数库')
           expect(wrapper.get('nav a[href="/admin"]').text()).toBe('系统管理')
         } else {
-          expect(items).toEqual(hasEntry ? ['数据交换与接口'] : [])
-          if (hasEntry) expect(wrapper.get('nav a[href="/admin/data-exchange"]').text()).toBe('系统管理')
+          expect(items).toEqual(['场景模板维护'])
+          expect(wrapper.get('nav a[href="/admin?section=scenario-templates"]').text()).toBe('系统管理')
         }
         const titles = wrapper.findAll('.el-menu-item-group__title').map(item => item.text())
         expect(titles.includes('数据与运行')).toBe(role === 'ADMIN' && ['showSimulationData', 'showRuntimeStatus'].includes(key))
-        expect(titles.includes('数据交换')).toBe(key === 'showDataExchange')
+        expect(titles.includes('数据交换')).toBe(role === 'ADMIN' && key === 'showDataExchange')
       } finally {
         wrapper.unmount()
       }
@@ -285,8 +286,10 @@ describe('App shell', () => {
       '态势主界面',
       '场景配置',
       '历史回放',
+      '系统管理',
     ])
     expect(operatorWrapper.find('a[href="/admin"]').exists()).toBe(false)
+    expect(operatorWrapper.find('a[href="/admin?section=scenario-templates"]').exists()).toBe(true)
     expect(operatorWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)
     expect(operatorWrapper.find('nav a[href="/blueprint"]').exists()).toBe(false)
     expect(operatorWrapper.get('nav').text()).not.toMatch(/需求追踪矩阵|弹窗交互|登录页|可追溯性|交互管理/)
@@ -295,9 +298,14 @@ describe('App shell', () => {
     expect(operatorWrapper.get('.app-shell__navigation').text())
       .not.toMatch(/夹具|演示|P0|P1|Mock|页面外壳|shell/)
 
-    await router.push('/admin/data-exchange')
+    await router.push('/admin?section=scenario-templates')
     await flushPromises()
-    expect(operatorWrapper.find('[aria-label="系统管理导航"]').exists()).toBe(false)
+    expect(router.currentRoute.value.fullPath).toBe('/admin?section=scenario-templates')
+    expect(operatorWrapper.findAll('[aria-label="系统管理导航"] .el-menu-item').map(item => item.text())).toEqual(['场景模板维护'])
+
+    await router.push('/admin')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/blueprint')
 
     await router.push('/blueprint')
     await flushPromises()

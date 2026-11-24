@@ -28,7 +28,7 @@ const PLATFORM_DISPLAY_NAMES = new Map([
 const FULL_SNAPSHOT_LIMIT_BYTES = 32 * 1024 * 1024
 const STREAM_SOURCE_LIMIT_BYTES = 256 * 1024 * 1024
 const STREAM_MAX_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
-const STREAM_CHUNK_BYTES = 64 * 1024
+const STREAM_CHUNK_BYTES = 1024 * 1024
 const STREAM_LINE_LIMIT_BYTES = 128 * 1024
 const STREAM_METADATA_LIMIT_BYTES = 16 * 1024 * 1024
 const DECLARATION_LIMIT_BYTES = 256 * 1024
@@ -38,6 +38,9 @@ export interface StableTextSource {
   source: { fileName: string; path: string; bytes: number; sha256: string }
   waitingForLine: boolean
 }
+
+const exceedsUtf8Bytes = (text: string, maxBytes: number): boolean =>
+  text.length * 3 > maxBytes && Buffer.byteLength(text, 'utf8') > maxBytes
 
 /**
  * 在文件身份、长度和修改时间保持不变时才提交逐行读取结果。回调只看到已换行的 UTF-8 文本，
@@ -59,27 +62,32 @@ export async function readStableUtf8Lines(
     if (before.size > BigInt(maxBytes)) throw new Error(`原始文件超过受保护流式读取上限 ${maxBytes / 1024 / 1024} MiB。`)
     const size = Number(before.size)
     const decoder = new TextDecoder('utf-8', { fatal: true })
+    const chunkBuf = size > 0 ? new Uint8Array(Math.min(STREAM_CHUNK_BYTES, size)) : new Uint8Array(0)
     let pending = ''
     let lineNumber = 0
     let offset = 0
     while (offset < size) {
-      const bytes = new Uint8Array(Math.min(STREAM_CHUNK_BYTES, size - offset))
-      const result = await handle.read(bytes, 0, bytes.length, offset)
+      const toRead = Math.min(chunkBuf.length, size - offset)
+      const result = await handle.read(chunkBuf, 0, toRead, offset)
       if (result.bytesRead === 0) throw new Error('文件在读取期间被截断，请在写入稳定后重试。')
-      const chunk = bytes.subarray(0, result.bytesRead)
+      const chunk = result.bytesRead === chunkBuf.length ? chunkBuf : chunkBuf.subarray(0, result.bytesRead)
       digest.update(chunk)
       offset += result.bytesRead
       try { pending += decoder.decode(chunk, { stream: true }) } catch { throw new Error('文件不是有效的 UTF-8 文本，请确认文件编码。') }
+      let lineStart = 0
       let breakAt = pending.indexOf('\n')
       while (breakAt >= 0) {
-        const line = pending.slice(0, breakAt).replace(/\r$/, '')
-        pending = pending.slice(breakAt + 1)
-        if (Buffer.byteLength(line, 'utf8') > maxLineBytes) throw new Error(`文件含超过 ${maxLineBytes / 1024} KiB 的单行记录，拒绝不受控解析。`)
+        const end = breakAt > lineStart && pending.charCodeAt(breakAt - 1) === 13 ? breakAt - 1 : breakAt
+        const line = pending.slice(lineStart, end)
+        lineStart = breakAt + 1
+        if (exceedsUtf8Bytes(line, maxLineBytes)) throw new Error(`文件含超过 ${maxLineBytes / 1024} KiB 的单行记录，拒绝不受控解析。`)
         lineNumber += 1
-        await onLine(line, lineNumber)
-        breakAt = pending.indexOf('\n')
+        const pendingResult = onLine(line, lineNumber)
+        if (pendingResult !== undefined && typeof (pendingResult as Promise<void>).then === 'function') await pendingResult
+        breakAt = pending.indexOf('\n', lineStart)
       }
-      if (Buffer.byteLength(pending, 'utf8') > maxLineBytes) throw new Error(`文件含超过 ${maxLineBytes / 1024} KiB 的未完成记录，拒绝不受控解析。`)
+      if (lineStart > 0) pending = pending.slice(lineStart)
+      if (exceedsUtf8Bytes(pending, maxLineBytes)) throw new Error(`文件含超过 ${maxLineBytes / 1024} KiB 的未完成记录，拒绝不受控解析。`)
     }
     try { pending += decoder.decode() } catch { throw new Error('文件末尾不是完整 UTF-8 文本。') }
     waitingForLine = pending.length > 0

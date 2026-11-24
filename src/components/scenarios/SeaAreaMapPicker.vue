@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { GeoPoint } from '../../contracts/domain-models'
 import { MAP_CONFIG } from '../../config/map.config'
 import { SEA_POLYGON_LIMITS } from '../../features/scenarios/scenario-validation'
+import { createOfflineVectorBasemap } from '../situation/offline-vector-basemap'
 
 const props = defineProps<{
   modelValue: boolean
@@ -66,7 +67,7 @@ function clear(): void {
 }
 
 /**
- * 弹窗展开后初始化离线卫星地图；已有区域时缩放到该区域，否则显示任务范围。
+ * 弹窗展开后初始化离线矢量地图；已有区域时缩放到该区域，否则显示任务范围。
  * @sideEffects 创建 Leaflet 地图、加载本机瓦片并注册点击事件。
  */
 function initializeMap(): void {
@@ -80,11 +81,7 @@ function initializeMap(): void {
     maxZoom: MAP_CONFIG.zoom.max,
     zoomSnap: MAP_CONFIG.zoom.snap,
   })
-  L.tileLayer(MAP_CONFIG.resources.satellite.tileUrl, {
-    minZoom: MAP_CONFIG.zoom.min,
-    maxNativeZoom: MAP_CONFIG.resources.satellite.maxNativeZoom,
-    maxZoom: MAP_CONFIG.zoom.max,
-  }).addTo(map)
+  createOfflineVectorBasemap(MAP_CONFIG.defaults.theme).addTo(map)
   L.control.zoom({ zoomInText: '＋', zoomInTitle: '放大地图', zoomOutText: '－', zoomOutTitle: '缩小地图' }).addTo(map)
   map.on('click', handleMapClick)
   const extent = points.value.length >= SEA_POLYGON_LIMITS.minPoints

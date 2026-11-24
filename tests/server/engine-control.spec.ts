@@ -440,10 +440,14 @@ it('断线后标记待核实；自动重连只恢复数据连接，不补发控�
   await command({ command: 'RESUME' }).expect(409)
 })
 
-it('本机 mission 运行时同时建立外部 WS 接收，STOP 停止 mission 并断开连接', async () => {
+it.each([true, false])('本机 mission 只向已验证归属的连接发送暂停和继续（归属=%s），停止直接作用于进程', async owned => {
   const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await once(upstream, 'listening')
   cleanups.push(async () => { for (const peer of upstream.clients) peer.terminate(); await new Promise<void>(resolve => upstream.close(() => resolve())) })
+  const messages: unknown[] = []
+  upstream.on('connection', (peer: InstanceType<typeof WebSocket>) => {
+    peer.on('message', (raw: { toString(): string }) => messages.push(JSON.parse(raw.toString())))
+  })
   const root = await mkdtemp(join(tmpdir(), 'wrj-local-mission-ws-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
   const database = new EngineFrameSqliteStorage(join(root, 'engine-history.db'))
@@ -453,23 +457,52 @@ it('本机 mission 运行时同时建立外部 WS 接收，STOP 停止 mission �
   const completed = new Promise<{ code: number | null }>(resolve => { finish = resolve })
   const stop = vi.fn(async () => { finish({ code: 0 }) })
   const start = vi.fn(async () => ({ pid: 777, startedAt: '2026-11-09T01:00:00Z', entryPath: 'mission.txt', completed, stop }))
+  const verifyMissionPeer = vi.fn().mockResolvedValue(owned)
   const server = createMockServer({ port: 0, linkEngineWsUrl: `ws://127.0.0.1:${(upstream.address() as { port: number }).port}/ws/v1`,
     engineFrameArchive: archive,
-    createEngineSnapshotClient: (url: string, publish: any, diagnose: any) => new EngineSnapshotClient(url, publish, undefined, diagnose),
+    createEngineSnapshotClient: (url: string, publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void | Promise<void>,
+      diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) =>
+      new EngineSnapshotClient(url, publish, undefined, diagnose, verifyMissionPeer),
     missionExecution: { start, safetyStatus: () => null } })
   cleanups.push(() => server.close())
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
   const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
   const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
   const runId = created.body.data.runId
+  const command = (body: object) => api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send(body)
+  const read = async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers).expect(200)).body.data
   const connection = once(upstream, 'connection')
-  await api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
-  expect(start).toHaveBeenCalledTimes(1)
+  await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
   const [socket] = await connection
   const closed = once(socket, 'close')
+  await vi.waitFor(() => expect(verifyMissionPeer).toHaveBeenCalledWith(expect.objectContaining({
+    remoteAddress: '127.0.0.1', remotePort: (upstream.address() as { port: number }).port,
+  }), 777))
+  if (owned) {
+    await vi.waitFor(async () => expect((await read()).engineControl).toEqual({ connected: true, action: null, delivery: 'IDLE' }))
+    for (const action of ['pause', 'resume'] as const) {
+      const response = await command({ command: action.toUpperCase() }).expect(202)
+      expect(response.body.data).toMatchObject({
+        runId, configLocked: true, uiStatus: 'RUNNING', canonical: { status: 'RUNNING', processId: 777 },
+        engineControl: { connected: true, action, delivery: 'SENT' },
+      })
+    }
+    await vi.waitFor(() => expect(messages).toEqual(['pause', 'resume'].map(action => ({ msg_type: 'sim_control', action }))))
+    socket.terminate()
+    await vi.waitFor(async () => expect((await read()).engineControl).toMatchObject({ connected: false, delivery: 'UNKNOWN' }))
+  } else {
+    await command({ command: 'PAUSE' }).expect(409)
+    expect(await read()).not.toHaveProperty('engineControl')
+  }
+  await command({ command: 'STOP' }).expect(428)
+  expect(stop).not.toHaveBeenCalled()
   const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: runId }).expect(201)).body.data
   await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
-  await api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send({ command: 'STOP', confirmationId: context.confirmationId }).expect(200)
+  const stopped = (await command({ command: 'STOP', confirmationId: context.confirmationId }).expect(200)).body.data
+  expect(stopped).toMatchObject({ runId, uiStatus: 'STOPPED', configLocked: false, canonical: { processId: null } })
+  expect(stopped).not.toHaveProperty('engineControl')
+  expect(start).toHaveBeenCalledTimes(1)
   expect(stop).toHaveBeenCalledTimes(1)
   await closed
+  expect(messages).toHaveLength(owned ? 2 : 0)
 })

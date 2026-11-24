@@ -37,10 +37,10 @@ const roleLabel = computed(() => auth.principal?.role === 'ADMIN' ? '管理员' 
 /**
  * 返回当前角色进入系统管理时的默认路由。
  *
- * @returns 管理员进入用户与角色页，操作员进入数据交换与接口页。
+ * @returns 管理员进入用户与角色页，操作员进入场景模板维护页。
  */
 const systemManagementPath = computed(() => (
-  auth.principal?.role === 'ADMIN' ? '/admin' : '/admin/data-exchange'
+  auth.principal?.role === 'ADMIN' ? '/admin' : '/admin?section=scenario-templates'
 ))
 
 /**
@@ -78,7 +78,7 @@ async function logout(): Promise<void> {
           <router-link v-if="menuVisible('/scenarios')" to="/scenarios">场景配置</router-link>
           <router-link v-if="APP_CONFIG.showReports && menuVisible('/reports')" to="/reports">评估报表</router-link>
           <router-link v-if="menuVisible('/replays')" to="/replays">历史回放</router-link>
-          <router-link v-if="(auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange) && menuVisible(systemManagementPath)" :to="systemManagementPath">系统管理</router-link>
+          <router-link v-if="menuVisible(systemManagementPath)" :to="systemManagementPath">系统管理</router-link>
           <!-- <router-link
             to="/blueprint"
             :class="{ 'router-link-active': ['/traceability', '/interactions'].includes($route.path) }"
@@ -108,11 +108,11 @@ async function logout(): Promise<void> {
         aria-label="系统管理"
       >
         <div class="system-management__body">
-          <aside v-if="auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange" class="system-management__sidebar" aria-label="系统管理导航">
+          <aside v-if="auth.principal?.role === 'ADMIN' || menuVisible('/admin?section=scenario-templates')" class="system-management__sidebar" aria-label="系统管理导航">
             <el-menu router :default-active="systemManagementActivePath">
-              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="模型与参数">
-                <el-menu-item v-if="APP_CONFIG.systemManagement.showMasterData && (menuVisible('/admin?section=master-data') || menuVisible('/admin?section=equipment-library'))" index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">基础数据管理</el-menu-item>
-                <el-menu-item v-if="menuVisible('/admin?section=scenario-templates')" index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
+              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN' || menuVisible('/admin?section=scenario-templates')" title="模型与参数">
+                <el-menu-item v-if="auth.principal?.role === 'ADMIN' && APP_CONFIG.systemManagement.showMasterData && (menuVisible('/admin?section=master-data') || menuVisible('/admin?section=equipment-library'))" index="/admin?section=master-data">基础数据管理</el-menu-item>
+                <el-menu-item v-if="menuVisible('/admin?section=scenario-templates')" index="/admin?section=scenario-templates">场景模板维护</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="账号与维护">
                 <el-menu-item
@@ -129,7 +129,7 @@ async function logout(): Promise<void> {
                 <el-menu-item v-if="APP_CONFIG.systemManagement.showSimulationData && menuVisible('/admin?section=simulation-data')" index="/admin?section=simulation-data" :disabled="auth.principal?.role !== 'ADMIN'">仿真数据管理</el-menu-item>
                 <el-menu-item v-if="APP_CONFIG.systemManagement.showRuntimeStatus && menuVisible('/admin?section=runtime-status')" index="/admin?section=runtime-status" :disabled="auth.principal?.role !== 'ADMIN'">系统运行状态</el-menu-item>
               </el-menu-item-group>
-              <el-menu-item-group v-if="APP_CONFIG.systemManagement.showDataExchange && menuVisible('/admin/data-exchange')" title="数据交换">
+              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN' && APP_CONFIG.systemManagement.showDataExchange && menuVisible('/admin/data-exchange')" title="数据交换">
                 <el-menu-item index="/admin/data-exchange">
                   <span>数据交换与接口</span>
                 </el-menu-item>

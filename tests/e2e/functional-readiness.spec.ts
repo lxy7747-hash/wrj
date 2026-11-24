@@ -93,16 +93,8 @@ test('真实模式功能就绪：阶段与原生 ESM 保存，单次报告按阶
     await page.getByTestId('new-phase-end').locator('input').fill('5')
     await page.getByTestId('confirm-task-phase').click()
 
-    await page.locator('#tab-data').click()
-    const nativeToggle = page.getByTestId('native-esm-enabled-ESM-01')
-    await expect(nativeToggle).toBeVisible()
-    await nativeToggle.click()
-    await page.getByTestId('native-esm-sensitivity-ESM-01').locator('input').fill('-180')
-    await page.getByTestId('native-esm-threshold-ESM-01').locator('input').fill('3')
-    await page.getByTestId('native-esm-dwell-ESM-01').locator('input').fill('1')
-    await page.getByTestId('native-esm-revisit-ESM-01').locator('input').fill('2')
-    await expect(page.getByTestId('sensor-probability-0').locator('input')).toBeDisabled()
-    await expect(page.getByTestId('sensor-range-0').locator('input')).toBeDisabled()
+    // 传感器页已并入干扰设备（2026-11-24），不再有传感器/原生 ESM 编辑入口；旧数据须随保存原样保留。
+    await expect(page.locator('#tab-data')).toHaveCount(0)
     await assertViewportFits(page)
 
     const saved = page.waitForResponse(response => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/v1/scenarios/SCN-001')
@@ -111,7 +103,7 @@ test('真实模式功能就绪：阶段与原生 ESM 保存，单次报告按阶
     const persisted = await request.get(`${fixture.origin}/api/v1/scenarios/SCN-001`, { headers: { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'ADMIN' } })
     const savedDraft = (await persisted.json()).data
     expect(savedDraft.config.scenario.phases).toEqual([{ id: 'EARLY', name: '前段', startTimeS: 0, endTimeS: 5 }])
-    expect(savedDraft.uiExtensions.sensors.find((item: { sensorId: string }) => item.sensorId === 'ESM-01').esm).toEqual({ sensitivityDbw: -180, detectionThresholdDb: 3, dwellTimeS: 1, revisitTimeS: 2 })
+    expect(savedDraft.uiExtensions.sensors.map((item: { sensorId: string }) => item.sensorId)).toContain('ESM-01')
 
     await page.goto(`/reports?resultId=${fixture.resultId}`)
     const singleFilter = page.getByRole('form', { name: '报告统一筛选' })

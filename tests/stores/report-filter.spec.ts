@@ -57,3 +57,72 @@ it('无运行结果来源时明确拒绝筛选，不发请求', async () => {
   expect(store.resultCode).toBe('FILTER_UNSUPPORTED')
   expect(fetch).not.toHaveBeenCalled()
 })
+
+it('report 视图结果响应携带 initialFilter 时可直接复用空筛选，且显式筛选/重置仍请求服务端', async () => {
+  const store = useReportStore()
+  const fetch = vi.fn(async (input: unknown, init?: { headers?: Record<string, string> }) => {
+    const url = String(input)
+    if (url.includes(`/mission-results/${record.resultId}`)) {
+      expect(init?.headers?.['X-Mission-Result-View']).toBe('report')
+      return response({
+        record,
+        report: structuredClone(LOCAL_REPORT),
+        initialFilter: { filter: {}, timeline: [{ id: 'LOG-L1', type: 'LINK_ADDED_TO_MANAGER', time: 5, subject: 'A', target: 'B' }], timelineTotal: 2, stages: [], links: ['L-1'] },
+      })
+    }
+    return response(filtered(url.includes('nodeId=A') ? { nodeId: 'A' } : {}))
+  })
+  vi.stubGlobal('fetch', fetch)
+  expect(await store.loadResult(record.resultId)).toBe(true)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(store.localFilterResult?.links).toEqual(['L-1'])
+  expect(await store.applyLocalFilter({})).toBe(true)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(await store.applyLocalFilter({ nodeId: 'A' })).toBe(true)
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(await store.applyLocalFilter({})).toBe(true)
+  expect(fetch).toHaveBeenCalledTimes(3)
+})
+
+it('loadEngineSegments 以 includeEngineSegments=1 按需加载完整引擎链路段而不重置骨架状态', async () => {
+  const store = useReportStore()
+  const withSegment = structuredClone(LOCAL_REPORT)
+  withSegment.localEvidence!.engineFrameArchive = {
+    sourceSha256: 'a'.repeat(64), frameCount: 1, firstSimulationTime: 1, lastSimulationTime: 1,
+    missingFieldNames: [], segmentRows: [], switchRows: [], eventRows: [], detailDeferred: true,
+  }
+  store.$patch({ selectedReport: withSegment, capabilityState: 'SUCCESS' })
+  const fetch = vi.fn(async (input: unknown) => {
+    expect(String(input)).toContain('includeEngineSegments=1')
+    expect(store.capabilityState).toBe('SUCCESS')
+    return response(filtered({ nodeId: 'A' }))
+  })
+  vi.stubGlobal('fetch', fetch)
+  expect(await store.loadEngineSegments({ nodeId: 'A' })).toBe(true)
+  expect(store.engineSegmentsLoading).toBe(false)
+  expect(store.capabilityState).toBe('SUCCESS')
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
+it('新筛选可重新加载延迟明细，旧响应不清除新请求且筛选不缩小原报告范围', async () => {
+  const store = useReportStore(), replies: Array<(response: Response) => void> = []
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => replies.push(resolve))))
+  const previousSegments = store.loadEngineSegments({})
+  const filter = { to: 7 }
+  const applying = store.applyLocalFilter(filter)
+  const narrow = filtered(filter)
+  narrow.report.localEvidence!.endTimeS = 7
+  replies[1]!(response(narrow))
+  expect(await applying).toBe(true)
+
+  const currentSegments = store.loadEngineSegments(filter)
+  expect(store.engineSegmentsLoading).toBe(true)
+  replies[0]!(response(filtered()))
+  expect(await previousSegments).toBe(false)
+  expect(store.engineSegmentsLoading).toBe(true)
+  replies[2]!(response(narrow))
+  expect(await currentSegments).toBe(true)
+  expect(store.localFilterResult?.report.localEvidence?.endTimeS).toBe(7)
+  expect(store.selectedReport?.localEvidence?.endTimeS).toBe(10)
+  expect(store.engineSegmentsLoading).toBe(false)
+})

@@ -98,23 +98,30 @@ function isValidField(field: string, value: string): boolean {
   return value.trim().length > 0
 }
 
-/** Validates one data record so large canonical files can be checked incrementally. */
-export function inspectCsvRecord(contract: ContractDescriptor, line: string, row: number): CsvValidationIssue[] {
-  const cells = parseCsvLine(line)
+/** Validates pre-parsed CSV cells so callers can avoid double-parsing each line. */
+export function inspectCsvCells(contract: ContractDescriptor, cells: string[] | undefined, row: number): CsvValidationIssue[] {
   if (cells === undefined || cells.length !== contract.fields.length) {
     return [{ code: 'TYPE_INVALID', row, fieldPath: `rows[${row - 2}]`, message: `第 ${row} 行列数或引号格式不正确。` }]
   }
+  const eventTypeCol = contract.name === 'events.csv' ? contract.fields.indexOf('EventType') : -1
+  const eventType = eventTypeCol >= 0 ? (cells[eventTypeCol] ?? '') : ''
   const issues: CsvValidationIssue[] = []
-  cells.forEach((value, columnIndex) => {
+  for (let columnIndex = 0; columnIndex < cells.length; columnIndex += 1) {
+    const value = cells[columnIndex]!
     const field = contract.fields[columnIndex] ?? `column${columnIndex + 1}`
-    if (value.trim() === '' && isOptionalField(contract.name, field, cells[contract.fields.indexOf('EventType')] ?? '')) return
-    if (isCsvNoData(contract.name, field, value)) return
-    if (contract.name === 'link_state.csv' && field === 'LinkStatus' && value === 'DEGRADED') return
+    if (value.trim() === '' && isOptionalField(contract.name, field, eventType)) continue
+    if (isCsvNoData(contract.name, field, value)) continue
+    if (contract.name === 'link_state.csv' && field === 'LinkStatus' && value === 'DEGRADED') continue
     if (!isValidField(field, value)) {
       issues.push({ code: 'TYPE_INVALID', row, fieldPath: `rows[${row - 2}].${field}`, message: `第 ${row} 行字段 ${field} 的类型或取值不正确。` })
     }
-  })
+  }
   return issues
+}
+
+/** Validates one data record so large canonical files can be checked incrementally. */
+export function inspectCsvRecord(contract: ContractDescriptor, line: string, row: number): CsvValidationIssue[] {
+  return inspectCsvCells(contract, parseCsvLine(line), row)
 }
 
 /**

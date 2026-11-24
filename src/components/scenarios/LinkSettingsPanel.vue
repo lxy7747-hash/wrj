@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { HotLinkSettings, Jammer, Link, LinkCalcSettings, LinkSwitchRule, LinkSwitchTrigger, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
-import { isConfiguredLinkEnabled, LINK_DECISION_DEFAULTS, readLinkSettings } from '../../features/scenarios/link-settings'
-import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError, readHotLinks } from '../../features/scenarios/hot-links'
-import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, readLinkCalcSettings } from '../../features/scenarios/link-calc-defaults'
+import { computed, ref, watch } from 'vue'
+import type { HotLinkSettings, Link, LinkCalcSettings, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
+import { DEFAULT_LINK_PRIORITY, isConfiguredLinkEnabled, LINK_DECISION_DEFAULTS, readLinkSettings } from '../../features/scenarios/link-settings'
+import { hotLinkChainError, readHotLinks } from '../../features/scenarios/hot-links'
+import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LINK_CALC_DEFAULTS, readLinkCalcSettings } from '../../features/scenarios/link-calc-defaults'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 const props = withDefaults(defineProps<{
@@ -11,12 +11,11 @@ const props = withDefaults(defineProps<{
   dialogVisible?: boolean
   platforms: Platform[]
   links?: Link[]
-  jammers?: Jammer[]
   disabled: boolean
   typeOptions: readonly { value: LinkType; label: string }[]
   /** 父页将完整校验路径转换为本面板相对路径后传入，供字段下方即时展示。 */
   fieldMessage?: (relativeFieldPath: string) => string
-}>(), { links: () => [], jammers: () => [] })
+}>(), { links: () => [] })
 const emit = defineEmits<{
   'update:modelValue': [value: ScenarioLinkSettings]
   'update:dialogVisible': [visible: boolean]
@@ -45,32 +44,15 @@ function setStableChecks(value: number | undefined): void {
 const decisionFields = [
   { key: 'switchCooldownFrames', label: '切换冷却帧数', min: 0, step: 1 },
   { key: 'minimumGxbDb', label: '可用性 GXB 下限（dB）', step: 1 },
-  { key: 'maximumBer', label: '可用性 BER 上限', min: 0, max: 1, step: 1e-6 },
+  { key: 'maximumBer', label: '可用性误码率上限', min: 0, max: 1, step: 1e-6 },
   { key: 'minimumGxbImprovementDb', label: '切换 GXB 最少改善（dB）', min: 0, step: 1 },
-  { key: 'minimumBerImprovementFactor', label: '切换 BER 最少改善倍数', min: 1, step: 1 },
+  { key: 'minimumBerImprovementFactor', label: '切换误码率最少改善倍数', min: 1, step: 1 },
   { key: 'minimumSpatialIsolationDb', label: '候选空域隔离下限（dB）', min: 0, step: 1 },
 ] as const
+const qualityThresholdFields = decisionFields.filter(field => field.key !== 'switchCooldownFrames')
+const cooldownFramesField = decisionFields[0]
 
 function setDecisionField(key: (typeof decisionFields)[number]['key'], value: number | undefined): void {
-  if (!props.disabled) emit('update:modelValue', { ...settings.value, [key]: value ?? Number.NaN })
-}
-
-const failureFields = [
-  { key: 'minimumReceivedPowerDbm', label: '接收功率失效下限（dBm）', step: 1 },
-  { key: 'failureGxbDb', label: 'GXB 失效下限（dB）', step: 1 },
-  { key: 'failureBer', label: 'BER 失效上限', min: 0, max: 1, step: 1e-5 },
-] as const
-type FailureField = (typeof failureFields)[number]['key']
-
-function enableFailureField(key: FailureField, enabled: string | number | boolean): void {
-  if (props.disabled) return
-  const next = { ...settings.value }
-  if (enabled === true) next[key] = Number.NaN
-  else delete next[key]
-  emit('update:modelValue', next)
-}
-
-function setFailureField(key: FailureField, value: number | undefined): void {
   if (!props.disabled) emit('update:modelValue', { ...settings.value, [key]: value ?? Number.NaN })
 }
 
@@ -87,6 +69,17 @@ function movePriority(type: LinkType, index: number): void {
   priority.splice(previousIndex, 1)
   priority.splice(index, 0, type)
   emit('update:modelValue', { ...settings.value, priority })
+}
+
+const isDefaultPriority = computed(() => (
+  settings.value.priority.length === DEFAULT_LINK_PRIORITY.length
+  && DEFAULT_LINK_PRIORITY.every((type, index) => settings.value.priority[index] === type)
+))
+
+/** 一键恢复默认链路优先级顺序。 */
+function resetPriority(): void {
+  if (props.disabled || isDefaultPriority.value) return
+  emit('update:modelValue', { ...settings.value, priority: [...DEFAULT_LINK_PRIORITY] })
 }
 
 /** 开始原生拖拽；type 为当前类型，event 提供浏览器拖放数据，仅记录来源，不提前修改配置。 */
@@ -116,157 +109,397 @@ function resetDrag(): void {
 
 const linkCalc = computed(() => readLinkCalcSettings(settings.value.linkCalc))
 const thresholdFields = [
-  { key: 'emergencyThreshold', label: '紧急阈值（BER）' },
-  { key: 'warningThreshold', label: '告警阈值（BER）' },
-  { key: 'valueThresholdBer', label: '质量阈值（BER）' },
+  { key: 'emergencyThreshold', label: '紧急阈值', hint: '误码率超限时判为链路失效/中断并触发切换' },
+  { key: 'warningThreshold', label: '告警阈值', hint: '误码率超限时判为链路劣化/告警' },
+  { key: 'valueThresholdBer', label: '质量阈值', hint: '误码率不高于此值时满足优质链路门限' },
 ] as const
+type ThresholdKey = (typeof thresholdFields)[number]['key']
+const thresholdRows = computed(() => thresholdFields.map(field => ({
+  ...field,
+  error: props.fieldMessage?.(`linkCalc.${field.key}`) ?? '',
+})))
+const manualThresholds = ref<Partial<Record<ThresholdKey, boolean>>>({})
+
+function isThresholdEnabled(key: ThresholdKey): boolean {
+  if (manualThresholds.value[key] === true) return true
+  const current = linkCalc.value[key]
+  if (!Number.isFinite(current) || current !== LINK_CALC_DEFAULTS[key]) return true
+  return Boolean(props.fieldMessage?.(`linkCalc.${key}`))
+}
+
+const enabledThresholdCount = computed(() => thresholdFields.filter(field => isThresholdEnabled(field.key)).length)
+
+function toggleThreshold(key: ThresholdKey, enabled: string | number | boolean): void {
+  if (props.disabled) return
+  if (enabled === true) {
+    manualThresholds.value = { ...manualThresholds.value, [key]: true }
+  } else {
+    const next = { ...manualThresholds.value }
+    delete next[key]
+    manualThresholds.value = next
+    if (linkCalc.value[key] !== LINK_CALC_DEFAULTS[key] || !Number.isFinite(linkCalc.value[key])) {
+      updateLinkCalc({ [key]: LINK_CALC_DEFAULTS[key] })
+    }
+  }
+}
+
+watch(() => props.dialogVisible, (visible) => {
+  if (!visible) manualThresholds.value = {}
+})
 
 /** 写回 link_calc 全局设置；首次编辑时把文档默认值一并写入。 */
 function updateLinkCalc(patch: Partial<LinkCalcSettings>): void {
   if (!props.disabled) emit('update:modelValue', { ...settings.value, linkCalc: { ...linkCalc.value, ...patch } })
 }
 
-/** 误码率按文本输入以支持 1e-7 这类科学计数；无法解析时写入 NaN 交给整体校验阻断。 */
-function setThreshold(key: (typeof thresholdFields)[number]['key'], text: string): void {
+/** 编辑结束后保存数值，空值或无法解析的输入交给整体校验。 */
+function setThreshold(key: ThresholdKey, text: string): void {
   updateLinkCalc({ [key]: text.trim() === '' ? Number.NaN : Number(text) })
 }
 
-/** 紧急/告警阈值按科学计数法回显，避免 1e-5 被显示成 0.00001。 */
-function thresholdDisplay(key: (typeof thresholdFields)[number]['key'], value: number | undefined): string {
-  if ((key === 'emergencyThreshold' || key === 'warningThreshold') && typeof value === 'number' && Number.isFinite(value)) {
-    return value.toExponential()
+const thresholdDecimal = new Intl.NumberFormat('en-US', { useGrouping: false, maximumSignificantDigits: 21 })
+function thresholdDisplay(value: number): string {
+  return Number.isFinite(value) ? thresholdDecimal.format(value) : ''
+}
+
+const thresholdRangeText = computed<Record<ThresholdKey, string>>(() => {
+  const { emergencyThreshold, warningThreshold, valueThresholdBer } = linkCalc.value
+  const bound = (value: number, label: string) => value > 0 && value <= 1 ? thresholdDisplay(value) : label
+  const emergency = bound(emergencyThreshold, '紧急阈值')
+  const warning = bound(warningThreshold, '告警阈值')
+  const quality = bound(valueThresholdBer, '质量阈值')
+  const reversedBounds = emergencyThreshold > 0 && valueThresholdBer <= 1 && valueThresholdBer > emergencyThreshold
+  return {
+    emergencyThreshold: `可填 ${warning}～1（含两端）`,
+    warningThreshold: reversedBounds
+      ? '质量阈值高于紧急阈值，请先调整其中一项。'
+      : `可填 ${quality}～${emergency}（含两端）`,
+    valueThresholdBer: `可填大于 0 且不大于 ${warning} 的数值`,
   }
-  return String(value ?? '')
-}
+})
 
-const hotEndLabels: Record<HotLinkSettings['endPlatformType'], string> = {
-  REAR_COMMAND_NODE: '后方指挥节点（REAR_COMM_PLATFORM）',
-  GROUND_CLUSTER_COMMAND_NODE: '地面集群指挥节点（COMMAND_VEHICLE_PLATFORM）',
-  AIRBORNE_MISSION_CLUSTER: '空中任务集群（MISSION_UAV_PLATFORM）',
+const hotDirections = [{ key: 'forward', direction: 'FORWARD', label: '前向热链' },
+  { key: 'reverse', direction: 'REVERSE', label: '返向热链' }] as const
+/** 链路类型的中文兜底名，保证没有传入类型选项时也不显示英文枚举。 */
+const LINK_TYPE_TEXT: Record<LinkType, string> = { SAT: '卫星', MICROWAVE: '微波', DATALINK: '数传', LASER: '激光', FIBER: '光纤' }
+function typeText(type: LinkType): string {
+  return props.typeOptions.find(option => option.value === type)?.label ?? LINK_TYPE_TEXT[type]
 }
-const hotDirections = [{ key: 'forward', direction: 'FORWARD', label: '前向热链（hot_link_fw）' },
-  { key: 'reverse', direction: 'REVERSE', label: '返向热链（hot_link_ret）' }] as const
-const enabledLinks = computed(() => props.links.filter(link => isConfiguredLinkEnabled(link, settings.value, props.platforms)))
-const hotLinks = computed(() => readHotLinks(settings.value.hotLinks, enabledLinks.value, settings.value.priority))
+/** 参与本次场景的链路（链路启用且卫星可用）；热链逐跳下拉和快捷生成只用这些。 */
+const enabledHotLinks = computed(() => props.links.filter(link => isConfiguredLinkEnabled(link, settings.value, props.platforms)))
+/** 按链路类型统计当前参与本次场景的启用链路条数，辅助判断优先级调整是否影响现有拓扑。 */
+const enabledLinkCountByType = computed<Record<LinkType, number>>(() => {
+  const counts: Record<LinkType, number> = { SAT: 0, MICROWAVE: 0, DATALINK: 0, LASER: 0, FIBER: 0 }
+  for (const link of enabledHotLinks.value) counts[link.type] += 1
+  return counts
+})
+const hotLinks = computed(() => readHotLinks(settings.value.hotLinks))
+const hotLinkCount = computed(() => [...hotLinks.value.forward, ...hotLinks.value.reverse].filter(chain => chain.length > 0).length)
 
-/** 写回整份热链配置；首次编辑时把当前自动串联结果一并固化为自定义配置。 */
-function emitHotLinks(next: HotLinkSettings | undefined): void {
+/** 写回整份热链配置。 */
+function emitHotLinks(next: HotLinkSettings): void {
   if (props.disabled) return
-  const rest: ScenarioLinkSettings = { ...settings.value }
-  delete rest.hotLinks
-  emit('update:modelValue', next === undefined ? rest : { ...rest, hotLinks: next })
+  emit('update:modelValue', { ...settings.value, hotLinks: next })
 }
-
-function updateChain(key: 'forward' | 'reverse', index: number, chain: string[] | null): void {
-  const next = readHotLinks(settings.value.hotLinks, enabledLinks.value, settings.value.priority)
-  if (chain === null) next[key].splice(index, 1)
-  else if (index >= next[key].length) next[key].push(chain)
-  else next[key][index] = chain
+function linkById(id: string): Link | undefined {
+  return props.links.find(link => link.id === id)
+}
+function writeChains(key: 'forward' | 'reverse', chains: string[][]): void {
+  const next = readHotLinks(settings.value.hotLinks)
+  next[key] = chains
   emitHotLinks(next)
 }
-
-/** 热链路径文字：源平台 →（链路类型）→ 目标平台，便于核对首尾是否相接。 */
-function chainPath(chain: readonly string[]): string {
-  const parts: string[] = []
+/** 热链平台走向：首跳源平台，之后每跳的目标平台。 */
+function chainPlatforms(chain: readonly string[]): string[] {
+  const platforms: string[] = []
   chain.forEach((id, position) => {
-    const link = props.links.find(item => item.id === id)
-    if (!link) return
-    if (position === 0) parts.push(scenarioPlatformLabel(props.platforms, link.sourcePlatformId))
-    parts.push(`→（${typeLabel(link.type)}）→ ${scenarioPlatformLabel(props.platforms, link.targetPlatformId)}`)
+    const link = linkById(id)
+    if (link === undefined) return
+    if (position === 0) platforms.push(link.sourcePlatformId)
+    platforms.push(link.targetPlatformId)
   })
-  return parts.join(' ')
+  return platforms
 }
-
-function typeLabel(type: LinkType): string {
-  return props.typeOptions.find(option => option.value === type)?.label ?? type
+/** 首跳源平台名。 */
+function chainStartName(chain: readonly string[]): string {
+  const platforms = chainPlatforms(chain)
+  return platforms.length > 0 ? scenarioPlatformLabel(props.platforms, platforms[0]!) : '未知平台'
 }
-
-const triggerOptions: readonly { value: LinkSwitchTrigger; label: string }[] = [
-  { value: 'DISTANCE_ABOVE', label: '两端距离大于阈值' },
-  { value: 'DISTANCE_BELOW', label: '两端距离小于阈值' },
-  { value: 'JAMMING_ACTIVE', label: '干扰设备开启' },
-  { value: 'JAMMING_STOPPED', label: '干扰设备关闭' },
-]
-const rules = computed(() => settings.value.switchRules ?? [])
-const isDistance = (trigger: LinkSwitchTrigger) => trigger === 'DISTANCE_ABOVE' || trigger === 'DISTANCE_BELOW'
-
-/** 写回整组规则；next 为新的规则列表，空列表时移除字段以保持旧场景结构。 */
-function emitRules(next: LinkSwitchRule[]): void {
+/** 单跳链路类型名；引用失效时明确提示。 */
+function hopTypeName(id: string): string {
+  const link = linkById(id)
+  return link === undefined ? '链路缺失' : typeText(link.type)
+}
+/** 单跳目标平台名。 */
+function hopTargetName(id: string): string {
+  const link = linkById(id)
+  return link === undefined ? '' : scenarioPlatformLabel(props.platforms, link.targetPlatformId)
+}
+/** 下一跳可选链路：从当前终点平台出发、已启用、同方向、尚未使用，从源头杜绝断链。 */
+function nextHopOptions(direction: Link['direction'], chain: readonly string[]): { value: string; label: string }[] {
+  const last = chain.length > 0 ? linkById(chain[chain.length - 1]!) : undefined
+  return enabledHotLinks.value
+    .filter(link => link.direction === direction && !chain.includes(link.id)
+      && (last === undefined || link.sourcePlatformId === last.targetPlatformId))
+    .map(link => ({ value: link.id, label: linkPathLabel(link) }))
+}
+const pendingHop = ref<Record<string, string | undefined>>({})
+/** 刚新增的空热链只是占位。点完成时若仍没选链路，才显示错误并留下弹框。 */
+const emptyHotLinkNotice = ref<Record<string, boolean>>({})
+function addChain(key: 'forward' | 'reverse'): void {
   if (props.disabled) return
-  const rest: ScenarioLinkSettings = { ...settings.value }
-  delete rest.switchRules
-  emit('update:modelValue', next.length > 0 ? { ...rest, switchRules: next } : rest)
+  writeChains(key, [...hotLinks.value[key], []])
 }
-
-/** 新增一条距离规则，默认取第一条链路的端点，编号取未占用的最小序号。 */
-function addRule(): void {
-  const first = props.links[0]
-  let index = rules.value.length + 1
-  while (rules.value.some(rule => rule.id === `RULE-${index}`)) index += 1
-  emitRules([...rules.value, {
-    id: `RULE-${index}`, enabled: true, trigger: 'DISTANCE_ABOVE',
-    sourcePlatformId: first?.sourcePlatformId ?? '', targetPlatformId: first?.targetPlatformId ?? '',
-    toLinkId: first?.id ?? '', distanceThresholdM: 200_000,
-  }])
+function appendHop(key: 'forward' | 'reverse', index: number, linkId: string | undefined): void {
+  pendingHop.value[`${key}-${index}`] = undefined
+  if (props.disabled || linkId === undefined) return
+  const chains = hotLinks.value[key].map(chain => [...chain])
+  chains[index]!.push(linkId)
+  writeChains(key, chains)
 }
-
-/** 修改第 index 条规则；切换条件类型时清除另一类条件的参数，端点变化后清除不再匹配的目标链路。 */
-function updateRule(index: number, patch: Partial<LinkSwitchRule>): void {
-  const next = rules.value.map(rule => ({ ...rule }))
-  const rule = { ...next[index]!, ...patch }
-  if (patch.trigger !== undefined) {
-    if (isDistance(patch.trigger)) { delete rule.jammerId; rule.distanceThresholdM ??= 200_000 }
-    else { delete rule.distanceThresholdM; rule.jammerId ??= props.jammers[0]?.id ?? '' }
+/** 中间跳不能删；只从尾部删最后一跳，删到只剩一跳时整条移除。 */
+function removeLastHop(key: 'forward' | 'reverse', index: number): void {
+  if (props.disabled) return
+  const chains = hotLinks.value[key].map(chain => [...chain])
+  const chain = chains[index]!
+  if (chain.length <= 1) chains.splice(index, 1)
+  else chain.pop()
+  writeChains(key, chains)
+}
+function removeChain(key: 'forward' | 'reverse', index: number): void {
+  if (props.disabled) return
+  const chains = hotLinks.value[key].map(chain => [...chain])
+  chains.splice(index, 1)
+  writeChains(key, chains)
+}
+/** 用平台名和链路名给出结构/启用错误；无误时返回空串。 */
+function chainError(key: 'forward' | 'reverse', chain: readonly string[]): string {
+  const direction = key === 'forward' ? 'FORWARD' : 'REVERSE'
+  const reason = hotLinkChainError(chain, props.links, direction, {
+    link: id => { const link = linkById(id); return link === undefined ? id : linkPathLabel(link) },
+    platform: id => scenarioPlatformLabel(props.platforms, id),
+  })
+  if (reason !== null) return reason
+  for (const id of chain) {
+    const link = linkById(id)
+    if (link !== undefined && !enabledHotLinks.value.some(item => item.id === id)) {
+      return `链路 ${linkPathLabel(link)} 已停用或未参与本次场景。`
+    }
   }
-  if ((patch.sourcePlatformId !== undefined || patch.targetPlatformId !== undefined)
-    && !candidateLinks(rule).some(link => link.id === rule.toLinkId)) rule.toLinkId = candidateLinks(rule)[0]?.id ?? ''
-  next[index] = rule
-  emitRules(next)
+  return ''
+}
+function hotChainMessages(key: 'forward' | 'reverse', index: number, chain: readonly string[]): string[] {
+  if (chain.length === 0 && !emptyHotLinkNotice.value[`${key}-${index}`]) return []
+  const messages = [props.fieldMessage?.(`hotLinks.${key}[${index}]`) ?? '', chainError(key, chain)].filter(Boolean)
+  return [...new Set(messages)]
+}
+function requestClose(): void {
+  const notice: Record<string, boolean> = {}
+  for (const group of hotDirections) {
+    hotLinks.value[group.key].forEach((chain, index) => {
+      if (chain.length === 0) notice[`${group.key}-${index}`] = true
+    })
+  }
+  emptyHotLinkNotice.value = notice
+  if (Object.keys(notice).length > 0) return
+  emit('update:dialogVisible', false)
+}
+function onDialogVisible(open: boolean): void {
+  if (open) emptyHotLinkNotice.value = {}
+  if (open) emit('update:dialogVisible', true)
+  else requestClose()
+}
+const quickStart = ref<Record<'forward' | 'reverse', string | undefined>>({ forward: undefined, reverse: undefined })
+const quickEnd = ref<Record<'forward' | 'reverse', string | undefined>>({ forward: undefined, reverse: undefined })
+const hotNotice = ref<Record<'forward' | 'reverse', string>>({ forward: '', reverse: '' })
+function setQuickPlatform(which: 'start' | 'end', key: 'forward' | 'reverse', value: string | undefined): void {
+  ;(which === 'start' ? quickStart : quickEnd).value[key] = value
+}
+/** 起点/终点候选：只列该方向有出链/入链的已启用平台。 */
+function platformChoices(direction: Link['direction'], end: boolean): { value: string; label: string }[] {
+  const ids = new Set(enabledHotLinks.value.filter(link => link.direction === direction).map(link => end ? link.targetPlatformId : link.sourcePlatformId))
+  return [...ids].map(id => ({ value: id, label: scenarioPlatformLabel(props.platforms, id) }))
+}
+function priorityRank(link: Link): number {
+  const index = settings.value.priority.indexOf(link.type)
+  return index < 0 ? settings.value.priority.length : index
+}
+/** 按链路优先级做广度优先，取跳数最少、同层优先级的连通路径。 */
+function findHotLinkPath(direction: Link['direction'], start: string, end: string): string[] | null {
+  const links = enabledHotLinks.value.filter(link => link.direction === direction)
+    .sort((left, right) => priorityRank(left) - priorityRank(right) || left.id.localeCompare(right.id))
+  const queue = [start]
+  const visited = new Set([start])
+  const previous = new Map<string, { platform: string; linkId: string }>()
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    for (const link of links) {
+      if (link.sourcePlatformId !== current || visited.has(link.targetPlatformId)) continue
+      visited.add(link.targetPlatformId)
+      previous.set(link.targetPlatformId, { platform: current, linkId: link.id })
+      if (link.targetPlatformId === end) {
+        const path: string[] = []
+        let node = end
+        while (node !== start) {
+          const step = previous.get(node)!
+          path.unshift(step.linkId)
+          node = step.platform
+        }
+        return path
+      }
+      queue.push(link.targetPlatformId)
+    }
+  }
+  return null
+}
+function generateByEndpoints(key: 'forward' | 'reverse'): void {
+  if (props.disabled) return
+  const direction = key === 'forward' ? 'FORWARD' : 'REVERSE'
+  const start = quickStart.value[key]
+  const end = quickEnd.value[key]
+  if (start === undefined || end === undefined) { hotNotice.value[key] = '请选择起点平台和终点平台。'; return }
+  if (start === end) { hotNotice.value[key] = '起点和终点不能相同。'; return }
+  const path = findHotLinkPath(direction, start, end)
+  if (path === null) {
+    hotNotice.value[key] = `未找到从 ${scenarioPlatformLabel(props.platforms, start)} 到 ${scenarioPlatformLabel(props.platforms, end)} 的可用路径。`
+    return
+  }
+  if (hotLinks.value[key].some(chain => chain.join('\u0000') === path.join('\u0000'))) { hotNotice.value[key] = '该路径已存在。'; return }
+  hotNotice.value[key] = ''
+  writeChains(key, [...hotLinks.value[key], path])
+}
+/** 由一条前向热链生成反方向返向热链；任一跳缺少对应返向链路则提示。 */
+function generateReverse(index: number): void {
+  if (props.disabled) return
+  const forward = hotLinks.value.forward[index]
+  if (forward === undefined) return
+  const reversed: string[] = []
+  for (let position = forward.length - 1; position >= 0; position -= 1) {
+    const link = linkById(forward[position]!)
+    if (link === undefined) { hotNotice.value.forward = `第 ${position + 1} 跳链路不存在。`; return }
+    const candidates = enabledHotLinks.value
+      .filter(item => item.direction === 'REVERSE' && item.sourcePlatformId === link.targetPlatformId && item.targetPlatformId === link.sourcePlatformId)
+      .sort((left, right) => (left.type === link.type ? 0 : 1) - (right.type === link.type ? 0 : 1)
+        || priorityRank(left) - priorityRank(right) || left.id.localeCompare(right.id))
+    if (candidates.length === 0) {
+      hotNotice.value.forward = `第 ${position + 1} 跳没有对应的返向链路：${scenarioPlatformLabel(props.platforms, link.targetPlatformId)} → ${scenarioPlatformLabel(props.platforms, link.sourcePlatformId)}。`
+      return
+    }
+    reversed.push(candidates[0]!.id)
+  }
+  if (hotLinks.value.reverse.some(chain => chain.join('\u0000') === reversed.join('\u0000'))) { hotNotice.value.forward = '对应的返向热链已存在。'; return }
+  hotNotice.value.forward = ''
+  writeChains('reverse', [...hotLinks.value.reverse, reversed])
 }
 
-function removeRule(index: number): void {
-  emitRules(rules.value.filter((_, position) => position !== index))
+/** 链路显示名：类型 + 源→目标平台中文名，避免向操作人员暴露英文链路编号。 */
+function linkPathLabel(link: Link): string {
+  return `${typeText(link.type)}（${scenarioPlatformLabel(props.platforms, link.sourcePlatformId)} → ${scenarioPlatformLabel(props.platforms, link.targetPlatformId)}）`
 }
 
-/** 切换目标只能是连接同一对源、目标平台的链路。 */
-function candidateLinks(rule: LinkSwitchRule): Link[] {
-  return props.links.filter(link => link.sourcePlatformId === rule.sourcePlatformId && link.targetPlatformId === rule.targetPlatformId)
+const advancedFields = {
+  strategy: [
+    'switchCooldownS', 'switchStableChecks', 'switchConsistencyCheck',
+    ...decisionFields.map(field => field.key),
+    ...thresholdFields.map(field => `linkCalc.${field.key}`),
+  ],
+  hotLinks: ['hotLinks'],
+} as const
+type AdvancedSection = keyof typeof advancedFields
+const advancedSections = Object.keys(advancedFields) as AdvancedSection[]
+const expanded = ref<Partial<Record<AdvancedSection, boolean>>>({})
+
+watch(() => props.dialogVisible
+  ? advancedSections.filter(section => advancedFields[section].some(field => props.fieldMessage?.(field))) : null,
+(invalid, previous) => {
+  if (!invalid) expanded.value = {}
+  else for (const section of invalid) if (!previous?.includes(section)) expanded.value[section] = true
+}, { immediate: true })
+
+function toggleSection(section: AdvancedSection, event: Event): void {
+  if (!props.dialogVisible) return
+  const open = (event.currentTarget as HTMLDetailsElement).open
+  expanded.value[section] = open
 }
 
-function linkLabel(link: Link): string {
-  const type = props.typeOptions.find(option => option.value === link.type)?.label ?? link.type
-  return `${type}（${link.id}）`
+/** 服务端指出的问题需要先挂载输入控件，再由页面定位。 */
+function revealField(path: string): void {
+  const section = advancedSections.find(section => advancedFields[section].some(field => (
+    path === field || path.startsWith(`${field}.`) || path.startsWith(`${field}[`)
+  )))
+  if (section) expanded.value[section] = true
 }
+defineExpose({ revealField })
 </script>
 
 <template>
   <div data-testid="link-settings">
-    <el-button size="small" :disabled="disabled" data-testid="open-link-settings" @click="emit('update:dialogVisible', true)">链路设置</el-button>
+    <el-button :disabled="disabled" data-testid="open-link-settings" @click="emit('update:dialogVisible', true)">链路设置</el-button>
   </div>
   <el-dialog :model-value="dialogVisible" class="link-settings-dialog scenario-dialog" title="链路设置" width="max(80vw, min(760px, calc(100vw - 2rem)))" top="5vh"
-    destroy-on-close append-to-body data-testid="link-settings-dialog" @closed="resetDrag" @update:model-value="emit('update:dialogVisible', $event)">
+    destroy-on-close append-to-body data-testid="link-settings-dialog" @closed="resetDrag" @update:model-value="onDialogVisible">
     <el-form label-position="top" :disabled="disabled" class="link-settings__fields">
-      <!-- 左列：选路策略与全局计算参数；右列：热链与切换规则（可增删的列表，内容较长）。 -->
+      <!-- 左列：选路策略与全局计算参数；右列：热链。 -->
       <div class="link-settings__column" data-testid="link-settings-left">
       <el-form-item class="link-settings__strategy" :error="fieldMessage?.('priority') ?? ''">
-        <div class="link-settings__heading">链路优先级 <small>拖拽排序，越靠上优先级越高</small></div>
+        <div class="link-settings__priority-head">
+          <div class="link-settings__heading">
+            <span class="link-settings__priority-title">链路优先级</span>
+            <small>越靠上越优先，支持拖拽、按钮或方向键排序</small>
+          </div>
+          <el-button v-if="!isDefaultPriority" link type="primary" size="small" :disabled="disabled"
+            data-testid="priority-reset-default" @click="resetPriority">恢复默认</el-button>
+        </div>
         <ol class="link-settings__priority" aria-label="链路优先级，从高到低">
-          <li v-for="(type, index) in settings.priority" :key="type"
-            :class="{ 'is-dragging': draggedType === type, 'is-drop-target': !disabled && dropTarget === type && draggedType !== type }"
+          <li v-for="(type, index) in settings.priority" :key="type" class="link-settings__priority-row"
+            :class="{
+              'is-top': index === 0,
+              'is-dragging': draggedType === type,
+              'is-drop-target': !disabled && dropTarget === type && draggedType !== type,
+            }"
             @dragover.prevent="!disabled && draggedType !== null && (dropTarget = type)" @drop.prevent="dropPriority(index)">
             <button type="button" class="link-settings__priority-item" :disabled="disabled" :draggable="!disabled"
               :data-testid="`link-priority-${index}`"
-              :aria-label="`${typeOptions.find(option => option.value === type)?.label ?? type}，优先级 ${index + 1}，使用上下方向键调整`"
+              :aria-label="`${typeText(type)}，优先级 ${index + 1}，使用上下方向键调整`"
               title="拖拽调整顺序，也可使用上下方向键"
               @dragstart="startDrag(type, $event)" @dragend="resetDrag"
               @keydown.up.prevent="movePriority(type, index - 1)" @keydown.down.prevent="movePriority(type, index + 1)">
               <svg class="link-settings__drag-handle" viewBox="0 0 16 20" aria-hidden="true" fill="currentColor">
                 <circle v-for="n in 6" :key="n" :cx="n % 2 ? 5 : 11" :cy="4 + Math.floor((n - 1) / 2) * 6" r="1.5" />
               </svg>
-              <span class="link-settings__rank">{{ index + 1 }}</span>
-              <span>{{ typeOptions.find(option => option.value === type)?.label ?? type }}</span>
-              <small v-if="index === 0">最高</small>
+              <span class="link-settings__rank" :class="{ 'is-top': index === 0 }">{{ index + 1 }}</span>
+              <span class="link-settings__priority-name">{{ typeText(type) }}</span>
+              <span class="link-settings__priority-meta">
+                <el-tag v-if="index === 0" size="small" type="primary" effect="plain" class="link-settings__priority-badge">最高优先</el-tag>
+                <span v-if="links.length > 0" class="link-settings__priority-count"
+                  :class="{ 'is-empty': enabledLinkCountByType[type] === 0 }">
+                  {{ enabledLinkCountByType[type] > 0 ? `${enabledLinkCountByType[type]} 条参与` : '无启用链路' }}
+                </span>
+              </span>
             </button>
+            <div class="link-settings__priority-actions" role="group" :aria-label="`${typeText(type)}排序操作`">
+              <button type="button" class="link-settings__priority-action" :disabled="disabled || index === 0"
+                :data-testid="`priority-move-top-${index}`" :aria-label="`将${typeText(type)}置顶`" title="置顶"
+                @click="movePriority(type, 0)">
+                <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3.5 3.5h9M8 12.5v-6M5.25 8.75L8 6l2.75 2.75" />
+                </svg>
+              </button>
+              <button type="button" class="link-settings__priority-action" :disabled="disabled || index === 0"
+                :data-testid="`priority-move-up-${index}`" :aria-label="`上移${typeText(type)}`" title="上移"
+                @click="movePriority(type, index - 1)">
+                <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4.5 9.75L8 6.25l3.5 3.5" />
+                </svg>
+              </button>
+              <button type="button" class="link-settings__priority-action" :disabled="disabled || index === settings.priority.length - 1"
+                :data-testid="`priority-move-down-${index}`" :aria-label="`下移${typeText(type)}`" title="下移"
+                @click="movePriority(type, index + 1)">
+                <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M4.5 6.25L8 9.75l3.5-3.5" />
+                </svg>
+              </button>
+            </div>
           </li>
         </ol>
       </el-form-item>
@@ -277,40 +510,88 @@ function linkLabel(link: Link): string {
             :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
         </el-select>
       </el-form-item>
-      <details class="scenario-advanced" data-testid="link-strategy-advanced"
-        :open="['switchCooldownS', 'switchStableChecks', 'switchConsistencyCheck', ...decisionFields.map(field => field.key), ...failureFields.map(field => field.key)].some(key => fieldMessage?.(key))">
-      <summary>选路稳定性与标定参数</summary>
-      <el-form-item label="防乒乓滞回时间（秒）" :error="fieldMessage?.('switchCooldownS') ?? ''">
-        <el-input-number :model-value="settings.switchCooldownS" :min="fieldMessage ? undefined : 0" :step="1" controls-position="right"
-          data-testid="link-switch-cooldown" @update:model-value="setCooldown" />
-      </el-form-item>
-      <el-form-item label="连续稳定检查次数" :error="fieldMessage?.('switchStableChecks') ?? ''">
-        <el-input-number :model-value="settings.switchStableChecks ?? LINK_DECISION_DEFAULTS.switchStableChecks" :min="fieldMessage ? undefined : 1" :max="fieldMessage ? undefined : 100" :step="1" step-strictly controls-position="right"
-          :disabled="disabled" data-testid="link-switch-stable-checks" @update:model-value="setStableChecks" />
-      </el-form-item>
-      <el-form-item label="规则切换一致性校验" :error="fieldMessage?.('switchConsistencyCheck') ?? ''">
-        <el-switch :model-value="settings.switchConsistencyCheck ?? true" :disabled="disabled" data-testid="link-switch-consistency"
-          @update:model-value="setConsistency" />
-      </el-form-item>
-      <section class="link-settings__rules" data-testid="quality-decision-settings" aria-label="质量选路与切换门限">
-        <div class="link-settings__heading"><span>质量选路与切换门限</span></div>
-        <el-form-item v-for="field in decisionFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
-          <el-input-number :model-value="settings[field.key] ?? LINK_DECISION_DEFAULTS[field.key]"
-            :min="fieldMessage ? undefined : 'min' in field ? field.min : undefined"
-            :max="fieldMessage ? undefined : 'max' in field ? field.max : undefined" :step="field.step"
-            :disabled="disabled" controls-position="right" :data-testid="`link-decision-${field.key}`"
-            @update:model-value="setDecisionField(field.key, $event)" />
-        </el-form-item>
-        <el-form-item v-for="field in failureFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
-          <el-switch :model-value="Object.hasOwn(settings, field.key)" :disabled="disabled" :data-testid="`link-decision-enable-${field.key}`"
-            @update:model-value="enableFailureField(field.key, $event)" />
-          <el-input-number v-if="Object.hasOwn(settings, field.key)" :model-value="Number.isFinite(settings[field.key]) ? settings[field.key] : undefined"
-            :min="fieldMessage ? undefined : 'min' in field ? field.min : undefined" :max="fieldMessage ? undefined : 'max' in field ? field.max : undefined"
-            :step="field.step" :disabled="disabled" controls-position="right" :data-testid="`link-decision-${field.key}`"
-            @update:model-value="setFailureField(field.key, $event)" />
-        </el-form-item>
-        <small class="link-settings__hint">请按设备标定值填写已启用的门限。</small>
-      </section>
+      <details class="link-settings__disclosure scenario-advanced" data-testid="link-strategy-advanced" :open="expanded.strategy"
+        @toggle="toggleSection('strategy', $event)">
+        <summary>
+          <span>选路稳定性与标定参数</span>
+          <el-tag class="link-settings__summary-status" size="small" :type="enabledThresholdCount > 0 ? 'primary' : 'info'" effect="plain">
+            {{ enabledThresholdCount > 0 ? `已启用 ${enabledThresholdCount} 项标定` : '默认参数' }}
+          </el-tag>
+        </summary>
+        <div v-if="expanded.strategy" class="link-settings__disclosure-body link-settings__strategy-body">
+          <section class="link-settings__subgroup" aria-label="设备失效标定门限">
+            <div class="link-settings__subgroup-head">
+              <span class="link-settings__subgroup-title">设备失效标定门限</span>
+              <small class="link-settings__hint">按需启用自定义门限（关闭时使用默认误码率，满足 紧急 ≥ 告警 ≥ 质量）</small>
+            </div>
+            <div class="link-settings__failure-list">
+              <el-form-item v-for="field in thresholdRows" :key="field.key" class="link-settings__failure-item"
+                :class="{ 'is-enabled': isThresholdEnabled(field.key) }" :error="field.error" :show-message="false">
+                <div class="link-settings__failure-row">
+                  <div class="link-settings__failure-head">
+                    <span class="link-settings__failure-label">{{ field.label }}</span>
+                    <el-switch :model-value="isThresholdEnabled(field.key)" :disabled="disabled" :data-testid="`link-calc-enable-${field.key}`"
+                      @update:model-value="toggleThreshold(field.key, $event)" />
+                  </div>
+                  <el-input v-if="isThresholdEnabled(field.key)" :model-value="thresholdDisplay(linkCalc[field.key])"
+                    :model-modifiers="{ lazy: true }" inputmode="decimal"
+                    :placeholder="`如 ${thresholdDisplay(LINK_CALC_DEFAULTS[field.key])}`" :disabled="disabled"
+                    :aria-describedby="`link-calc-hint-${field.key}`"
+                    :data-testid="`link-calc-${field.key}`" @update:model-value="setThreshold(field.key, $event)" />
+                  <small :id="`link-calc-hint-${field.key}`" class="link-settings__hint"
+                    :class="{ 'link-settings__hint--error': field.error }" aria-live="polite">
+                    <template v-if="field.error">{{ field.error }}</template>
+                    <template v-else>
+                      <span :id="`link-calc-range-${field.key}`">{{ thresholdRangeText[field.key] }}</span>
+                      <template v-if="!isThresholdEnabled(field.key)"> · 默认 {{ thresholdDisplay(LINK_CALC_DEFAULTS[field.key]) }}</template>
+                      {{ ` · ${field.hint}` }}
+                    </template>
+                  </small>
+                </div>
+              </el-form-item>
+            </div>
+          </section>
+
+          <section class="link-settings__subgroup" aria-label="防抖与稳定性">
+            <div class="link-settings__subgroup-title">防抖与稳定性</div>
+            <div class="link-settings__rule-grid">
+              <el-form-item label="防乒乓滞回时间（秒）" :error="fieldMessage?.('switchCooldownS') ?? ''">
+                <el-input-number :model-value="settings.switchCooldownS" :min="fieldMessage ? undefined : 0" :step="1" controls-position="right"
+                  data-testid="link-switch-cooldown" @update:model-value="setCooldown" />
+              </el-form-item>
+              <el-form-item label="连续稳定检查次数" :error="fieldMessage?.('switchStableChecks') ?? ''">
+                <el-input-number :model-value="settings.switchStableChecks ?? LINK_DECISION_DEFAULTS.switchStableChecks" :min="fieldMessage ? undefined : 1" :max="fieldMessage ? undefined : 100" :step="1" step-strictly controls-position="right"
+                  :disabled="disabled" data-testid="link-switch-stable-checks" @update:model-value="setStableChecks" />
+              </el-form-item>
+              <el-form-item :label="cooldownFramesField.label" :error="fieldMessage?.(cooldownFramesField.key) ?? ''">
+                <el-input-number :model-value="settings[cooldownFramesField.key] ?? LINK_DECISION_DEFAULTS[cooldownFramesField.key]"
+                  :min="fieldMessage ? undefined : cooldownFramesField.min" :step="cooldownFramesField.step"
+                  :disabled="disabled" controls-position="right" :data-testid="`link-decision-${cooldownFramesField.key}`"
+                  @update:model-value="setDecisionField(cooldownFramesField.key, $event)" />
+              </el-form-item>
+              <el-form-item label="选路一致性校验" :error="fieldMessage?.('switchConsistencyCheck') ?? ''">
+                <div class="link-settings__switch-box">
+                  <el-switch :model-value="settings.switchConsistencyCheck ?? true" :disabled="disabled" data-testid="link-switch-consistency"
+                    @update:model-value="setConsistency" />
+                  <span class="link-settings__switch-text">{{ (settings.switchConsistencyCheck ?? true) ? '已启用' : '已关闭' }}</span>
+                </div>
+              </el-form-item>
+            </div>
+          </section>
+
+          <section class="link-settings__subgroup" data-testid="quality-decision-settings" aria-label="质量选路与切换门限">
+            <div class="link-settings__subgroup-title">质量选路与切换门限</div>
+            <div class="link-settings__rule-grid">
+              <el-form-item v-for="field in qualityThresholdFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
+                <el-input-number :model-value="settings[field.key] ?? LINK_DECISION_DEFAULTS[field.key]"
+                  :min="fieldMessage ? undefined : 'min' in field ? field.min : undefined"
+                  :max="fieldMessage ? undefined : 'max' in field ? field.max : undefined" :step="field.step"
+                  :disabled="disabled" controls-position="right" :data-testid="`link-decision-${field.key}`"
+                  @update:model-value="setDecisionField(field.key, $event)" />
+              </el-form-item>
+            </div>
+          </section>
+        </div>
       </details>
       <section class="link-settings__rules" data-testid="channel-encoding-settings" aria-labelledby="channel-encoding-title">
         <div class="link-settings__heading">
@@ -323,125 +604,89 @@ function linkLabel(link: Link): string {
           </el-select>
         </el-form-item>
       </section>
-      <details class="link-settings__rules scenario-advanced" data-testid="link-calc-settings"
-        :open="Boolean(fieldMessage?.('linkCalc') || fieldMessage?.('messageIntervalS'))">
-        <summary>链路计算周期与阈值</summary>
-        <div class="link-settings__rule-grid">
-          <el-form-item v-if="fieldMessage?.('messageIntervalS')" label="历史业务周期（秒，待修正）" :error="fieldMessage?.('messageIntervalS') ?? ''">
-            <el-input-number :model-value="settings.messageIntervalS" :disabled="disabled" controls-position="right" data-testid="link-message-interval"
-              @update:model-value="value => { if (!disabled) emit('update:modelValue', { ...settings, messageIntervalS: value ?? Number.NaN }) }" />
-          </el-form-item>
-          <el-form-item label="链路计算更新周期（秒）" :error="fieldMessage?.('linkCalc.updateIntervalS') ?? ''">
-            <el-input-number :model-value="linkCalc.updateIntervalS" :disabled="disabled" controls-position="right" data-testid="link-calc-updateIntervalS"
-              @update:model-value="updateLinkCalc({ updateIntervalS: $event ?? Number.NaN })" />
-          </el-form-item>
-          <el-form-item v-for="field in thresholdFields" :key="field.key" :label="field.label" :error="fieldMessage?.(`linkCalc.${field.key}`) ?? ''">
-            <el-input :model-value="thresholdDisplay(field.key, linkCalc[field.key])" placeholder="如 1e-5" :data-testid="`link-calc-${field.key}`"
-              @change="setThreshold(field.key, $event)" />
-          </el-form-item>
-          <el-form-item v-if="fieldMessage?.('linkCalc.jammingRangeKm')" :label="`历史干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}，待修正）`" :error="fieldMessage?.('linkCalc.jammingRangeKm') ?? ''">
-            <el-input-number :model-value="linkCalc.jammingRangeKm" :min="fieldMessage ? undefined : JAMMING_RANGE_KM.min" :max="fieldMessage ? undefined : JAMMING_RANGE_KM.max" controls-position="right"
-              data-testid="link-calc-jammingRangeKm" @update:model-value="updateLinkCalc({ jammingRangeKm: $event ?? Number.NaN })" />
-          </el-form-item>
-        </div>
-      </details>
+      <section class="link-settings__rule-grid" data-testid="link-calc-settings" aria-label="链路计算周期">
+        <el-form-item label="链路计算周期（秒）" :error="fieldMessage?.('linkCalc.updateIntervalS') ?? ''">
+          <el-input-number :model-value="linkCalc.updateIntervalS" :disabled="disabled" controls-position="right" data-testid="link-calc-updateIntervalS"
+            @update:model-value="updateLinkCalc({ updateIntervalS: $event ?? Number.NaN })" />
+        </el-form-item>
+        <el-form-item v-if="fieldMessage?.('messageIntervalS')" label="历史业务周期（秒，待修正）" :error="fieldMessage?.('messageIntervalS') ?? ''">
+          <el-input-number :model-value="settings.messageIntervalS" :disabled="disabled" controls-position="right" data-testid="link-message-interval"
+            @update:model-value="value => { if (!disabled) emit('update:modelValue', { ...settings, messageIntervalS: value ?? Number.NaN }) }" />
+        </el-form-item>
+        <el-form-item v-if="fieldMessage?.('linkCalc.jammingRangeKm')" :label="`历史干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}，待修正）`" :error="fieldMessage?.('linkCalc.jammingRangeKm') ?? ''">
+          <el-input-number :model-value="linkCalc.jammingRangeKm" :min="fieldMessage ? undefined : JAMMING_RANGE_KM.min" :max="fieldMessage ? undefined : JAMMING_RANGE_KM.max" controls-position="right"
+            data-testid="link-calc-jammingRangeKm" @update:model-value="updateLinkCalc({ jammingRangeKm: $event ?? Number.NaN })" />
+        </el-form-item>
+      </section>
       </div>
       <div class="link-settings__column" data-testid="link-settings-right">
-      <details class="link-settings__rules scenario-advanced" data-testid="hot-link-settings" :open="Boolean(fieldMessage?.('hotLinks'))">
-        <summary>手动热链配置（高级）</summary>
-        <div class="link-settings__heading">
-          <span id="hot-link-title">热链配置（全局）</span>
-          <small data-testid="hot-link-state">{{ settings.hotLinks ? '已手动调整' : '自动生成' }}</small>
-          <el-button v-if="settings.hotLinks" link type="primary" data-testid="hot-link-reset" @click="emitHotLinks(undefined)">恢复自动串联</el-button>
-        </div>
-        <el-form-item label="热链终点平台类型（end_platform_type）" :error="fieldMessage?.('hotLinks.endPlatformType') ?? ''">
-          <el-select :model-value="hotLinks.endPlatformType" data-testid="hot-link-end-type"
-            @update:model-value="emitHotLinks({ ...hotLinks, endPlatformType: $event })">
-            <el-option v-for="type in HOT_LINK_END_PLATFORM_TYPES" :key="type" :value="type" :label="hotEndLabels[type]" />
-          </el-select>
-        </el-form-item>
+      <details class="link-settings__disclosure scenario-advanced" data-testid="hot-link-settings" :open="expanded.hotLinks"
+        @toggle="toggleSection('hotLinks', $event)">
+        <summary>
+          <span>热链配置</span>
+          <el-tag class="link-settings__summary-status" size="small" :type="hotLinkCount > 0 ? 'primary' : 'info'" effect="plain" data-testid="hot-link-state">
+            {{ hotLinkCount > 0 ? `已配置 ${hotLinkCount} 条` : '未配置' }}
+          </el-tag>
+        </summary>
+        <div v-if="expanded.hotLinks" class="link-settings__disclosure-body">
+        <p class="link-settings__empty">逐跳添加：先选第一跳，之后每跳只列出可衔接的已启用链路；最后一跳可删，中间跳不可删。</p>
         <div v-for="group in hotDirections" :key="group.key" class="link-settings__hot-group" :data-testid="`hot-link-${group.key}`">
           <div class="link-settings__heading"><span>{{ group.label }}</span></div>
-          <p v-if="hotLinks[group.key].length === 0" class="link-settings__empty">没有同方向的已启用链路。</p>
-          <div v-for="(chain, index) in hotLinks[group.key]" :key="`${group.key}-${index}`" class="link-settings__rule">
+          <div class="link-settings__hot-quick">
+            <el-select :model-value="quickStart[group.key]" size="small" placeholder="起点平台" class="link-settings__hot-quick-select"
+              :data-testid="`hot-link-${group.key}-quick-start`" @update:model-value="setQuickPlatform('start', group.key, $event)">
+              <el-option v-for="option in platformChoices(group.direction, false)" :key="option.value" :value="option.value" :label="option.label" />
+            </el-select>
+            <span class="link-settings__hot-arrow">→</span>
+            <el-select :model-value="quickEnd[group.key]" size="small" placeholder="终点平台" class="link-settings__hot-quick-select"
+              :data-testid="`hot-link-${group.key}-quick-end`" @update:model-value="setQuickPlatform('end', group.key, $event)">
+              <el-option v-for="option in platformChoices(group.direction, true)" :key="option.value" :value="option.value" :label="option.label" />
+            </el-select>
+            <el-button size="small" :disabled="disabled || platformChoices(group.direction, false).length === 0"
+              :data-testid="`hot-link-${group.key}-quick-generate`" @click="generateByEndpoints(group.key)">按起终点生成</el-button>
+          </div>
+          <p v-if="hotNotice[group.key]" class="link-settings__error">{{ hotNotice[group.key] }}</p>
+          <p v-if="hotLinks[group.key].length === 0 && platformChoices(group.direction, false).length === 0" class="link-settings__empty">没有同方向的已启用链路。</p>
+          <p v-else-if="hotLinks[group.key].length === 0" class="link-settings__empty">尚未配置，可逐跳添加或用上方起终点生成。</p>
+          <div v-for="(chain, index) in hotLinks[group.key]" :key="`${group.key}-${index}`" class="link-settings__rule" :data-testid="`hot-link-${group.key}-${index}`">
             <div class="link-settings__rule-head">
-              <strong>link{{ index + 1 }}</strong>
-              <el-button link type="danger" :data-testid="`hot-link-${group.key}-${index}-remove`" @click="updateChain(group.key, index, null)">删除</el-button>
+              <strong>{{ chain.length > 0 ? `第 ${index + 1} 条 · ${chain.length} 跳` : `第 ${index + 1} 条 · 尚未选择链路` }}</strong>
+              <div class="link-settings__row-actions">
+                <el-button v-if="group.key === 'forward'" link type="primary" :disabled="disabled || chain.length === 0"
+                  :data-testid="`hot-link-${group.key}-${index}-reverse`" @click="generateReverse(index)">生成返向</el-button>
+                <el-button link type="danger" :disabled="disabled" :data-testid="`hot-link-${group.key}-${index}-remove`" @click="removeChain(group.key, index)">删除</el-button>
+              </div>
             </div>
-            <el-form-item :error="fieldMessage?.(`hotLinks.${group.key}[${index}]`) ?? ''">
-              <el-select :model-value="chain" multiple placeholder="按路径顺序选择链路" style="width: 100%" :data-testid="`hot-link-${group.key}-${index}`"
-                @update:model-value="updateChain(group.key, index, $event)">
-                <el-option v-for="link in links.filter(item => item.direction === group.direction)" :key="link.id" :value="link.id" :label="linkLabel(link)" />
+            <div v-if="chain.length > 0" class="link-settings__hot-hops">
+              <span class="link-settings__hot-node">{{ chainStartName(chain) }}</span>
+              <template v-for="(id, hopIndex) in chain" :key="`${id}-${hopIndex}`">
+                <span class="link-settings__hot-arrow">→</span>
+                <span class="link-settings__hot-link">{{ hopTypeName(id) }}</span>
+                <span class="link-settings__hot-arrow">→</span>
+                <span class="link-settings__hot-node">{{ hopTargetName(id) }}</span>
+              </template>
+            </div>
+            <div class="link-settings__hot-next">
+              <el-select :model-value="pendingHop[`${group.key}-${index}`]" size="small" filterable
+                :placeholder="chain.length === 0 ? '选择第一跳链路' : '添加下一跳链路'"
+                :disabled="disabled || nextHopOptions(group.direction, chain).length === 0"
+                :data-testid="`hot-link-${group.key}-${index}-next`" @update:model-value="appendHop(group.key, index, $event)">
+                <el-option v-for="option in nextHopOptions(group.direction, chain)" :key="option.value" :value="option.value" :label="option.label" />
               </el-select>
-            </el-form-item>
-            <small class="link-settings__empty">{{ chainPath(chain) }}</small>
-            <small v-if="hotLinkChainError(chain, links, group.direction)" class="link-settings__error">{{ hotLinkChainError(chain, links, group.direction) }}</small>
+              <el-button v-if="chain.length > 0" link type="danger" :disabled="disabled"
+                :data-testid="`hot-link-${group.key}-${index}-remove-last`" @click="removeLastHop(group.key, index)">删除最后一跳</el-button>
+            </div>
+            <p v-if="chain.length > 0 && nextHopOptions(group.direction, chain).length === 0" class="link-settings__empty">已到路径末端，没有可继续的链路。</p>
+            <p v-for="message in hotChainMessages(group.key, index, chain)" :key="message" class="link-settings__error">{{ message }}</p>
           </div>
-          <el-button size="small" :disabled="disabled || !links.some(item => item.direction === group.direction)"
-            :data-testid="`hot-link-${group.key}-add`" @click="updateChain(group.key, hotLinks[group.key].length, [])">新增热链</el-button>
+          <el-button size="small" :disabled="disabled" :data-testid="`hot-link-${group.key}-add`" @click="addChain(group.key)">新增热链</el-button>
         </div>
-      </details>
-      <details class="link-settings__rules scenario-advanced" data-testid="link-switch-rules" :open="Boolean(fieldMessage?.('switchRules'))">
-        <summary>阶段切换规则（{{ rules.length }} 条）</summary>
-        <div class="link-settings__heading">
-          <span id="link-switch-rules-title">阶段切换规则</span>
-          <small>两次切换间隔不少于滞回时间。</small>
         </div>
-        <p v-if="rules.length === 0" class="link-settings__empty">未配置规则时，仿真全程使用优先级最高的链路。</p>
-        <div v-for="(rule, index) in rules" :key="rule.id" class="link-settings__rule" :data-testid="`switch-rule-${index}`">
-          <div class="link-settings__rule-head">
-            <strong>{{ rule.id }}</strong>
-            <el-form-item :error="fieldMessage?.(`switchRules[${index}].enabled`) ?? ''">
-              <el-switch :model-value="rule.enabled !== false" active-text="启用" inactive-text="停用"
-                :data-testid="`switch-rule-${index}-enabled`" @update:model-value="updateRule(index, { enabled: Boolean($event) })" />
-            </el-form-item>
-            <el-button link type="danger" :data-testid="`switch-rule-${index}-remove`" @click="removeRule(index)">删除</el-button>
-          </div>
-          <div class="link-settings__rule-grid">
-            <el-form-item label="切换条件" :error="fieldMessage?.(`switchRules[${index}].trigger`) ?? ''">
-              <el-select :model-value="rule.trigger" :data-testid="`switch-rule-${index}-trigger`"
-                @update:model-value="updateRule(index, { trigger: $event })">
-                <el-option v-for="option in triggerOptions" :key="option.value" :value="option.value" :label="option.label" />
-              </el-select>
-            </el-form-item>
-            <el-form-item v-if="isDistance(rule.trigger)" label="距离阈值（km）" :error="fieldMessage?.(`switchRules[${index}].distanceThresholdM`) ?? ''">
-              <el-input-number :model-value="rule.distanceThresholdM === undefined ? undefined : rule.distanceThresholdM / 1000"
-                :min="fieldMessage ? undefined : 0" :step="10" controls-position="right" :data-testid="`switch-rule-${index}-distanceThresholdM`"
-                @update:model-value="updateRule(index, { distanceThresholdM: $event === undefined || $event === null ? Number.NaN : $event * 1000 })" />
-            </el-form-item>
-            <el-form-item v-else label="干扰设备" :error="fieldMessage?.(`switchRules[${index}].jammerId`) ?? ''">
-              <el-select :model-value="rule.jammerId" placeholder="请选择干扰设备" :data-testid="`switch-rule-${index}-jammerId`"
-                @update:model-value="updateRule(index, { jammerId: $event })">
-                <el-option v-for="jammer in jammers" :key="jammer.id" :value="jammer.id"
-                  :label="`${jammer.id}（${scenarioPlatformLabel(platforms, jammer.platformId)}）`" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="源平台" :error="fieldMessage?.(`switchRules[${index}].sourcePlatformId`) ?? ''">
-              <el-select :model-value="rule.sourcePlatformId" filterable :data-testid="`switch-rule-${index}-sourcePlatformId`"
-                @update:model-value="updateRule(index, { sourcePlatformId: $event })">
-                <el-option v-for="platform in platforms" :key="platform.id" :value="platform.id" :label="scenarioPlatformLabel(platforms, platform.id)" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="目标平台" :error="fieldMessage?.(`switchRules[${index}].targetPlatformId`) ?? ''">
-              <el-select :model-value="rule.targetPlatformId" filterable :data-testid="`switch-rule-${index}-targetPlatformId`"
-                @update:model-value="updateRule(index, { targetPlatformId: $event })">
-                <el-option v-for="platform in platforms" :key="platform.id" :value="platform.id" :label="scenarioPlatformLabel(platforms, platform.id)" />
-              </el-select>
-            </el-form-item>
-            <el-form-item class="link-settings__rule-wide" label="切换到链路" :error="fieldMessage?.(`switchRules[${index}].toLinkId`) ?? ''">
-              <el-select :model-value="rule.toLinkId" placeholder="该源、目标平台之间没有链路" :data-testid="`switch-rule-${index}-toLinkId`"
-                @update:model-value="updateRule(index, { toLinkId: $event })">
-                <el-option v-for="link in candidateLinks(rule)" :key="link.id" :value="link.id" :label="linkLabel(link)" />
-              </el-select>
-            </el-form-item>
-          </div>
-        </div>
-        <el-button size="small" :disabled="disabled || links.length === 0" data-testid="add-switch-rule" @click="addRule">新增规则</el-button>
       </details>
       </div>
     </el-form>
     <template #footer>
-      <el-button type="primary" data-testid="close-link-settings" @click="emit('update:dialogVisible', false)">完成</el-button>
+      <el-button type="primary" data-testid="close-link-settings" @click="requestClose">完成</el-button>
     </template>
   </el-dialog>
 </template>
@@ -451,31 +696,191 @@ function linkLabel(link: Link): string {
 .link-settings__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0 2rem; }
 .link-settings__column { display: grid; align-content: start; gap: 0.75rem; min-width: 0; }
 .link-settings__hint { display: block; width: 100%; margin-top: 4px; color: var(--console-text-muted); font-size: 12px; line-height: 1.4; }
+.link-settings__hint--error { color: var(--el-color-danger); }
 .link-settings__strategy { min-width: 0; margin-bottom: 1rem; }
+.link-settings__strategy :deep(.el-form-item__content) { display: block; line-height: normal; }
+.link-settings__priority-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.55rem; }
+.link-settings__priority-head .link-settings__heading { margin-bottom: 0; }
+.link-settings__priority-title { color: var(--console-text); font-weight: 600; }
 .link-settings__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
-.link-settings__heading small, .link-settings__priority-item small { color: var(--console-text-muted); font-size: 12px; }
-.link-settings__priority { display: grid; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
-.link-settings__priority-item { display: flex; align-items: center; gap: 0.65rem; width: 100%; padding: 0.45rem 0.65rem; border: 1px solid var(--console-border); border-radius: 4px; background: var(--console-bg-elevated); color: var(--console-text); font: inherit; text-align: left; cursor: grab; }
-.link-settings__priority-item small { margin-left: auto; }
+.link-settings__heading small { color: var(--console-text-muted); font-size: 12px; }
+.link-settings__priority { display: grid; gap: 0.45rem; margin: 0; padding: 0.5rem; border: 1px solid var(--console-border); border-radius: var(--console-radius); background: var(--console-surface); list-style: none; }
+.link-settings__priority-row {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  background: var(--console-bg-elevated);
+  overflow: hidden;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
+}
+.link-settings__priority-row.is-top {
+  border-color: color-mix(in srgb, var(--console-cyan) 42%, var(--console-border));
+  background: color-mix(in srgb, var(--console-cyan) 7%, var(--console-bg-elevated));
+  box-shadow: inset 3px 0 0 var(--console-cyan);
+}
+.link-settings__priority-row:hover { border-color: var(--console-border-strong); background: var(--console-surface-raised); }
+.link-settings__priority-row.is-top:hover { border-color: color-mix(in srgb, var(--console-cyan) 65%, var(--console-border)); }
+.link-settings__priority-row.is-dragging { opacity: 0.48; border-style: dashed; }
+.link-settings__priority-row.is-drop-target {
+  border-color: var(--console-cyan);
+  background: color-mix(in srgb, var(--console-cyan) 12%, var(--console-surface-raised));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--console-cyan) 28%, transparent);
+}
+.link-settings__priority-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  background: transparent;
+  color: var(--console-text);
+  font: inherit;
+  text-align: left;
+  cursor: grab;
+}
 .link-settings__priority-item:active { cursor: grabbing; }
-.link-settings__priority-item:disabled { opacity: 0.5; cursor: not-allowed; }
-.link-settings__priority-item:focus-visible { outline: 2px solid var(--console-cyan); outline-offset: 2px; }
-.link-settings__priority-item:not(:disabled):hover, .is-drop-target .link-settings__priority-item { border-color: var(--console-cyan); }
-.is-dragging { opacity: 0.5; }
-.link-settings__drag-handle { width: 16px; height: 20px; flex-shrink: 0; color: var(--console-text-muted); }
-.link-settings__rank { min-width: 1.25rem; color: var(--console-cyan); font-variant-numeric: tabular-nums; }
+.link-settings__priority-item:disabled { opacity: 0.55; cursor: not-allowed; }
+.link-settings__priority-item:focus-visible { outline: 2px solid var(--console-cyan); outline-offset: -2px; }
+.link-settings__drag-handle { width: 14px; height: 18px; flex-shrink: 0; color: var(--console-text-dim); transition: color 0.16s ease; }
+.link-settings__priority-row:hover .link-settings__drag-handle { color: var(--console-text-muted); }
+.link-settings__rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 1px solid var(--console-border);
+  border-radius: 50%;
+  background: var(--console-surface);
+  color: var(--console-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.link-settings__rank.is-top {
+  border-color: color-mix(in srgb, var(--console-cyan) 60%, transparent);
+  background: color-mix(in srgb, var(--console-cyan) 18%, transparent);
+  color: var(--console-cyan);
+}
+.link-settings__priority-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link-settings__priority-meta { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: auto; flex-shrink: 0; }
+.link-settings__priority-badge { flex-shrink: 0; }
+.link-settings__priority-count {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--console-teal) 14%, transparent);
+  color: var(--console-teal);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.link-settings__priority-count.is-empty {
+  background: var(--console-surface);
+  color: var(--console-text-dim);
+}
+.link-settings__priority-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+  border-left: 1px solid color-mix(in srgb, var(--console-border) 75%, transparent);
+  background: color-mix(in srgb, var(--console-surface) 55%, transparent);
+}
+.link-settings__priority-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--console-text-muted);
+  cursor: pointer;
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+.link-settings__priority-action svg { width: 14px; height: 14px; }
+.link-settings__priority-action:not(:disabled):hover {
+  background: color-mix(in srgb, var(--console-cyan) 14%, transparent);
+  color: var(--console-cyan);
+}
+.link-settings__priority-action:focus-visible { outline: 2px solid var(--console-cyan); outline-offset: -2px; }
+.link-settings__priority-action:disabled { opacity: 0.28; cursor: not-allowed; }
 .link-settings__fields :deep(.el-input-number) { width: 100%; }
 .link-settings__rules { display: grid; gap: 0.75rem; min-width: 0; }
+.link-settings__disclosure { margin: 0; padding: 0; border-radius: var(--console-radius); background: var(--console-surface); }
+.link-settings__disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.65rem 0.9rem;
+  border-radius: inherit;
+  list-style: none;
+}
+.link-settings__disclosure > summary::-webkit-details-marker { display: none; }
+.link-settings__disclosure > summary:hover, .link-settings__disclosure[open] > summary { background: var(--console-surface-raised); }
+.link-settings__disclosure > summary:focus-visible { outline-offset: -2px; }
+.link-settings__disclosure > summary::after {
+  content: '';
+  flex: 0 0 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--console-text-muted);
+  border-bottom: 2px solid var(--console-text-muted);
+  transform: rotate(-45deg);
+}
+.link-settings__disclosure[open] > summary { margin: 0; border-radius: var(--console-radius) var(--console-radius) 0 0; }
+.link-settings__disclosure[open] > summary::after { transform: rotate(45deg); }
+.link-settings__summary-status { margin-inline-start: auto; flex-shrink: 0; }
+.link-settings__disclosure-body { display: grid; gap: 0.75rem; padding: 0.85rem; border-top: 1px solid var(--console-border); }
+.link-settings__strategy-body { gap: 1rem; }
+.link-settings__subgroup { display: grid; gap: 0.6rem; min-width: 0; }
+.link-settings__subgroup + .link-settings__subgroup { padding-top: 0.85rem; border-top: 1px solid var(--console-border); }
+.link-settings__subgroup-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 0.35rem 0.75rem; }
+.link-settings__subgroup-head .link-settings__hint { width: auto; margin-top: 0; }
+.link-settings__subgroup-title { color: var(--console-text); font-size: 13px; font-weight: 600; line-height: 1.4; }
+.link-settings__strategy-body :deep(.el-form-item) { margin-bottom: 0.75rem; }
+.link-settings__strategy-body :deep(.el-form-item__label) { line-height: 1.35; margin-bottom: 0.3rem; font-size: 12px; color: var(--console-text-muted); }
+.link-settings__switch-box { display: flex; align-items: center; gap: 0.5rem; min-height: 32px; padding: 0 0.65rem; border: 1px solid var(--console-border); border-radius: 4px; background: var(--console-bg-elevated); width: 100%; box-sizing: border-box; }
+.link-settings__switch-text { color: var(--console-text-muted); font-size: 12px; }
+.link-settings__failure-list { display: grid; gap: 0.5rem; }
+.link-settings__failure-item { margin-bottom: 0 !important; }
+.link-settings__failure-item :deep(.el-form-item__content) { display: block; line-height: normal; }
+.link-settings__failure-row { display: grid; gap: 0.5rem; width: 100%; padding: 0.55rem 0.75rem; border: 1px solid var(--console-border); border-radius: 4px; background: var(--console-bg-elevated); box-sizing: border-box; }
+.link-settings__failure-item.is-enabled .link-settings__failure-row { border-color: color-mix(in srgb, var(--console-cyan) 45%, var(--console-border)); }
+.link-settings__failure-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 24px; }
+.link-settings__failure-label { color: var(--console-text); font-size: 12px; line-height: 1.4; }
+.link-settings__reset-hot-links { justify-self: end; }
 .link-settings__empty { margin: 0; color: var(--console-text-muted); font-size: 12px; }
 .link-settings__error { color: var(--el-color-danger); font-size: 12px; }
 .link-settings__hot-group { display: grid; gap: 0.5rem; min-width: 0; }
 .link-settings__hot-group .link-settings__rule small { display: block; margin: 0.25rem 0; }
 .link-settings__rule { min-width: 0; padding: 0.65rem 0.75rem 0.25rem; border: 1px solid var(--console-border); border-radius: 4px; }
 .link-settings__rule-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
-.link-settings__rule-head .el-button { margin-left: auto; }
+.link-settings__row-actions { margin-left: auto; }
+.link-settings__rule-head strong { flex: 1; min-width: 0; font-weight: 600; line-height: 1.4; }
+.link-settings__hot-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.link-settings__hot-quick-select { flex: 1 1 8rem; min-width: 0; }
+.link-settings__hot-hops { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin: 0.25rem 0; }
+.link-settings__hot-node { padding: 1px 6px; border: 1px solid var(--console-border); border-radius: 4px; background: var(--console-bg-elevated); color: var(--console-text); font-size: 12px; }
+.link-settings__hot-link { padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--console-cyan) 16%, transparent); color: var(--console-cyan); font-size: 12px; }
+.link-settings__hot-arrow { color: var(--console-text-muted); font-size: 12px; }
+.link-settings__hot-next { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.35rem; }
+.link-settings__hot-next :deep(.el-select) { flex: 1; min-width: 0; }
 .link-settings__rule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
 .link-settings__rule-grid :deep(.el-select) { width: 100%; }
 .link-settings__rule-wide { grid-column: 1 / -1; }
+@media (min-width: 961px) {
+  :global(.el-dialog.link-settings-dialog > .el-dialog__body) { display: flex; overflow: hidden; }
+  .link-settings__fields { flex: 1; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+  .link-settings__column { overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+}
 @media (max-width: 960px) {
   .link-settings__fields { grid-template-columns: 1fr; }
 }

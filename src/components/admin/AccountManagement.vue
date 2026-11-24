@@ -1,17 +1,47 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { APP_CONFIG } from '../../config/app.config'
 import type { AccessControlConfig, Role, User } from '../../contracts/domain-models'
 import { useAdminStore } from '../../stores/admin'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { apiFetch } from '../../features/shared/api-fetch'
-import { isAccessControlConfig } from '../../features/admin/access-control'
+import { isAccessControlConfig, OPERATOR_PERMISSION_KEYS, PERMISSION_LABELS } from '../../features/admin/access-control'
 import RoleProfiles from './RoleProfiles.vue'
 
 const admin = useAdminStore()
 const showRoleProfiles = ref(false)
+const roleProfilesRef = ref<{ hasUnsavedChanges: boolean } | null>(null)
 const auth = useAuthStore()
+
+async function confirmDiscardRoleChanges(): Promise<boolean> {
+  if (!roleProfilesRef.value?.hasUnsavedChanges) return true
+  try {
+    await ElMessageBox.confirm('当前有未保存的角色权限更改，直接关闭将丢失未保存的配置。确认关闭？', '未保存更改', {
+      type: 'warning',
+      confirmButtonText: '放弃并关闭',
+      cancelButtonText: '继续编辑',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function beforeCloseRoleProfiles(done: () => void): void {
+  if (!roleProfilesRef.value?.hasUnsavedChanges) {
+    showRoleProfiles.value = false
+    done()
+    return
+  }
+  void confirmDiscardRoleChanges().then(allowed => {
+    if (allowed) {
+      showRoleProfiles.value = false
+      done()
+    }
+  })
+}
 onMounted(() => { void admin.refreshUsers(); void refreshRoleConfig() })
 const { users, panelState, resultCode, resultMessage } = storeToRefs(admin)
 const roleConfig = ref<AccessControlConfig | null>(null)
@@ -91,6 +121,7 @@ const createForm = reactive<{ username: string; displayName: string; role: Role;
   status: 'ACTIVE',
 })
 const pendingDelete = ref<User | null>(null)
+const pendingResetPassword = ref<User | null>(null)
 const initialPassword = ref('')
 const createDialogVisible = ref(false)
 const createError = ref('')
@@ -112,16 +143,16 @@ const statusLabels: Record<User['status'], string> = {
   DISABLED: '禁用（DISABLED）',
   LOCKED: '锁定（LOCKED）',
 }
-const rolePermissions = [
+const rolePermissions = computed(() => [
   {
-    role: roleLabels.OPERATOR,
-    permissions: 'BUSINESS_READ、SCENARIO_DRAFT_WRITE、SIMULATION_CONTROL、ORDINARY_REPORT_EXPORT',
+    role: '操作员',
+    permissions: OPERATOR_PERMISSION_KEYS.map(key => PERMISSION_LABELS[key]).join('、'),
   },
   {
-    role: roleLabels.ADMIN,
-    permissions: 'OPERATOR 全部权限，以及模板、通用数据、用户角色、备份恢复、审计、完整配置与三级报告权限',
+    role: '管理员',
+    permissions: `包含操作员全部权限，另有${APP_CONFIG.systemManagement.showMasterData ? `${PERMISSION_LABELS.MASTER_DATA_MAINTAIN}、` : ''}账号与角色维护、备份恢复、审计查询、完整配置导出、三级报告权限`,
   },
-]
+])
 
 /**
  * 提交创建用户表单；成功关闭弹窗，失败保留表单并显示原因。
@@ -212,6 +243,30 @@ async function confirmDelete(): Promise<void> {
   if (deleted) { void refreshRoleConfig(); ElMessage.success(resultMessage.value) }
   pendingDelete.value = null
 }
+
+/**
+ * 打开指定用户的密码重置确认弹窗；禁止对当前登录管理员执行重置。
+ * @param user 待重置密码的其他账号。
+ */
+function requestResetPassword(user: User): void {
+  if (pending.value || user.userId === auth.principal?.userId) return
+  pendingResetPassword.value = user
+}
+
+function cancelResetPassword(): void {
+  pendingResetPassword.value = null
+}
+
+/**
+ * 提交当前待确认用户的密码重置请求，成功后将其密码重置为 123456 并撤销该账号会话。
+ */
+async function confirmResetPassword(): Promise<void> {
+  const user = pendingResetPassword.value
+  if (user === null || pending.value || user.userId === auth.principal?.userId) return
+  const reset = await admin.resetUserPassword(user)
+  if (reset) ElMessage.success(resultMessage.value)
+  pendingResetPassword.value = null
+}
 </script>
 
 <template>
@@ -298,7 +353,7 @@ async function confirmDelete(): Promise<void> {
           <el-table-column label="自定义角色" min-width="240">
             <template #default="scope">{{ profileLabel(scope.row) }}</template>
           </el-table-column>
-          <el-table-column label="操作" min-width="180">
+          <el-table-column label="操作" min-width="260">
             <template #default="scope">
               <el-button
                 size="small"
@@ -309,6 +364,17 @@ async function confirmDelete(): Promise<void> {
                 @click="openEdit(scope.row)"
               >
                 修改
+              </el-button>
+              <el-button
+                size="small"
+                type="warning"
+                plain
+                :disabled="pending || scope.row.userId === auth.principal?.userId"
+                :title="scope.row.userId === auth.principal?.userId ? '当前登录账号不能重置自己的密码' : undefined"
+                :data-testid="`reset-password-${scope.row.userId}`"
+                @click="requestResetPassword(scope.row)"
+              >
+                重置密码
               </el-button>
               <el-button
                 size="small"
@@ -394,6 +460,34 @@ async function confirmDelete(): Promise<void> {
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-if="pendingResetPassword"
+      :model-value="true"
+      title="确认重置密码"
+      width="min(420px, calc(100vw - 32px))"
+      :show-close="!pending"
+      :close-on-click-modal="!pending"
+      :close-on-press-escape="!pending"
+      aria-describedby="reset-password-confirmation-description"
+      data-testid="reset-password-confirmation"
+      @update:model-value="(visible: boolean) => { if (!visible) cancelResetPassword() }"
+    >
+      <p id="reset-password-confirmation-description">
+        确定将用户“{{ pendingResetPassword.username }}”的密码重置为 123456 吗？重置后该账号现有登录会话将失效，需使用新密码重新登录。
+      </p>
+      <template #footer>
+        <el-button data-testid="cancel-reset-password" :disabled="pending" @click="cancelResetPassword">取消</el-button>
+        <el-button
+          data-testid="confirm-reset-password"
+          type="warning"
+          :loading="pending"
+          @click="confirmResetPassword"
+        >
+          确认重置
+        </el-button>
+      </template>
+    </el-dialog>
+
     <section class="console-panel console-section" aria-labelledby="permission-map-title">
       <div class="section-heading">
         <div>
@@ -413,12 +507,10 @@ async function confirmDelete(): Promise<void> {
       title="角色权限配置"
       width="min(1100px, calc(100vw - 32px))"
       :close-on-click-modal="false"
+      :before-close="beforeCloseRoleProfiles"
       destroy-on-close
     >
-      <RoleProfiles v-if="showRoleProfiles" :users="users" @saved="refreshRoleConfig" />
-      <template #footer>
-        <el-button @click="showRoleProfiles = false">关闭</el-button>
-      </template>
+      <RoleProfiles v-if="showRoleProfiles" ref="roleProfilesRef" :users="users" @saved="refreshRoleConfig" />
     </el-dialog>
     <section v-if="panelState === 'ERROR'" class="result-section" aria-label="操作结果">
       <div class="result-section__label">最近操作结果</div>

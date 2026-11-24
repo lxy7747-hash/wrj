@@ -9,6 +9,7 @@ import { BackupValidationCache } from './backup-validation-cache.js'
 
 const RESTORED_TABLES = ['scenarios', 'scenario_templates', 'users'] as const
 const ALL_TABLES = [...RESTORED_TABLES, 'audit_logs']
+export const legacyBackupColumn = (table: string) => table === 'users' ? 'display_name' : table === 'scenarios' ? 'created_at' : undefined
 const validId = (id: string) => /^[A-Za-z0-9_-]{1,80}$/.test(id)
 const unavailable = (): AdminResult<never> => ({ ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503,
   message: '备份存储不可用或数据库被占用，未确认操作成功。请检查磁盘与数据库后重试。' })
@@ -121,8 +122,9 @@ export class BackupSqliteStorage implements BackupStorage {
     const expected = this.db.prepare(schemaSql).all()
     const actual = snapshot.prepare(schemaSql).all().map(row => {
       const current = expected.find(item => item.name === row.name)
-      // 旧账号表仅缺少追加的显示名列；其他结构仍须逐字匹配。
-      return row.name === 'users' && row.sql === String(current?.sql).replace(', display_name TEXT)', ')')
+      const addedColumn = legacyBackupColumn(String(row.name))
+      // 旧备份可缺少末尾新增的可空列；其余结构仍须逐字匹配。
+      return addedColumn && row.sql === String(current?.sql).replace(`, ${addedColumn} TEXT)`, ')')
         ? { ...row, sql: current!.sql } : row
     })
     if (expected.some(row => row.type !== 'table' || !ALL_TABLES.includes(String(row.name)))
@@ -138,6 +140,7 @@ export class BackupSqliteStorage implements BackupStorage {
     }
     for (const table of ['scenarios', 'scenario_templates']) {
       for (const row of snapshot.prepare(`SELECT * FROM ${table}`).all()) {
+        if (table === 'scenarios' && row.created_at != null && !isRfc3339DateTime(row.created_at)) throw new Error('备份场景创建时间无效。')
         // 仅整理校验副本；备份文件及恢复复制的原始行保持不变。
         const parsedExtensions: unknown = row.ui_extensions_json === null ? undefined : JSON.parse(String(row.ui_extensions_json))
         const { config, uiExtensions } = normalizeStoredScenario(JSON.parse(String(row.config_json)) as unknown, parsedExtensions)
@@ -183,8 +186,10 @@ export class BackupSqliteStorage implements BackupStorage {
         // 审计日志保留当前历史；整组数据在一个事务内替换，已有连接无需重开或替换数据库文件。
         for (const table of RESTORED_TABLES) {
           this.db.exec(`DELETE FROM main.${table}`)
-          const legacyUser = table === 'users' && !this.db.prepare('PRAGMA restore_source.table_info(users)').all().some(row => row.name === 'display_name')
-          this.db.exec(`INSERT INTO main.${table} SELECT *${legacyUser ? ', NULL' : ''} FROM restore_source.${table}`)
+          const addedColumn = legacyBackupColumn(table)
+          const needsNull = addedColumn && this.db.prepare(`PRAGMA main.table_info(${table})`).all().some(row => row.name === addedColumn)
+            && !this.db.prepare(`PRAGMA restore_source.table_info(${table})`).all().some(row => row.name === addedColumn)
+          this.db.exec(`INSERT INTO main.${table} SELECT *${needsNull ? ', NULL' : ''} FROM restore_source.${table}`)
         }
         this.validate(this.db)
         this.db.exec('COMMIT')
@@ -211,4 +216,19 @@ export class BackupSqliteStorage implements BackupStorage {
   }
 
   close(): void { this.catalog.close(); this.db.close() }
+
+  deleteBackup(backupId: string): AdminResult<{ deleted: boolean; objectId: string }> {
+    if (!validId(backupId)) return { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份编号不合法。', fieldPath: 'backupId' }
+    try {
+      const existing = this.catalog.prepare('SELECT 1 FROM backups WHERE backup_id = ?').get(backupId)
+      if (!existing) return { ok: false, code: 'NOT_FOUND', status: 404, message: '备份记录不存在。', fieldPath: 'backupId' }
+      this.catalog.prepare('DELETE FROM backups WHERE backup_id = ?').run(backupId)
+      const path = join(this.directory, `${backupId}.db`)
+      try {
+        const stat = lstatSync(path)
+        if (stat.isFile() && !stat.isSymbolicLink() && realpathSync(path) === resolve(path)) unlinkSync(path)
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      return { ok: true, data: { deleted: true, objectId: backupId } }
+    } catch { return unavailable() }
+  }
 }

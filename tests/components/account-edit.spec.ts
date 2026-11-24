@@ -33,7 +33,7 @@ it('修改用户提交 UPDATE，包含独立用户名、登录账号、角色和
   const wrapper = mountWith(fetchMock)
   try {
     await flushPromises()
-    expect(wrapper.get('[data-testid="user-role-panel"]').findAll('button').map(button => button.text())).toEqual(['修改', '删除', '修改', '删除'])
+    expect(wrapper.get('[data-testid="user-role-panel"]').findAll('button').map(button => button.text())).toEqual(['修改', '重置密码', '删除', '修改', '重置密码', '删除'])
     expect(wrapper.findAll('button').some(button => button.text() === '角色权限配置')).toBe(true)
     await wrapper.get('[data-testid="edit-user-B"]').trigger('click')
     await flushPromises()
@@ -88,7 +88,7 @@ it.each(['ADMIN', 'OPERATOR'] as const)('禁用的 %s 账号在修改弹窗恢�
   const wrapper = mountWith(fetchMock)
   try {
     await flushPromises()
-    expect(wrapper.get('[data-testid="user-role-panel"]').findAll('button').map(button => button.text())).toEqual(['修改', '删除', '修改', '删除'])
+    expect(wrapper.get('[data-testid="user-role-panel"]').findAll('button').map(button => button.text())).toEqual(['修改', '重置密码', '删除', '修改', '重置密码', '删除'])
     await wrapper.get('[data-testid="edit-user-B"]').trigger('click')
     await flushPromises()
     const status = () => wrapper.findAllComponents(ElSelect).find(select => select.attributes('data-testid') === 'edit-status')!
@@ -111,5 +111,41 @@ it.each(['ADMIN', 'OPERATOR'] as const)('禁用的 %s 账号在修改弹窗恢�
     expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toEqual({ operation: 'UPDATE', user: updated })
     expect(wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__row')[1]!.text()).toContain('启用（ACTIVE）')
     expect(user.status).toBe('DISABLED')
+  } finally { wrapper.unmount() }
+})
+
+it('管理员可确认重置其他账号密码为 123456，且不能重置当前登录账号自己', async () => {
+  const users = [
+    { userId: 'A', username: 'admin', role: 'ADMIN', status: 'ACTIVE' },
+    { userId: 'B', username: 'op', role: 'OPERATOR', status: 'ACTIVE' },
+  ]
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: users, meta })))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, data: { reset: true, objectId: 'B' }, meta })))
+  const wrapper = mountWith(fetchMock)
+  try {
+    await flushPromises()
+    const selfReset = wrapper.get('[data-testid="reset-password-A"]')
+    expect(selfReset.attributes('disabled')).toBeDefined()
+    expect(selfReset.attributes('title')).toBe('当前登录账号不能重置自己的密码')
+
+    await wrapper.get('[data-testid="reset-password-B"]').trigger('click')
+    await flushPromises()
+    const dialog = document.querySelector('[data-testid="reset-password-confirmation"]')!
+    expect(dialog.textContent).toContain('123456')
+
+    document.querySelector<HTMLButtonElement>('[data-testid="cancel-reset-password"]')!.click()
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="reset-password-B"]').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-reset-password"]')!.click()
+    await flushPromises()
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [url, init] = fetchMock.mock.calls[1]!
+    expect(String(url)).toContain('/api/v1/admin/users/B/reset-password')
+    expect(init?.method).toBe('POST')
   } finally { wrapper.unmount() }
 })

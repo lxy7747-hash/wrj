@@ -5,8 +5,8 @@ import { dirname, join, resolve } from 'node:path'
 import type { BackupRecord, BackupPlan, BackupPlanStatus, BackupExecution, RestoreResult } from '../../src/contracts/domain-models.js'
 import type { AdminResult, BackupStorage } from '../admin/projection.js'
 import { isBackupPlan, isBackupPlanStatus } from '../../src/features/admin/backup-plan.js'
-import { BackupSqliteStorage } from './backup-sqlite.js'
-import { SYSTEM_SCOPES, SYSTEM_TABLES, validateSystemSnapshot, validateSystemSnapshotStructure, type BackupScope } from './system-backup-validation.js'
+import { BackupSqliteStorage, legacyBackupColumn } from './backup-sqlite.js'
+import { SYSTEM_BACKUP_SCOPES, SYSTEM_SCOPES, SYSTEM_TABLES, retainedParameterConflict, validateSystemSnapshot, validateSystemSnapshotStructure, type BackupScope } from './system-backup-validation.js'
 import { BackupValidationCache, fileFingerprint } from './backup-validation-cache.js'
 
 type TableSnapshot = { scope: BackupScope; table: string; sql: string; rows: Record<string, SQLInputValue>[] }
@@ -15,12 +15,15 @@ const validId = (id: string) => /^[A-Za-z0-9_-]{1,80}$/.test(id)
 const validName = (name: string) => typeof name === 'string' && name.trim().length > 0 && name.length <= 80
 const unavailable = (message = '备份存储不可用或被占用，操作未成功；请检查磁盘和数据库后重试。'): AdminResult<never> => ({ ok: false, status: 503, code: 'ATOMIC_REPLACE_FAILED', message })
 const schemaQuery = "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name"
-/** 校验规则变化时递增，使登记结果重检；4 起纳入装备发布引用/生命周期/核验表并兼容旧格式设备库。 */
-const VALIDATION_VERSION = 4
-/** 旧版本设备库不含这些表；旧格式备份恢复时补空表并把设备标记为“历史引用待核验”。 */
+/** 校验规则变化时递增，使登记结果重检。 */
+const VALIDATION_VERSION = 6
+const SCOPED_FORMAT = 'SYSTEM_SQLITE_V2'
+const LEGACY_FORMAT = 'SYSTEM_SQLITE_V1'
+type SystemBackupFormat = typeof SCOPED_FORMAT | typeof LEGACY_FORMAT
+/** 旧备份缺少这些装备表时，在内存校验副本中补齐空表。 */
 const LEGACY_OPTIONAL_EQUIPMENT_TABLES = ['equipment_published_references', 'equipment_lifecycle_events', 'equipment_verification', 'equipment_legacy_unverified'] as const
 
-/** 一个受控 SQLite 包保存所有业务库；恢复只复制表数据，不替换正在使用的数据库文件。 */
+/** 受控 SQLite 包保存备份范围内的业务库；恢复按白名单复制表数据。 */
 export class SystemBackupSqliteStorage implements BackupStorage {
   private readonly db: DatabaseSync
   private readonly catalog: DatabaseSync
@@ -58,7 +61,7 @@ export class SystemBackupSqliteStorage implements BackupStorage {
         CREATE TABLE IF NOT EXISTS backup_executions (id INTEGER PRIMARY KEY, value TEXT NOT NULL) STRICT;`)
       // 登记校验结果供列表复用；旧目录补列，尚无登记结果的备份在首次列出时完整校验一次。
       const columns = new Set(catalog.prepare('PRAGMA table_info(system_backups)').all().map(row => String(row.name)))
-      for (const [column, type] of [['fingerprint', 'TEXT'], ['validation_key', 'TEXT'], ['valid', 'INTEGER']]) {
+      for (const [column, type] of [['fingerprint', 'TEXT'], ['validation_key', 'TEXT'], ['valid', 'INTEGER'], ['format', `TEXT NOT NULL DEFAULT '${LEGACY_FORMAT}'`]]) {
         if (!columns.has(column)) catalog.exec(`ALTER TABLE system_backups ADD COLUMN ${column} ${type}`)
       }
       catalog.prepare('INSERT OR IGNORE INTO backup_plan VALUES (1, ?, NULL)').run(JSON.stringify({ version: 1, enabled: false, name: '定时备份', intervalMinutes: 1440 }))
@@ -76,21 +79,22 @@ export class SystemBackupSqliteStorage implements BackupStorage {
   }
   private checksum(path: string): string { this.requireRegularFile(path); return createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase() }
 
-  private recordKey(checksum: string): string { return `${this.validationKey}:${checksum}` }
+  private recordKey(checksum: string, format: SystemBackupFormat): string { return `${this.validationKey}:${format}:${checksum}` }
 
   /** 文件指纹、登记摘要和校验规则均未变化时沿用登记结果；否则完整校验并回写。恢复不使用此结果。 */
-  private listedValid(path: string, row: Record<string, SQLInputValue>): boolean {
+  private listedValid(path: string, row: Record<string, SQLInputValue>, format: SystemBackupFormat): boolean {
     const checksum = String(row.checksum)
     const fingerprint = fileFingerprint(path)
-    if (row.fingerprint === fingerprint && row.validation_key === this.recordKey(checksum) && (row.valid === 0 || row.valid === 1)) return row.valid === 1
-    const result = this.validationCache.check(path, checksum, () => {
+    const key = this.recordKey(checksum, format)
+    if (row.fingerprint === fingerprint && row.validation_key === key && (row.valid === 0 || row.valid === 1)) return row.valid === 1
+    const result = this.validationCache.check(path, key, () => {
       if (this.checksum(path) !== checksum) throw new Error('备份摘要不一致。')
-      this.readSnapshot(path)
+      this.readSnapshot(path, 'restore', format)
     })
     // 锁冲突等临时失败本次显示不可用，但不登记，下次列出重新完整校验。
     if (result === 'UNKNOWN') return false
     try {
-      if (fileFingerprint(path) === fingerprint) this.catalog.prepare('UPDATE system_backups SET fingerprint=?, validation_key=?, valid=? WHERE backup_id=? AND checksum=?').run(fingerprint, this.recordKey(checksum), result === 'VALID' ? 1 : 0, String(row.backup_id), checksum)
+      if (fileFingerprint(path) === fingerprint) this.catalog.prepare('UPDATE system_backups SET fingerprint=?, validation_key=?, valid=? WHERE backup_id=? AND checksum=?').run(fingerprint, key, result === 'VALID' ? 1 : 0, String(row.backup_id), checksum)
     } catch { /* 登记失败只影响下次是否重检，内存缓存仍有效。 */ }
     return result === 'VALID'
   }
@@ -98,11 +102,12 @@ export class SystemBackupSqliteStorage implements BackupStorage {
   listBackups(): BackupRecord[] {
     const paths = new Set<string>()
     const records: BackupRecord[] = this.catalog.prepare('SELECT * FROM system_backups ORDER BY created_at, backup_id').all().map(row => {
-      const record: BackupRecord = { backupId: String(row.backup_id), name: String(row.name), checksum: String(row.checksum), createdAt: String(row.created_at), status: 'INVALID', format: 'SYSTEM_SQLITE_V1' }
+      const format = row.format === SCOPED_FORMAT ? SCOPED_FORMAT : LEGACY_FORMAT
+      const record: BackupRecord = { backupId: String(row.backup_id), name: String(row.name), checksum: String(row.checksum), createdAt: String(row.created_at), status: 'INVALID', format }
       try {
         const path = this.file(record.backupId)
         paths.add(path)
-        if (this.listedValid(path, row)) record.status = 'VALID'
+        if (this.listedValid(path, row, format)) record.status = 'VALID'
       } catch { /* 保留损坏或缺失目录记录，不能当成有效备份。 */ }
       return record
     })
@@ -111,8 +116,9 @@ export class SystemBackupSqliteStorage implements BackupStorage {
   }
 
   private capture(): TableSnapshot[] {
-    return [...this.schema].map(([key, sql]) => {
+    return [...this.schema].flatMap(([key, sql]) => {
       const [scope, table] = key.split('.') as [BackupScope, string]
+      if (!SYSTEM_BACKUP_SCOPES.some(included => included === scope)) return []
       const actual = this.db.prepare(`SELECT sql FROM ${scope}.sqlite_master WHERE type='table' AND name=?`).get(table)
       if (actual?.sql !== sql) throw new Error('数据库结构已变化。')
       return { scope, table, sql, rows: this.db.prepare(`SELECT * FROM ${key}`).all() as Record<string, SQLInputValue>[] }
@@ -129,37 +135,41 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     }
   }
 
-  private normalize(tables: TableSnapshot[]): { tables: TableSnapshot[]; legacyFormat: boolean } {
+  private normalize(tables: TableSnapshot[], scopes: readonly BackupScope[], format: SystemBackupFormat): TableSnapshot[] {
     if (!Array.isArray(tables) || new Set(tables.map(row => `${row.scope}.${row.table}`)).size !== tables.length) throw new Error('备份范围不完整。')
-    const optional = new Set<string>(LEGACY_OPTIONAL_EQUIPMENT_TABLES.map(table => `equipment.${table}`))
+    const expected = scopes.flatMap(scope => SYSTEM_TABLES[scope].map(table => `${scope}.${table}`))
+    const allowed = new Set(expected)
+    const optional = new Set<string>(format === LEGACY_FORMAT ? LEGACY_OPTIONAL_EQUIPMENT_TABLES.map(table => `equipment.${table}`) : [])
     const provided = new Set<string>()
     const compatible = tables.map(table => {
       const key = `${table.scope}.${table.table}`
       const sql = this.schema.get(key)
-      if (!sql || !Array.isArray(table.rows)) throw new Error('备份结构不兼容。')
+      if (!allowed.has(key) || !sql || !Array.isArray(table.rows)) throw new Error('备份结构不兼容。')
       provided.add(key)
       if (table.sql === sql) return table
-      if (key !== 'main.users' || table.sql !== sql.replace(', display_name TEXT)', ')')) throw new Error('备份结构不兼容。')
+      const addedColumn = table.scope === 'main' ? legacyBackupColumn(table.table) : undefined
+      if (!addedColumn || table.sql !== sql.replace(`, ${addedColumn} TEXT)`, ')')) throw new Error('备份结构不兼容。')
       // 只转换校验后的内存副本，旧备份文件及其校验和保持原样。
       return { ...table, sql, rows: table.rows.map(row => {
-        if (typeof row !== 'object' || row === null || Array.isArray(row) || Object.hasOwn(row, 'display_name')) throw new Error('备份字段不完整。')
-        return { ...row, display_name: null }
+        if (typeof row !== 'object' || row === null || Array.isArray(row) || Object.hasOwn(row, addedColumn)) throw new Error('备份字段不完整。')
+        return { ...row, [addedColumn]: null }
       }) }
     })
-    const missing = [...this.schema.keys()].filter(key => !provided.has(key))
+    const missing = expected.filter(key => !provided.has(key))
     if (missing.some(key => !optional.has(key))) throw new Error('备份范围不完整。')
     const filled: TableSnapshot[] = missing.map(key => {
       const [scope, table] = key.split('.') as [BackupScope, string]
       return { scope, table, sql: this.schema.get(key)!, rows: [] }
     })
-    return { tables: [...compatible, ...filled], legacyFormat: missing.length > 0 }
+    return [...compatible, ...filled]
   }
 
-  private validate(tables: TableSnapshot[], mode: 'restore' | 'raw' = 'restore'): void {
-    const normalized = this.normalize(tables).tables
+  private validate(tables: TableSnapshot[], mode: 'restore' | 'raw' = 'restore', format: SystemBackupFormat = SCOPED_FORMAT): TableSnapshot[] {
+    const scopes: readonly BackupScope[] = format === SCOPED_FORMAT ? SYSTEM_BACKUP_SCOPES : SYSTEM_SCOPES
+    const normalized = this.normalize(tables, scopes, format)
     const scratch = new DatabaseSync(':memory:')
     try {
-      for (const scope of SYSTEM_SCOPES.filter(scope => scope !== 'main')) scratch.exec(`ATTACH DATABASE ':memory:' AS ${scope}`)
+      for (const scope of scopes) if (scope !== 'main') scratch.exec(`ATTACH DATABASE ':memory:' AS ${scope}`)
       for (const table of normalized) {
         const key = `${table.scope}.${table.table}`
         const sql = this.schema.get(key)
@@ -168,8 +178,9 @@ export class SystemBackupSqliteStorage implements BackupStorage {
         scratch.exec(sql.replace(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?\S+\s*\(/i, `CREATE TABLE ${key} (`))
         this.insertRows(scratch, key, table.rows)
       }
-      if (mode === 'raw') validateSystemSnapshotStructure(scratch)
-      else validateSystemSnapshot(scratch)
+      if (mode === 'raw') validateSystemSnapshotStructure(scratch, scopes)
+      else validateSystemSnapshot(scratch, scopes)
+      return normalized
     } finally { scratch.close() }
   }
 
@@ -190,15 +201,15 @@ export class SystemBackupSqliteStorage implements BackupStorage {
       const snapshot = new DatabaseSync(path)
       try {
         snapshot.exec('CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK(id=1), format TEXT NOT NULL, payload TEXT NOT NULL) STRICT;')
-        snapshot.prepare('INSERT INTO snapshot VALUES (1, ?, ?)').run('SYSTEM_SQLITE_V1', JSON.stringify(tables))
+        snapshot.prepare('INSERT INTO snapshot VALUES (1, ?, ?)').run(SCOPED_FORMAT, JSON.stringify(tables))
       } finally { snapshot.close() }
       const checksum = this.checksum(path)
       this.readSnapshot(path, mode)
       // 原始备份尚未完成业务校验，登记为待校验，在列表完成校验前不能作为恢复来源。
       const validated = mode === 'restore'
-      const record: BackupRecord = { backupId, name, status: validated ? 'VALID' : 'INVALID', checksum, createdAt: this.now().toISOString(), format: 'SYSTEM_SQLITE_V1' }
-      this.catalog.prepare('INSERT INTO system_backups (backup_id, name, checksum, created_at, fingerprint, validation_key, valid) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(backupId, name, checksum, record.createdAt, fileFingerprint(path), validated ? this.recordKey(checksum) : null, validated ? 1 : null)
+      const record: BackupRecord = { backupId, name, status: validated ? 'VALID' : 'INVALID', checksum, createdAt: this.now().toISOString(), format: SCOPED_FORMAT }
+      this.catalog.prepare('INSERT INTO system_backups (backup_id, name, checksum, created_at, fingerprint, validation_key, valid, format) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(backupId, name, checksum, record.createdAt, fileFingerprint(path), validated ? this.recordKey(checksum, SCOPED_FORMAT) : null, validated ? 1 : null, SCOPED_FORMAT)
       return { ok: true, data: record }
     } catch {
       if (created) {
@@ -214,7 +225,7 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     let transaction = false
     let tables: TableSnapshot[]
     try {
-      // 在同一写事务内物化所有业务库快照；耗时校验和文件 I/O 在释放写锁后进行。
+      // 在同一写事务内物化白名单业务库快照；校验和文件 I/O 在释放写锁后进行。
       this.db.exec('BEGIN IMMEDIATE'); transaction = true
       tables = this.capture()
       this.db.exec('ROLLBACK'); transaction = false
@@ -223,17 +234,15 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     return this.writeSnapshot(backupId, name, tables)
   }
 
-  private readSnapshot(path: string, mode: 'restore' | 'raw' = 'restore'): { tables: TableSnapshot[]; legacyFormat: boolean } {
+  private readSnapshot(path: string, mode: 'restore' | 'raw' = 'restore', format: SystemBackupFormat = SCOPED_FORMAT): TableSnapshot[] {
     this.requireRegularFile(path)
     const snapshot = new DatabaseSync(path, { readOnly: true })
     try {
       const integrity = snapshot.prepare('PRAGMA integrity_check').all()
       const rows = snapshot.prepare('SELECT * FROM snapshot').all()
-      if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok' || rows.length !== 1 || rows[0]?.id !== 1 || rows[0]?.format !== 'SYSTEM_SQLITE_V1') throw new Error('备份包不正确。')
+      if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok' || rows.length !== 1 || rows[0]?.id !== 1 || rows[0]?.format !== format) throw new Error('备份包不正确。')
       const raw = JSON.parse(String(rows[0].payload)) as TableSnapshot[]
-      const { tables, legacyFormat } = this.normalize(raw)
-      this.validate(tables, mode)
-      return { tables, legacyFormat }
+      return this.validate(raw, mode, format)
     } finally { snapshot.close() }
   }
 
@@ -249,35 +258,31 @@ export class SystemBackupSqliteStorage implements BackupStorage {
       if (!prebackup.ok) return prebackup
       const result: RestoreResult = { prebackupId: prebackup.data.backupId, integrityValid: false, progress: 0, result: 'FAILURE', rolledBack: false, generated: true }
       let tables: TableSnapshot[]
-      let legacyFormat = false
       try {
         const path = this.file(backupId)
         if (this.checksum(path) !== record.checksum) return { ok: true, data: result }
-        const snapshot = this.readSnapshot(path)
-        tables = snapshot.tables
-        legacyFormat = snapshot.legacyFormat
+        const format = record.format === SCOPED_FORMAT ? SCOPED_FORMAT : LEGACY_FORMAT
+        tables = this.readSnapshot(path, 'restore', format)
         if (this.checksum(path) !== record.checksum) return { ok: true, data: result }
       } catch { return { ok: true, data: result } }
       result.integrityValid = true
+      const scenes = tables.find(table => table.scope === 'main' && table.table === 'scenarios')!.rows
+      const templates = tables.find(table => table.scope === 'main' && table.table === 'scenario_templates')!.rows
+      const conflict = retainedParameterConflict(this.db, scenes, templates)
+      if (conflict) return { ok: false, status: 409, code: 'CONFLICT', fieldPath: 'backupId', message: conflict }
       const environment = this.db.prepare('SELECT environment FROM settings.runtime_config WHERE id=1').get()?.environment
       try {
-        // 历史与引用一起恢复；延迟到提交时检查外键，不在中间删除历史时误判悬空引用。
+        // 保留装备与通用基础数据；延迟到提交时检查备份范围内的外键。
         this.db.exec('PRAGMA defer_foreign_keys=ON')
         for (const table of tables) {
-          if (table.scope === 'main' && table.table === 'audit_logs') continue
+          if (!SYSTEM_BACKUP_SCOPES.some(scope => scope === table.scope) || (table.scope === 'main' && table.table === 'audit_logs')) continue
           const key = `${table.scope}.${table.table}`
           this.db.exec(`DELETE FROM ${key}`)
           this.insertRows(this.db, key, table.rows)
         }
         // 保留当前部署的环境基线，恢复值立即生效且不会在下次同配置启动时被覆盖。
         this.db.prepare('UPDATE settings.runtime_config SET environment=? WHERE id=1').run(environment as string)
-        // 旧格式备份不含来源覆盖记录：恢复后设备统一标为“历史引用待核验”，不伪造为已证实引用。
-        if (legacyFormat) {
-          const now = new Date().toISOString()
-          const insertLegacy = this.db.prepare('INSERT OR IGNORE INTO equipment.equipment_legacy_unverified (equipment_id, marked_at) VALUES (?, ?)')
-          for (const row of this.db.prepare('SELECT id FROM equipment.equipment_parameters').all()) insertLegacy.run(String(row.id), now)
-        }
-        validateSystemSnapshot(this.db)
+        validateSystemSnapshot(this.db, SYSTEM_BACKUP_SCOPES)
         this.db.exec('COMMIT'); transaction = false
         result.result = 'SUCCESS'; result.progress = 100
       } catch { this.db.exec('ROLLBACK'); transaction = false; result.rolledBack = true }
@@ -331,5 +336,20 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     this.timer = setInterval(run, 60_000)
     this.timer.unref()
   }
+  deleteBackup(backupId: string): AdminResult<{ deleted: boolean; objectId: string }> {
+    if (!validId(backupId)) return { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份编号不合法。', fieldPath: 'backupId' }
+    try {
+      const existing = this.catalog.prepare('SELECT 1 FROM system_backups WHERE backup_id=?').get(backupId)
+      if (!existing) return this.legacy.deleteBackup(backupId)
+      this.catalog.prepare('DELETE FROM system_backups WHERE backup_id=?').run(backupId)
+      const path = this.file(backupId)
+      try {
+        const stat = lstatSync(path)
+        if (stat.isFile() && !stat.isSymbolicLink() && realpathSync(path) === resolve(path)) unlinkSync(path)
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+      return { ok: true, data: { deleted: true, objectId: backupId } }
+    } catch { return unavailable() }
+  }
+
   close(): void { if (this.timer) clearInterval(this.timer); this.catalog.close(); this.db.close(); this.legacy.close() }
 }

@@ -147,6 +147,13 @@ export const TEMPLATE_ANTENNA_NAMES = [
   'SAT_GROUND_MOBILE_ANTENNA', 'SAT_SPACE_BEAM_ANTENNA', 'SAT_UAV_CLUSTER_WIDEBAND_ANTENNA', 'LASER_COMM_ANTENNA',
 ] as const satisfies readonly TemplateAntennaName[]
 
+export function templatePortAntennaName(type: TemplatePlatformType, port: string): TemplateAntennaName {
+  if (type === 'MISSION_UAV_PLATFORM' && (port === 'lazer_link' || port === 'laser_link')) return 'LASER_COMM_ANTENNA'
+  if (type === 'MISSION_UAV_PLATFORM') return port === 'sat_link' ? 'SAT_UAV_CLUSTER_WIDEBAND_ANTENNA' : port === 'microwave_link' ? 'OMNI_ANTENNA' : port.startsWith('c_') ? 'C_BAND_DIRECTIONAL_UAV_ANTENNA' : 'L_BAND_DIRECTIONAL_UAV_ANTENNA'
+  if (type === 'COMMAND_VEHICLE_PLATFORM') return port === 'c_band_uplink' ? 'OMNI_ANTENNA' : port.startsWith('c_') ? 'C_BAND_DIRECTIONAL_VEHICLE_ANTENNA' : 'L_BAND_DIRECTIONAL_VEHICLE_ANTENNA'
+  return type === 'REAR_COMM_PLATFORM' && port === 'microwave_link' ? 'OMNI_ANTENNA' : type === 'REAR_COMM_PLATFORM' ? 'SAT_GROUND_MOBILE_ANTENNA' : 'SAT_SPACE_BEAM_ANTENNA'
+}
+
 /** 端口来源只能记录这些原有 LinkParameterSource 字段。 */
 export const TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS = [
   'frequency', 'bandwidth', 'txPower', 'rxFrequency', 'rxBandwidth', 'dataRate', 'noiseFigureDb',
@@ -154,35 +161,41 @@ export const TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS = [
 
 type CompleteDeviceParameters = Required<Pick<DeviceParameters, 'ports' | 'antennaGains'>>
 type DefaultPorts = Record<TemplatePlatformType, Record<string, PortParameters>>
-const port = (txFrequency: number, txBandwidth: number, txPower: number, rxFrequency: number, rxBandwidth: number, transferRate: number, eirpDbw?: number, gtDbk?: number): PortParameters => (
-  { txFrequency, txBandwidth, txPower, rxFrequency, rxBandwidth, transferRate, noiseFigureDb: 3, ...(eirpDbw === undefined ? {} : { eirpDbw, gtDbk }) }
+const port = (
+  txFrequency: number, txBandwidth: number, txPower: number,
+  rxFrequency: number, rxBandwidth: number, transferRate: number,
+  eirpDbw?: number, gtDbk?: number, noiseFigureDb = 3,
+): PortParameters => (
+  { txFrequency, txBandwidth, txPower, rxFrequency, rxBandwidth, transferRate, noiseFigureDb, ...(eirpDbw === undefined ? {} : { eirpDbw, gtDbk }) }
 )
 
-/** 新模板中的设备定义；速率单位在生成器按端口分别输出，领域值统一为 Mbps。 */
+/** 与 1112 模板 port_params 一致的默认端口参数；速率单位在生成器按端口分别输出，领域值统一为 Mbps。 */
 const DEFAULT_PORTS: DefaultPorts = {
   MISSION_UAV_PLATFORM: {
-    sat_link: port(14200, 20, 20, 11800, 20, 16, 5, -14),
-    microwave_link: port(8200, 20, 20, 8200, 20, 80, 30, -3),
-    c_band_uplink: port(4500, 10, 20, 4500, 10, 2, 26, -6),
-    c_band_downlink: port(4000, 20, 30, 4000, 20, 8, 26, -6),
-    l_band_uplink: port(1500, 5, 10, 1500, 5, 0.0128, 26, -6),
-    l_band_downlink: port(1300, 10, 15, 1300, 10, 4, 26, -6),
+    sat_link: port(30000, 20, 50, 20000, 20, 2, 5, -14),
+    microwave_link: port(8200, 50, 20, 8200, 50, 80, 30, -3),
+    c_band_uplink: port(2300, 10, 20, 2300, 10, 2, 26, -6),
+    c_band_downlink: port(2300, 20, 30, 2300, 20, 8, 26, -6),
+    l_band_uplink: port(2300, 5, 10, 2300, 5, 0.0128, 26, -6),
+    l_band_downlink: port(2300, 10, 15, 2300, 10, 4, 26, -6),
+    // 1112 模板 lazer_link 缺省参数集：681300 GHz / 1000 MHz / 0.1 W / 2500 Mbps，EIRP 20、G/T 15、噪声 5。
+    lazer_link: port(681300000, 1000, 0.1, 681300000, 1000, 2500, 20, 15, 5),
   },
   COMMAND_VEHICLE_PLATFORM: {
-    c_band_uplink: port(4500, 10, 20, 4500, 10, 2, 26, -6),
-    c_band_downlink: port(4000, 20, 30, 4000, 20, 8, 26, -6),
-    l_band_uplink: port(1500, 5, 10, 1500, 5, 0.0128, 26, -6),
-    l_band_downlink: port(1300, 10, 15, 1300, 10, 2, 26, -6),
+    c_band_uplink: port(2300, 10, 20, 2300, 10, 2, 26, -6),
+    c_band_downlink: port(2300, 20, 30, 2300, 20, 8, 26, -6),
+    l_band_uplink: port(2300, 5, 10, 2300, 5, 0.0128, 26, -6),
+    l_band_downlink: port(2300, 10, 15, 2300, 10, 4, 26, -6),
     fiber_link: port(0.001, 0.001, 0.001, 0.001, 0.001, 1000),
   },
   REAR_COMM_PLATFORM: {
-    sat_link_a: port(14200, 54, 20, 11800, 54, 16, 5, -14),
-    sat_link_b: port(14200, 54, 20, 11800, 54, 16, 5, -14),
+    sat_link_a: port(30000, 54, 100, 20000, 54, 2, 5, -14),
+    sat_link_b: port(30000, 54, 100, 20000, 54, 2, 5, -14),
     microwave_link: port(8200, 50, 20, 8200, 50, 80, 30, -3),
     fiber_link: port(0.001, 0.001, 0.001, 0.001, 0.001, 1000),
   },
-  TIAN_TONG_SAT: { sat_link: port(11800, 54, 40, 14200, 54, 0.016, 5, -14) },
-  SHEN_TONG_SAT: { sat_link: port(11800, 54, 40, 14200, 54, 16, 5, -14) },
+  TIAN_TONG_SAT: { sat_link: port(20000, 54, 40, 30000, 54, 0.016, 5, -14, 2) },
+  SHEN_TONG_SAT: { sat_link: port(20000, 54, 40, 30000, 54, 2, 5, -14) },
 }
 
 const DEFAULT_ANTENNA_GAINS: Record<TemplateAntennaName, number> = {
@@ -252,9 +265,8 @@ function endpoints(config: Pick<ScenarioConfig, 'platforms'>, link: Pick<Link, '
   return [config.platforms.find(item => item.id === link.sourcePlatformId), config.platforms.find(item => item.id === link.targetPlatformId)]
 }
 
-/** 按新模板固定端口命名解析一条链路；激光链路不建立链路端口映射，故明确返回警告。 */
+/** 按新模板固定端口命名解析一条链路；激光链路只支持任务/中继无人机之间的 lazer_link 映射。 */
 export function resolveTemplateLinkPorts(config: Pick<ScenarioConfig, 'platforms'>, link: Pick<Link, 'type' | 'band' | 'direction' | 'sourcePlatformId' | 'targetPlatformId'>): TemplateLinkPortResolution {
-  if (link.type === 'LASER') return { status: 'WARNING', message: '激光链路不建立通信端口映射；涉及任务/中继无人机时保留模板 lazer_link 端口定义。' }
   const [sourcePlatform, targetPlatform] = endpoints(config, link)
   const sourceType = sourcePlatform && templatePlatformType(sourcePlatform)
   const targetType = targetPlatform && templatePlatformType(targetPlatform)
@@ -262,22 +274,34 @@ export function resolveTemplateLinkPorts(config: Pick<ScenarioConfig, 'platforms
   const pair = (sourcePort: string, targetPort: string): TemplateLinkPortResolution => ({
     status: 'MAPPED', source: { platformType: sourceType, portName: sourcePort }, target: { platformType: targetType, portName: targetPort },
   })
+  if (link.type === 'LASER') {
+    return sourceType === 'MISSION_UAV_PLATFORM' && targetType === 'MISSION_UAV_PLATFORM'
+      ? pair('lazer_link', 'lazer_link')
+      : { status: 'WARNING', message: '激光链路仅支持任务/中继无人机之间；当前端点不生成 lazer_link。' }
+  }
   if (link.type === 'FIBER') {
     return sourceType === 'COMMAND_VEHICLE_PLATFORM' && targetType === 'REAR_COMM_PLATFORM'
       ? pair('fiber_link', 'fiber_link') : sourceType === 'REAR_COMM_PLATFORM' && targetType === 'COMMAND_VEHICLE_PLATFORM'
         ? pair('fiber_link', 'fiber_link') : { status: 'ERROR', message: '光纤链路仅支持地面无人集群指挥车与后方指挥节点之间。' }
   }
   if (link.type === 'MICROWAVE') {
-    return sourceType === 'MISSION_UAV_PLATFORM' && targetType === 'REAR_COMM_PLATFORM'
-      ? pair('microwave_link', 'microwave_link') : sourceType === 'REAR_COMM_PLATFORM' && targetType === 'MISSION_UAV_PLATFORM'
-        ? pair('microwave_link', 'microwave_link') : { status: 'ERROR', message: '微波链路仅支持任务/中继无人机与后方指挥节点之间。' }
+    const sourceIsUav = sourceType === 'MISSION_UAV_PLATFORM'
+    const targetIsUav = targetType === 'MISSION_UAV_PLATFORM'
+    const uavPair = sourceIsUav && targetIsUav
+    const rearPair = (sourceIsUav && targetType === 'REAR_COMM_PLATFORM')
+      || (sourceType === 'REAR_COMM_PLATFORM' && targetIsUav)
+    return uavPair || rearPair
+      ? pair('microwave_link', 'microwave_link')
+      : { status: 'ERROR', message: '微波链路仅支持任务/中继无人机之间或与后方指挥节点之间。' }
   }
   if (link.type === 'DATALINK') {
     const sourceIsUav = sourceType === 'MISSION_UAV_PLATFORM'
     const targetIsUav = targetType === 'MISSION_UAV_PLATFORM'
     const sourceIsCommand = sourceType === 'COMMAND_VEHICLE_PLATFORM'
     const targetIsCommand = targetType === 'COMMAND_VEHICLE_PLATFORM'
-    if (!((sourceIsUav && targetIsCommand) || (sourceIsCommand && targetIsUav))) return { status: 'ERROR', message: '数传链路仅支持任务/中继无人机与地面无人集群指挥车之间。' }
+    if (!((sourceIsUav && targetIsCommand) || (sourceIsCommand && targetIsUav) || (sourceIsUav && targetIsUav))) {
+      return { status: 'ERROR', message: '数传链路仅支持任务/中继无人机之间或与地面无人集群指挥车之间。' }
+    }
     const band = link.band ?? 'C'
     const forward = link.direction !== 'REVERSE'
     const portName = `${band.toLowerCase()}_band_${forward ? 'uplink' : 'downlink'}`

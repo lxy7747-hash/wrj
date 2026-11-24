@@ -3,7 +3,7 @@ import fixtureSource from '../../frontend-technical-design-v1/contracts/determin
 import type { ScenarioConfig } from '../../src/contracts/domain-models'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import { LINK_CALC_DEFAULTS } from '../../src/features/scenarios/link-calc-defaults'
-import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
+import { dropRetiredScenarioFields, inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
 import { dbmToWatts, isControlledPowerDbm, wattsToDbm } from '../../src/features/scenarios/jammer-settings'
 import { createTemplateScenario } from '../fixtures/template-scenario'
 
@@ -88,7 +88,10 @@ describe('新增场景参数的写入边界', () => {
     const { longitude, latitude, altitude, speed } = platform.waypoints[0]!
     const point = { longitude, latitude, altitude, speed }
     platform.waypoints[0]!.speed = 0.5
-    platform.loiterWaypoints = [{ ...point, speed: 0.5 }, { ...point, longitude: point.longitude + 0.01, speed: 0.5 }]
+    platform.loiterWaypoints = [
+      { ...point, longitude: point.longitude + 0.01, speed: 0.5 },
+      { ...point, longitude: point.longitude + 0.02, speed: 0.5 },
+    ]
     platform.returnPlan = { timeS: 600, waypoints: [{ ...point, speed: 0.5 }] }
 
     const expectedErrors = [
@@ -168,6 +171,15 @@ describe('新增场景参数的写入边界', () => {
     }
   })
 
+  it('紧急、告警、质量三档误码率阈值须满足 紧急 >= 告警 >= 质量', () => {
+    const config = configuration()
+    Object.assign(config.linkSettings!, { linkCalc: { ...LINK_CALC_DEFAULTS, emergencyThreshold: 1e-6, warningThreshold: 1e-5, valueThresholdBer: 2e-5 } })
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'LINK_CALC_THRESHOLD_INVALID', fieldPath: 'linkSettings.linkCalc.warningThreshold', message: '告警阈值不能高于紧急阈值。' }),
+      expect.objectContaining({ code: 'LINK_CALC_THRESHOLD_INVALID', fieldPath: 'linkSettings.linkCalc.valueThresholdBer', message: '质量阈值不能高于告警阈值。' }),
+    ]))
+  })
+
   it('卫星方向速率与质量切换门限分别校验边界和相互关系', () => {
     const config = configuration()
     config.links[0]!.type = 'SAT'
@@ -183,14 +195,13 @@ describe('新增场景参数的写入边界', () => {
     ]))
   })
 
-  it('热链结构、终点类型及有序引用分别定位，不修改已保存的链路', () => {
+  it('热链结构及有序引用分别定位，不修改已保存的链路', () => {
     const config = configuration()
     const originalLinks = structuredClone(config.links)
-    const valid = { forward: [] as string[][], reverse: [] as string[][], endPlatformType: 'REAR_COMMAND_NODE' }
+    const valid = { forward: [] as string[][], reverse: [] as string[][] }
     for (const [hotLinks, code, fieldPath] of [
       [null, 'HOT_LINKS_INVALID', 'linkSettings.hotLinks'],
       [{ ...valid, extra: true }, 'HOT_LINKS_INVALID', 'linkSettings.hotLinks'],
-      [{ ...valid, endPlatformType: 'FORWARD_RELAY_NODE' }, 'HOT_LINK_END_TYPE_INVALID', 'linkSettings.hotLinks.endPlatformType'],
       [{ ...valid, forward: 'invalid' }, 'HOT_LINKS_INVALID', 'linkSettings.hotLinks.forward'],
       [{ ...valid, reverse: [[5]] }, 'HOT_LINKS_INVALID', 'linkSettings.hotLinks.reverse'],
       [{ ...valid, forward: [[]] }, 'HOT_LINK_CHAIN_INVALID', 'linkSettings.hotLinks.forward[0]'],
@@ -203,22 +214,30 @@ describe('新增场景参数的写入边界', () => {
       expect(config.links).toEqual(originalLinks)
     }
   })
+
+  it('旧场景残留的 hotLinks.endPlatformType 在读取/保存前被丢弃', () => {
+    const config = configuration()
+    ;(config.linkSettings as unknown as { hotLinks: unknown }).hotLinks = { forward: [], reverse: [], endPlatformType: 'REAR_COMMAND_NODE' }
+    dropRetiredScenarioFields(config)
+    expect((config.linkSettings as unknown as { hotLinks: unknown }).hotLinks).toEqual({ forward: [], reverse: [] })
+    expect(inspectScenarioConfig(config, 'write').result.errors.filter(item => item.code === 'HOT_LINKS_INVALID')).toEqual([])
+  })
 })
 
 
 describe('V1.2 干扰功率、带宽及瞄准频率', () => {
-  it.each([-15, 35, 12])('%s dBm 写入被拒绝，定位功率字段且不修改原值', dbm => {
+  it.each([-15, 70, 12])('%s dBm 写入被拒绝，定位功率字段且不修改原值', dbm => {
     const config = createTemplateScenario().config
     config.jammers[0]!.defaultPower = dbmToWatts(dbm)
     const before = structuredClone(config)
     expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([
       expect.objectContaining({ code: 'JAMMER_POWER_OUT_OF_RANGE', fieldPath: 'jammers[0].defaultPower',
-        message: '干扰功率须为 -10～30 dBm，且按 5 dB 档位设置。' }),
+        message: '干扰功率须为 -10～65 dBm，且按 5 dB 档位设置。' }),
     ])
     expect(config).toEqual(before)
   })
 
-  it.each([-10, -5, 0, 5, 10, 15, 20, 25, 30])('%s dBm 档位换算成 W 后可写入', dbm => {
+  it.each([-10, -5, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65])('%s dBm 档位换算成 W 后可写入', dbm => {
     const config = createTemplateScenario().config
     config.jammers[0]!.defaultPower = dbmToWatts(dbm)
     expect(wattsToDbm(config.jammers[0]!.defaultPower)).toBeCloseTo(dbm, 6)
@@ -230,26 +249,26 @@ describe('V1.2 干扰功率、带宽及瞄准频率', () => {
     for (const value of [-10 - 2e-6, 5 + 2e-6, 30 + 2e-6, NaN, Infinity, '5', null]) expect(isControlledPowerDbm(value)).toBe(false)
   })
 
-  it('旧场景可读取 100 W 和非档位带宽，写入才拒绝', () => {
+  it('旧场景可读取超上限功率并支持自定义正数带宽，写入时仅拒绝超限功率和非法带宽', () => {
     const config = createTemplateScenario().config
-    Object.assign(config.jammers[0]!, { defaultPower: 100, bandwidth: 50 })
+    Object.assign(config.jammers[0]!, { defaultPower: 10_000, bandwidth: 50 })
     expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
     expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.code)).toEqual([
-      'JAMMER_POWER_OUT_OF_RANGE', 'JAMMER_BANDWIDTH_OUT_OF_RANGE',
+      'JAMMER_POWER_OUT_OF_RANGE',
     ])
   })
 
   it.each([
-    ['BARRAGE', 50, false], ['BARRAGE', 100, true], ['BARRAGE', 200, true], ['BARRAGE', 400, true],
-    ['SPOT', 20, false], ['SPOT', 5, true], ['SWEEP', 50, true],
+    ['BARRAGE', 0, false], ['BARRAGE', 1, true], ['BARRAGE', 50, true], ['BARRAGE', 200, true],
+    ['SPOT', -1, false], ['SPOT', 1, true], ['SPOT', 5, true], ['SWEEP', 50, true],
   ] as const)('%s 带宽 %s MHz 的写入边界', (type, bandwidth, valid) => {
     const config = createTemplateScenario().config
     Object.assign(config.jammers[0]!, { type, bandwidth })
     const result = inspectScenarioConfig(config, 'write').result
     expect(result.valid).toBe(valid)
-    expect(result.errors).toEqual(valid ? [] : [expect.objectContaining({ code: 'JAMMER_BANDWIDTH_OUT_OF_RANGE', fieldPath: 'jammers[0].bandwidth',
-      message: type === 'BARRAGE' ? '宽带压制干扰带宽须为 100、200 或 400 MHz。' : '瞄准式干扰带宽须为 5 MHz。' })])
-    expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
+    expect(result.errors).toEqual(valid ? [] : [expect.objectContaining({ code: 'JAMMER_BANDWIDTH_INVALID', fieldPath: 'jammers[0].bandwidth',
+      message: '干扰带宽必须大于 0 MHz。' })])
+    expect(inspectScenarioConfig(config, 'read').result.errors).toEqual(result.errors)
   })
 
   it('瞄准频率未匹配只警告，匹配启用的非激光链路后消失', () => {

@@ -75,7 +75,9 @@ export function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
   const keys = Object.keys(data)
   const config = dropRetiredScenarioFields(structuredClone(draft.config))
   const uiExtensions = dropRetiredUiExtensionFields(structuredClone(draft.uiExtensions))
-  if (keys.length !== 5 || !keys.every((key) => ['config', 'uiExtensions', 'revision', 'officialLibraryChanged', 'locked'].includes(key))) return undefined
+  const hasCreatedAt = Object.hasOwn(data, 'createdAt')
+  if (keys.length !== (hasCreatedAt ? 6 : 5) || !keys.every((key) => ['config', 'uiExtensions', 'revision', 'officialLibraryChanged', 'locked', 'createdAt'].includes(key))) return undefined
+  if (hasCreatedAt && (typeof draft.createdAt !== 'string' || !Number.isFinite(Date.parse(draft.createdAt)))) return undefined
   if (!Number.isInteger(draft.revision) || (draft.revision ?? -1) < 0 || draft.officialLibraryChanged !== false || typeof draft.locked !== 'boolean') return undefined
   if (typeof uiExtensions !== 'object' || uiExtensions === null || !Array.isArray(uiExtensions.jammers) || !Array.isArray(uiExtensions.sensors)) return undefined
   restoreRequiredMotionFields(config, uiExtensions)
@@ -337,27 +339,54 @@ export const useScenarioStore = defineStore('scenario', {
       }
     },
     async deleteScene(scene: ScenarioDraft): Promise<boolean> {
-      if (scene.locked || !useAuthStore().authorize('SCENARIO_DRAFT_WRITE').allowed) return false
-      const epoch = this.requestEpoch
-      this.listState = 'EXECUTING'
-      try {
-        const id = scene.config.scenario.id
-        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}?expectedRevision=${scene.revision}`, {
-          method: 'DELETE', headers: { 'X-Demo-Role': useAuthStore().role },
-        })
-        const payload = await readJson(response)
-        if (epoch !== this.requestEpoch) return false
-        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
-        if (readDeleteResult(payload)?.objectId !== id) throw new InvalidScenarioResponseError()
-        if (this.draft?.config.scenario.id === id) this.resetToSafeEmpty()
-        await this.loadScenes()
-        return true
-      } catch (error) {
-        if (epoch !== this.requestEpoch) return false
+      if (scene.locked) return false
+      const result = await this.deleteScenes([scene])
+      if (result?.failures.length) {
         this.listState = 'ERROR'
-        this.listMessage = readApiFailure(error)?.error.message ?? '场景删除失败，请刷新后重试。'
-        return false
+        this.listMessage = result.failures[0]!.message
       }
+      return result?.deleted === 1
+    },
+
+    async deleteScenes(scenes: readonly ScenarioDraft[]): Promise<{ deleted: number; failures: { name: string; message: string }[] } | undefined> {
+      const auth = useAuthStore()
+      if (!scenes.length || this.listState === 'EXECUTING' || !auth.authorize('SCENARIO_DRAFT_WRITE').allowed) return undefined
+      const epoch = this.requestEpoch
+      const targets = new Map(scenes.map(scene => [scene.config.scenario.id, scene]))
+      const deletedIds = new Set<string>()
+      const failures: { name: string; message: string }[] = []
+      this.listEpoch += 1
+      this.listState = 'EXECUTING'
+      this.listMessage = ''
+      for (const [id, scene] of targets) {
+        if (epoch !== this.requestEpoch) return undefined
+        const name = scene.config.scenario.name
+        if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed) {
+          failures.push({ name, message: '当前账号没有删除场景的权限。' })
+          continue
+        }
+        if (scene.locked) {
+          failures.push({ name, message: '场景运行中，无法删除。' })
+          continue
+        }
+        try {
+          const url = `${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}?expectedRevision=${scene.revision}`
+          const response = await apiFetch(url, { method: 'DELETE', headers: { 'X-Demo-Role': auth.role } })
+          const payload = await readJson(response)
+          if (epoch !== this.requestEpoch) return undefined
+          if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
+          if (readDeleteResult(payload)?.objectId !== id) throw new InvalidScenarioResponseError()
+          deletedIds.add(id)
+        } catch (error) {
+          if (epoch !== this.requestEpoch) return undefined
+          failures.push({ name, message: readApiFailure(error)?.error.message ?? '场景删除失败，请刷新后重试。' })
+        }
+      }
+      if (this.draft && deletedIds.has(this.draft.config.scenario.id)) this.resetToSafeEmpty()
+      const refreshEpoch = this.requestEpoch
+      await this.loadScenes()
+      if (refreshEpoch !== this.requestEpoch) return undefined
+      return { deleted: deletedIds.size, failures }
     },
     /** 复制只创建待保存草稿，生成新身份；不会改写来源场景或模板。 */
     prepareSceneCopy(config: ScenarioConfig, extensions: ScenarioDraft['uiExtensions'], name: string): boolean {
@@ -434,7 +463,9 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateResultCode = error instanceof InvalidScenarioResponseError
         ? 'INVALID_RESPONSE'
         : apiFailure?.error.code ?? 'NETWORK_ERROR'
-      this.templateResultMessage = apiFailure?.error.message ?? (error instanceof Error ? error.message : fallback)
+      const message = apiFailure?.error.message ?? (error instanceof Error ? error.message : fallback)
+      const field = apiFailure?.error.fieldPath
+      this.templateResultMessage = field ? `${message}（字段 ${field}）` : message
     },
 
     /**
@@ -937,35 +968,51 @@ export const useScenarioStore = defineStore('scenario', {
       if (!parsed.valid) {
         this.templateState = 'ERROR'
         this.templateResultCode = 'JSON_SYNTAX_ERROR'
-        this.templateResultMessage = `模板 JSON ${parsed.issue.message}`
+        this.templateResultMessage = parsed.issue.message
         return false
       }
       const value = parsed.value
-      if (typeof value !== 'object' || value === null || Array.isArray(value)
-        || !Object.keys(value).every(key => ['name', 'config', 'uiExtensions'].includes(key)) || !Object.hasOwn(value, 'name') || !Object.hasOwn(value, 'config')
-        || typeof (value as { name?: unknown }).name !== 'string') {
+      const record = typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? value as Record<string, unknown> : null
+      const unknownField = record ? Object.keys(record).find(key => !['name', 'config', 'uiExtensions'].includes(key)) : undefined
+      let issue = ''
+      if (!record) issue = '模板 JSON 的顶层必须是对象。'
+      else if (typeof record.name !== 'string' || !record.name.trim()) issue = '模板名称（name）必须为非空字符串。'
+      else if (typeof record.config !== 'object' || record.config === null || Array.isArray(record.config)) issue = '场景配置（config）必须为对象。'
+      else if (unknownField !== undefined) issue = `模板 JSON 含有未知字段“${unknownField}”。`
+
+      if (issue) {
         this.templateState = 'ERROR'
         this.templateResultCode = 'VALIDATION_FAILED'
-        this.templateResultMessage = '模板 JSON 必须包含 name、config，可选 uiExtensions，不允许其他字段。'
+        this.templateResultMessage = issue
         return false
       }
+
       const request = value as { name: string; config: ScenarioConfig; uiExtensions?: ScenarioDraft['uiExtensions'] }
-      return this.createTemplate(request.name, request.config, request.uiExtensions)
+      const originalName = request.name.trim()
+      const existingNames = new Set(this.templates.map(template => template.name))
+      let name = originalName
+      for (let copy = 1; existingNames.has(name); copy++) {
+        name = `${originalName} 副本${copy === 1 ? '' : ` ${copy}`}`
+      }
+      return this.createTemplate(name, request.config, request.uiExtensions)
     },
 
     /**
-     * 使用当前场景草稿更新指定官方模板。
+     * 使用所选场景或当前草稿更新指定官方模板。
      * @param templateId 模板编号。
      * @param name 模板名称。
+     * @param source 指定场景的配置与界面扩展，省略时使用当前草稿。
      * @returns 更新成功时返回 `true`。
      * @sideEffects 成功时原位替换模板并递增服务端版本。
      */
-    async updateTemplate(templateId: string, name: string): Promise<boolean> {
+    async updateTemplate(templateId: string, name: string, source?: Pick<ScenarioDraft, 'config' | 'uiExtensions'>): Promise<boolean> {
       const auth = useAuthStore()
-      if (!auth.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed || this.draft === null) {
+      const scene = source ?? this.draft
+      if (!auth.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed || scene === null) {
         this.templateState = 'ERROR'
-        this.templateResultCode = this.draft === null ? 'EMPTY' : 'PERMISSION_DENIED'
-        this.templateResultMessage = this.draft === null ? '请先加载场景草稿。' : '当前账号不能维护场景模板库。'
+        this.templateResultCode = scene === null ? 'EMPTY' : 'PERMISSION_DENIED'
+        this.templateResultMessage = scene === null ? '请先加载场景草稿。' : '当前账号不能维护场景模板库。'
         return false
       }
       const requestEpoch = this.requestEpoch
@@ -975,7 +1022,7 @@ export const useScenarioStore = defineStore('scenario', {
         const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
-          body: JSON.stringify({ name, config: this.draft.config, uiExtensions: this.draft.uiExtensions }),
+          body: JSON.stringify({ name, config: scene.config, uiExtensions: scene.uiExtensions }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.templateState = 'VALIDATING'
@@ -1314,6 +1361,9 @@ export const useScenarioStore = defineStore('scenario', {
         this.scriptState = 'ERROR'
         this.scriptResultCode = error instanceof InvalidScenarioResponseError ? 'INVALID_RESPONSE' : failure?.error.code ?? 'NETWORK_ERROR'
         this.scriptResultMessage = failure?.error.message ?? (error instanceof Error ? error.message : '脚本预览生成失败。')
+        if (failure?.error.code === 'VALIDATION_FAILED' && failure.error.fieldPath !== undefined) {
+          this.showError(failure, '脚本预览生成失败。')
+        }
         return false
       }
     },

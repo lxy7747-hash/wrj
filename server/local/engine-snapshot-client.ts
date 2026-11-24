@@ -1,4 +1,6 @@
 import { createWebSocketStream, WebSocket } from 'ws'
+import type { Socket } from 'node:net'
+import { isMissionWebSocketPeer } from './mission-process-inspection.js'
 import type { EngineConnectionDiagnostic, EngineControlAction, EngineControlState, EngineFrameSnapshot, EnginePathNode, EngineRoute, SimulationRun } from '../../src/contracts/domain-models.js'
 import { adaptEngineFrameSnapshot, ENGINE_FRAME_ID_STEP } from '../../src/features/data-exchange/engine-frame-snapshot.js'
 import { canSendEngineControl } from '../../src/features/situation/engine-control.js'
@@ -37,19 +39,22 @@ function frameBinder(manifest: unknown): (frame: EngineFrameSnapshot) => void {
   const names = engineNameMap(manifest)
   const id = (name: string | null) => name === null ? null : toScenarioId(names, name)
   const segments = new Map<string, string[]>()
+  const directFallback = new Map<string, string[]>()
   const key = (source: unknown, sourcePort: unknown, target: unknown, targetPort: unknown) => JSON.stringify([source, sourcePort, target, targetPort])
   const devices = manifest && typeof manifest === 'object' && 'devices' in manifest && Array.isArray(manifest.devices) ? manifest.devices : []
   for (const device of devices) {
     if (!device || typeof device.linkId !== 'string' || !device.source || !device.target) continue
-    const add = (source: string, sourcePort: string, target: string, targetPort: string) => {
+    const add = (bucket: Map<string, string[]>, source: string, sourcePort: string, target: string, targetPort: string) => {
       if (![source, sourcePort, target, targetPort].every(value => typeof value === 'string' && value.length)) return
       const identity = key(id(source), sourcePort, id(target), targetPort)
-      segments.set(identity, [...new Set([...(segments.get(identity) ?? []), device.linkId])])
+      bucket.set(identity, [...new Set([...(bucket.get(identity) ?? []), device.linkId])])
     }
     if (device.relayPlatformId && device.relayDeviceId) {
-      add(device.source.platformId, device.source.deviceId, device.relayPlatformId, device.relayDeviceId)
-      add(device.relayPlatformId, device.relayDeviceId, device.target.platformId, device.target.deviceId)
-    } else add(device.source.platformId, device.source.deviceId, device.target.platformId, device.target.deviceId)
+      add(segments, device.source.platformId, device.source.deviceId, device.relayPlatformId, device.relayDeviceId)
+      add(segments, device.relayPlatformId, device.relayDeviceId, device.target.platformId, device.target.deviceId)
+      // 引擎在直连模式下可能绕过配置中继，此时兜底按端到端端口绑定原链路 ID
+      add(directFallback, device.source.platformId, device.source.deviceId, device.target.platformId, device.target.deviceId)
+    } else add(segments, device.source.platformId, device.source.deviceId, device.target.platformId, device.target.deviceId)
   }
   const bindNodes = (nodes: EnginePathNode[]) => nodes.forEach(node => { node.platformId = id(node.platformName) })
   const bindRoute = (route: EngineRoute) => {
@@ -58,7 +63,8 @@ function frameBinder(manifest: unknown): (frame: EngineFrameSnapshot) => void {
   return frame => {
     for (const link of frame.links) {
       link.sourcePlatformId = id(link.sourceName); link.targetPlatformId = id(link.targetName)
-      link.linkIds = [...(segments.get(key(link.sourcePlatformId, link.sourcePort, link.targetPlatformId, link.targetPort)) ?? [])]
+      const identity = key(link.sourcePlatformId, link.sourcePort, link.targetPlatformId, link.targetPort)
+      link.linkIds = [...(segments.get(identity) ?? directFallback.get(identity) ?? [])]
       for (const jammer of link.inputTrace.jammers) jammer.platformId = id(jammer.jammerName)
     }
     for (const jammer of frame.jammers) {
@@ -82,6 +88,9 @@ function frameBinder(manifest: unknown): (frame: EngineFrameSnapshot) => void {
 export class EngineSnapshotClient {
   private owner: Pick<SimulationRun, 'runId' | 'taskId'> | undefined
   private socket: WebSocket | undefined
+  private localMissionPid: number | undefined
+  private localControlSocket: WebSocket | undefined
+  private hasVerifiedLocalPeer = false
   private incoming: ReturnType<typeof createWebSocketStream> | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
   private generation = 0
@@ -97,11 +106,12 @@ export class EngineSnapshotClient {
 
   constructor(private readonly url: string, private readonly publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void | Promise<void>,
     private readonly report: (message: string) => void = message => console.warn(message),
-    private readonly diagnose: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void = () => {}) {}
+    private readonly diagnose: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void = () => {},
+    private readonly verifyMissionPeer = isMissionWebSocketPeer) {}
 
-  start(run: Pick<SimulationRun, 'runId' | 'taskId'>, manifest: unknown): boolean {
+  start(run: Pick<SimulationRun, 'runId' | 'taskId'>, manifest: unknown, localMissionPid?: number): boolean {
     if (this.owner) {
-      if (this.owner.runId === run.runId && this.owner.taskId === run.taskId) return true
+      if (this.owner.runId === run.runId && this.owner.taskId === run.taskId && this.localMissionPid === localMissionPid) return true
       this.report('引擎链路推送只支持单任务运行')
       return false
     }
@@ -115,6 +125,7 @@ export class EngineSnapshotClient {
       return false
     }
     this.owner = { runId: run.runId, taskId: run.taskId }
+    this.localMissionPid = localMissionPid
     this.control = { action: null, delivery: 'IDLE' }
     this.lastFrameId = -1; this.engineEpoch = 0; this.initRouting = null; this.retry = 0
     this.routeHistory.clear()
@@ -132,8 +143,19 @@ export class EngineSnapshotClient {
       let firstFrame = true
       // shortcut: 当前插件两包连续发送，只缓存同连接的一帧；若跨帧交错发送，再扩为有界多帧缓存。
       let pending: { frameId: number; input: Record<string, unknown> } | undefined
-      socket.on('open', () => {
-        if (!current()) return
+      let peer: Socket | undefined
+      if (localMissionPid !== undefined) socket.once('upgrade', response => { peer = response.socket })
+      socket.on('open', async () => {
+        let owned = false
+        if (peer && localMissionPid !== undefined) {
+          try { owned = await this.verifyMissionPeer(peer, localMissionPid) }
+          catch { /* 无法确认对端时仍可接收数据。 */ }
+        }
+        if (!current() || this.socket !== socket || socket.readyState !== WebSocket.OPEN) return
+        if (owned) {
+          this.localControlSocket = socket
+          this.hasVerifiedLocalPeer = true
+        }
         this.diagnostics.connected = true
         this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTED', message: '已连接上游引擎 WebSocket。' })
       })
@@ -224,6 +246,7 @@ export class EngineSnapshotClient {
         if (!current()) return
         this.cancelControl?.()
         if (this.control.action) this.control.delivery = 'UNKNOWN'
+        this.localControlSocket = undefined
         this.socket = undefined; this.diagnostics.connected = false
         this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'DISCONNECTED', message: '上游引擎 WebSocket 已断开，正在按退避策略重连。' })
       })
@@ -243,8 +266,10 @@ export class EngineSnapshotClient {
   }
 
   controlState(runId: string): EngineControlState | undefined {
-    if (this.owner?.runId !== runId) return undefined
-    return { connected: this.socket?.readyState === WebSocket.OPEN, ...this.control }
+    const localMission = this.localMissionPid !== undefined
+    if (this.owner?.runId !== runId || (localMission && !this.hasVerifiedLocalPeer)) return undefined
+    const connected = this.socket?.readyState === WebSocket.OPEN && (!localMission || this.socket === this.localControlSocket)
+    return { connected, ...this.control }
   }
 
   async sendControl(runId: string, action: EngineControlAction): Promise<void> {
@@ -312,6 +337,7 @@ export class EngineSnapshotClient {
     const socket = this.socket
     this.incoming?.destroy(); this.incoming = undefined
     this.socket = undefined; this.owner = undefined; this.diagnostics.connected = false
+    this.localMissionPid = undefined; this.localControlSocket = undefined; this.hasVerifiedLocalPeer = false
     this.lastFrameId = -1; this.engineEpoch = 0; this.initRouting = null
     this.routeHistory.clear()
     if (socket) {

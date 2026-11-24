@@ -345,13 +345,18 @@ it.each(['platforms', 'speed'])('D1 兼容不放过真正的 %s 错误，拒绝�
 })
 
 
-it('旧主库备份缺少显示名列时可校验恢复，账号密码和备份字节不变', async () => {
-  const { auth, backups, db } = setup()
+it('主库备份保留场景创建时间，旧备份缺少显示名或创建时间列仍可恢复', async () => {
+  const { auth, backups, db, scenes } = setup()
   const before = db.prepare('SELECT user_id,username,role,status,password_salt,password_hash FROM users').all()
+  const createdAt = '2026-11-17T06:30:45.123Z'
+  db.prepare('UPDATE scenarios SET created_at=?').run(createdAt)
   expect(backups.backup('LEGACY-NAMES').ok).toBe(true)
+  db.exec('UPDATE scenarios SET created_at=NULL')
+  expect(backups.restore('LEGACY-NAMES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+  expect(scenes.load()?.createdAt).toBe(createdAt)
   const file = join(backups.directory, 'LEGACY-NAMES.db')
   const old = new DatabaseSync(file)
-  old.exec('ALTER TABLE users DROP COLUMN display_name')
+  old.exec('ALTER TABLE users DROP COLUMN display_name; ALTER TABLE scenarios DROP COLUMN created_at')
   old.close()
   const bytes = readFileSync(file)
   const catalog = new DatabaseSync(join(backups.directory, 'catalog.db'))
@@ -361,6 +366,7 @@ it('旧主库备份缺少显示名列时可校验恢复，账号密码和备份�
   expect(backups.restore('LEGACY-NAMES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
   expect(db.prepare('SELECT user_id,username,role,status,password_salt,password_hash FROM users').all()).toEqual(before)
   expect(auth.list()[0]!.displayName).toBe('admin')
+  expect(scenes.load()).not.toHaveProperty('createdAt')
   expect(await auth.verify('admin', password)).toBe(true)
   expect(readFileSync(file)).toEqual(bytes)
 })

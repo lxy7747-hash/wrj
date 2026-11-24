@@ -1,7 +1,7 @@
 // B1-1：管理页 JSON 模板真实导入联合链（组件 → scenarioStore.importTemplate → createTemplate → 真实 HTTP → TemplateSqliteStorage）。
 // 真实服务在隔离 tsx 子进程中启动（真实 createMockServer + 真实 TemplateSqliteStorage），组件测试只转发 URL/Origin。
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
+import ElementPlus, { ElMessage } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory } from 'vue-router'
@@ -96,6 +96,16 @@ function forwardFetch(): void {
   }))
 }
 
+/** 模拟在隐藏的文件输入框里选择一个 JSON 模板文件（jsdom 的 File 可能没有 arrayBuffer，这里补上）。 */
+async function importJsonFile(wrapper: { get(selector: string): { element: Element; trigger(event: string): Promise<void> } }, payload: unknown): Promise<void> {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload))
+  const file = new File([bytes], 'template.json', { type: 'application/json' })
+  Object.defineProperty(file, 'arrayBuffer', { value: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) })
+  const input = wrapper.get('[data-testid="template-import-file"]')
+  Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+  await input.trigger('change')
+}
+
 describe('B1-1 管理页 JSON 模板真实导入', () => {
   it('B1-1a 真实导入成功：两条来源冻结、TEMPLATE 引用与审计 SUCCESS 身份一致', async () => {
     const config = await templateConfig()
@@ -103,11 +113,9 @@ describe('B1-1 管理页 JSON 模板真实导入', () => {
     const { wrapper, scenario } = await mountAdmin()
     await vi.waitFor(() => expect(['SUCCESS', 'ERROR', 'EMPTY']).toContain(scenario.templateState), { timeout: 10_000 })
     const successSpy = vi.spyOn(ElMessage, 'success')
-    const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValueOnce({ value: JSON.stringify({ name: '导入联合模板', config }) } as never)
-    await wrapper.get('[data-testid="import-template"]').trigger('click')
-    await vi.waitFor(() => expect(promptSpy).toHaveBeenCalled())
-    await vi.waitFor(() => expect(scenario.templateState).toBe('SUCCESS'))
-    expect(successSpy).toHaveBeenCalled()
+    await importJsonFile(wrapper, { name: '导入联合模板', config })
+    await vi.waitFor(() => expect(successSpy).toHaveBeenCalled(), { timeout: 10_000 })
+    expect(scenario.templateState).toBe('SUCCESS')
     const state = await harnessState()
     expect(state.templates).toHaveLength(1)
     const saved = state.templates[0]!
@@ -137,10 +145,8 @@ describe('B1-1 管理页 JSON 模板真实导入', () => {
     const { wrapper, scenario } = await mountAdmin()
     await vi.waitFor(() => expect(['SUCCESS', 'ERROR', 'EMPTY']).toContain(scenario.templateState), { timeout: 10_000 })
     const successSpy = vi.spyOn(ElMessage, 'success')
-    const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValueOnce({ value: JSON.stringify({ name: '导入失败模板', config }) } as never)
-    await wrapper.get('[data-testid="import-template"]').trigger('click')
-    await vi.waitFor(() => expect(promptSpy).toHaveBeenCalled())
-    await vi.waitFor(() => expect(scenario.templateState).toBe('ERROR'))
+    await importJsonFile(wrapper, { name: '导入失败模板', config })
+    await vi.waitFor(() => expect(scenario.templateState).toBe('ERROR'), { timeout: 10_000 })
     expect(successSpy).not.toHaveBeenCalled()
     const failed = await harnessState()
     // 无半模板；引用回到失败前集合且 createdAt 保留
@@ -154,10 +160,9 @@ describe('B1-1 管理页 JSON 模板真实导入', () => {
     expect(delta[0]).toMatchObject({ actor: 'admin', role: 'ADMIN', action: 'TEMPLATE_CREATE', objectId: failed.previewTemplateId, result: 'ERROR' })
     expect(delta.some(row => row.result === 'SUCCESS')).toBe(false)
     // 撤掉注入重试：成功，模板与 2 条引用完整，恰好 1 条 SUCCESS
-    const retryPrompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValueOnce({ value: JSON.stringify({ name: '导入失败模板', config }) } as never)
-    await wrapper.get('[data-testid="import-template"]').trigger('click')
-    await vi.waitFor(() => expect(retryPrompt).toHaveBeenCalled())
-    await vi.waitFor(() => expect(scenario.templateState).toBe('SUCCESS'))
+    await importJsonFile(wrapper, { name: '导入失败模板', config })
+    await vi.waitFor(() => expect(successSpy).toHaveBeenCalled(), { timeout: 10_000 })
+    expect(scenario.templateState).toBe('SUCCESS')
     const retried = await harnessState()
     expect(retried.templates.filter(row => row.name === '导入失败模板')).toHaveLength(1)
     const created = retried.templates.find(row => row.name === '导入失败模板')!

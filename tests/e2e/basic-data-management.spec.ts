@@ -151,7 +151,7 @@ test('GNZB-28 基础数据管理在双视口分别维护设备、体制、字典
     await expect(rateVariants).toContainText('频率必须为有限正数，未配置请留空。')
     await expect(rateVariants).toContainText('发射带宽必须为有限正数，未配置请留空。')
     await expect(rateVariants).toContainText('发射功率不能超过 100 W。')
-    await expect(rateVariants).toContainText('BER 阈值必须在 0～1 之间。')
+    await expect(rateVariants).toContainText('误码率阈值必须在 0～1 之间。')
     await expect(rateVariants.getByTestId('equipment-save')).toBeDisabled()
     await rateVariants.getByTestId('equipment-frequency-min').locator('input').fill('2')
     await expect(rateVariants).toContainText('频率上限不得小于下限。')

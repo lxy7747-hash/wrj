@@ -6,7 +6,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Principal } from '../../src/contracts/domain-models'
 
 vi.mock('../../src/components/situation/OfflineSituationMap.vue', () => ({
-  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'fileLinks', 'fileDeviceEvents', 'fileTime', 'filePlaying', 'fileSpeed', 'fileSeekRevision', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
+  default: {
+    name: 'OfflineSituationMap',
+    props: [
+      'sourceKey', 'frame', 'engineFrame', 'engineSourceLabel', 'positionReplay',
+      'initialNodes', 'configuredLinks', 'focusLinks', 'configuredLinkStatuses',
+      'configuredLinkSwitches', 'configuredJammers', 'configuredEnvironment',
+      'liveMessageFlows', 'liveFlowPlaying', 'liveFlowKey',
+      'fileLinks', 'fileMessageLinks', 'fileDeviceEvents', 'fileTime',
+      'filePlaying', 'fileSpeed', 'fileSeekRevision', 'links',
+      'selectedNodeId', 'focusTarget',
+    ],
+    emits: ['select-node', 'select-configured-link', 'fullscreen-change'],
+    template: '<div data-testid="offline-map-stub" />',
+  },
 }))
 
 import ReplaysPage from '../../src/pages/replays/replays.vue'
@@ -40,6 +53,168 @@ async function mountPage(component: typeof ReplaysPage, path: string) {
 }
 
 describe('P6 历史回放页面', () => {
+  it('运行结果含场景配置与历史引擎帧时，按态势主界面一致渲染配置链路、状态、切换、环境与平滑轨迹', async () => {
+    const resultSnapshot = structuredClone(ENGINE_RESULT)
+    resultSnapshot.replay.durationS = 10
+    resultSnapshot.replay.initial.platformDeletions = [{ sourceEventId: 'DEL-1', time: 10, platformId: 'B' }]
+    resultSnapshot.replay.initial.messageLinks = [{
+      id: 'MSG-A-B',
+      type: 'MICROWAVE',
+      sourcePlatformId: 'A',
+      targetPlatformId: 'B',
+      sourceDeviceId: 'microwave_link',
+      targetDeviceId: 'microwave_link',
+      records: [{
+        sourceEventId: 'RX-1',
+        transmitEventId: 'TX-1',
+        time: 5,
+        source: { platformName: 'A', communicationName: 'microwave_link' },
+        target: { platformName: 'B', communicationName: 'microwave_link' },
+        messageType: 'kForwardSituation',
+        messageSizeBits: 1024,
+        delayS: 0.01,
+      }],
+      firstTimeS: 5,
+      lastTimeS: 5,
+      activeIntervals: [{ startTimeS: 5, endTimeS: 5 }],
+      messageCount: 1,
+      messageTypes: ['kForwardSituation'],
+      direction: 'FORWARD',
+      medianDelayS: 0.01,
+    }]
+    const scenarioDetail = {
+      revision: 1,
+      config: {
+        scenario: {
+          id: 'SCN-HISTORY',
+          name: '历史场景',
+          startTime: '2026-11-10T00:00:00Z',
+          duration: 60,
+          environment: { rainEnabled: true, rainRateMmPerHour: 12 },
+        },
+        platforms: [
+          {
+            id: 'A', name: '前出中继 1 号', type: 'FORWARD_RELAY_NODE', side: 'BLUE',
+            initialPosition: { longitude: -77, latitude: 30, altitude: 5000 },
+          },
+          {
+            id: 'B', name: '集群指挥车', type: 'GROUND_CLUSTER_COMMAND_NODE', side: 'BLUE',
+            initialPosition: { longitude: 117, latitude: 25, altitude: 0 },
+          },
+        ],
+        links: [
+          {
+            id: 'LNK-MW-1', type: 'MICROWAVE', sourcePlatformId: 'A', targetPlatformId: 'B',
+            enabled: true,
+          },
+          {
+            id: 'LNK-DL-2', type: 'DATALINK', sourcePlatformId: 'A', targetPlatformId: 'B',
+            enabled: true,
+          },
+        ],
+        jammers: [
+          { id: 'JAM-1', platformId: 'B', jammingRange: 30_000, detectionRange: 48_520 },
+        ],
+      },
+    }
+
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/api/v1/scenarios/')) return success(scenarioDetail)
+      if (url.endsWith('/mission-results')) return success([resultSnapshot.record])
+      if (!url.includes('/engine-replay?')) return success(resultSnapshot)
+      const time = Number(new URL(url).searchParams.get('time'))
+      const history = engineReplayAt(time)
+      if (history.engineFrame) {
+        const sample = history.engineFrame.links[0]!
+        history.engineFrame.links = [
+          {
+            ...structuredClone(sample),
+            linkId: 'LNK-MW-1',
+            linkIds: ['LNK-MW-1'],
+            sourcePlatformId: 'A',
+            targetPlatformId: 'B',
+            sourcePort: 'microwave_link',
+            targetPort: 'microwave_link',
+            status: time >= 10 ? 'DOWN' : 'DEGRADED',
+            distanceM: 12000,
+            error: null,
+          },
+          {
+            ...structuredClone(sample),
+            linkId: 'LNK-DL-2',
+            linkIds: ['LNK-DL-2'],
+            sourcePlatformId: 'A',
+            targetPlatformId: 'B',
+            sourcePort: 'c_band_uplink',
+            targetPort: 'c_band_uplink',
+            status: 'UP',
+            distanceM: 12000,
+            error: null,
+          },
+        ]
+        if (time >= 10) {
+          const sampleSwitch = history.engineFrame.routing.switches[0]!
+          const route = {
+            ...structuredClone(sampleSwitch),
+            pathId: 'PATH-1',
+            oldNodes: [
+              { platformId: 'A', platformName: 'A', outPort: 'microwave_link', inPort: null },
+              { platformId: 'B', platformName: 'B', outPort: null, inPort: 'microwave_link' },
+            ],
+            nodes: [
+              { platformId: 'A', platformName: 'A', outPort: 'c_band_uplink', inPort: null },
+              { platformId: 'B', platformName: 'B', outPort: null, inPort: 'c_band_uplink' },
+            ],
+          }
+          history.engineFrame.routing.switches = [route]
+          history.engineSwitches = [{ frameId: 10, simulationTime: 10, route }]
+        }
+      }
+      return success(history)
+    }))
+
+    const { wrapper } = await mountPage(ReplaysPage, `/replays?resultId=${ENGINE_RESULT_ID}`)
+    try {
+      const store = useReplayStore()
+      const map = wrapper.getComponent({ name: 'OfflineSituationMap' })
+
+      // t=0 首帧前：与态势主界面一致，配置链路为空、不绘制文件灰线、透传气象与干扰配置
+      expect(map.props('configuredLinks')).toEqual([])
+      expect(map.props('configuredEnvironment')).toEqual({ rainEnabled: true, rainRateMmPerHour: 12 })
+      expect(map.props('configuredJammers')).toEqual([{ id: 'JAM-1', platformId: 'B', jammingRange: 30_000, detectionRange: 48_520 }])
+      expect(map.props('fileLinks')).toEqual([])
+      expect(map.props('fileMessageLinks')).toEqual([])
+      expect(map.props('initialNodes')[0]).toMatchObject({ platformId: 'A', name: '前出中继 1 号', type: 'FORWARD_RELAY_NODE', side: 'blue' })
+      expect(wrapper.text()).not.toContain('图中通信关联不代表链路已接通')
+
+      // t=2 中间时刻：按相邻轨迹点平滑插值（-78 到 -79 的中点 -78.5）
+      await store.seek(2); await flushPromises()
+      expect(map.props('initialNodes')[0].longitude).toBeCloseTo(-78.5, 5)
+
+      // t=5 到达引擎帧：配置链路、劣化/正常状态与流向车道同步到地图
+      await store.seek(5); await flushPromises()
+      expect(map.props('configuredLinks').map((l: { id: string }) => l.id)).toEqual(['LNK-MW-1', 'LNK-DL-2'])
+      expect(map.props('configuredLinkStatuses').get('LNK-MW-1')).toBe('DEGRADED')
+      expect(map.props('configuredLinkStatuses').get('LNK-DL-2')).toBe('UP')
+      expect(map.props('liveMessageFlows')).toHaveLength(1)
+
+      // t=10 链路中断 + 切换高亮 + 平台删除不回退初始坐标
+      await store.seek(10); await flushPromises()
+      expect(map.props('configuredLinkStatuses').get('LNK-MW-1')).toBe('DOWN')
+      expect(map.props('configuredLinkSwitches').get('LNK-MW-1')).toBe('BEFORE')
+      expect(map.props('configuredLinkSwitches').get('LNK-DL-2')).toBe('AFTER')
+      expect(map.props('initialNodes').map((n: { platformId: string }) => n.platformId)).toEqual(['A'])
+
+      // 点击地图上的配置链路弹出链路质量详情弹窗
+      map.vm.$emit('select-configured-link', scenarioDetail.config.links[0])
+      await flushPromises()
+      const dialog = wrapper.getComponent({ name: 'LinkQualityDialog' })
+      expect(dialog.props('modelValue')).toBe(true)
+      expect(dialog.props('configuredLink')).toMatchObject({ id: 'LNK-MW-1', enabled: true })
+      expect(dialog.props('engineSegments')).toHaveLength(1)
+    } finally { wrapper.unmount() }
+  })
+
   it('历史干扰与探测随游标显示，回退到空帧时不残留后续设备状态', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (!url.includes('/engine-replay?')) return success(url.endsWith('/mission-results') ? [ENGINE_RESULT.record] : ENGINE_RESULT)
@@ -81,7 +256,7 @@ describe('P6 历史回放页面', () => {
       expect(wrapper.get('[data-testid="engine-decisions"]').text()).not.toContain('历史链路告警')
       await store.seek(0); await flushPromises()
       expect(wrapper.find('[data-testid="engine-quality"]').exists()).toBe(false)
-      expect(fetchSpy.mock.calls.every(([url]) => url.includes('/mission-results'))).toBe(true)
+      expect(fetchSpy.mock.calls.every(([url]) => url.includes('/mission-results') || url.includes('/scenarios/'))).toBe(true)
     } finally { wrapper.unmount() }
   })
   afterEach(() => {

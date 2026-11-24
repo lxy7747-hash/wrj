@@ -1,7 +1,7 @@
 import type { LinkParameterField, LinkParameterSource } from '../../contracts/domain-models'
 
 const FIELDS = [
-  'frequency', 'bandwidth', 'txPower', 'dataRate', 'modulation', 'berThreshold', 'coding',
+  'frequency', 'bandwidth', 'txPower', 'dataRate', 'modulation', 'berThreshold',
   'rxFrequency', 'rxBandwidth', 'antennaGain.tx', 'antennaGain.rx', 'antennaGainCorrectionDb',
   'noiseFigureDb', 'txPolarization', 'rxPolarization',
 ] as const satisfies readonly LinkParameterField[]

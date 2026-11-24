@@ -61,9 +61,11 @@ watch([() => props.modelValue, () => props.duration, () => props.disabled], () =
       </el-form-item>
       <el-form-item :error="existingFieldMessage(index, 'startTimeS')">
         <el-input-number :model-value="phase.startTimeS" :controls="false" :aria-label="`阶段${index + 1}开始秒数`" :disabled="disabled" @update:model-value="update(index, 'startTimeS', $event)" />
+        <small :class="{ 'phase-hint--hidden': !!existingFieldMessage(index, 'startTimeS') }" class="phase-hint">范围 0～{{ duration }} 秒；结束须晚于开始。</small>
       </el-form-item>
       <el-form-item :error="existingFieldMessage(index, 'endTimeS')">
         <el-input-number :model-value="phase.endTimeS" :controls="false" :aria-label="`阶段${index + 1}结束秒数`" :disabled="disabled" @update:model-value="update(index, 'endTimeS', $event)" />
+        <small :class="{ 'phase-hint--hidden': !!existingFieldMessage(index, 'endTimeS') }" class="phase-hint">范围 0～{{ duration }} 秒；须晚于开始时刻。</small>
       </el-form-item>
       <el-button :disabled="disabled" @click="emit('update:modelValue', phases.filter((_, position) => position !== index))">移除</el-button>
     </div>
@@ -81,9 +83,11 @@ watch([() => props.modelValue, () => props.duration, () => props.disabled], () =
           </el-form-item>
           <el-form-item required label="开始时刻（秒）" :error="addingFieldMessage('startTimeS')">
             <el-input-number v-model="adding.startTimeS" controls-position="right" data-testid="new-phase-start" />
+            <small :class="{ 'phase-hint--hidden': !!addingFieldMessage('startTimeS') }" class="phase-hint">范围 0～{{ duration }} 秒；结束须晚于开始。</small>
           </el-form-item>
           <el-form-item required label="结束时刻（秒）" :error="addingFieldMessage('endTimeS')">
             <el-input-number v-model="adding.endTimeS" controls-position="right" data-testid="new-phase-end" />
+            <small :class="{ 'phase-hint--hidden': !!addingFieldMessage('endTimeS') }" class="phase-hint">范围 0～{{ duration }} 秒；须晚于开始时刻。</small>
           </el-form-item>
         </div>
       </el-form>
@@ -104,6 +108,9 @@ watch([() => props.modelValue, () => props.duration, () => props.disabled], () =
 .phase-row :deep(.el-input__wrapper) { padding-inline: 6px; }
 .phase-row :deep(.el-input-number .el-input__wrapper) { padding-inline: 4px; }
 .phase-error { color: var(--el-color-danger); }
+.phase-hint--hidden { visibility: hidden; }
+:deep(.el-form-item.is-error:has(.phase-hint--hidden) .el-form-item__error) { transform: translateY(-1.4em); }
+.phase-hint { display: block; margin-top: 2px; color: var(--console-text-muted); font-size: 11px; line-height: 1.4; }
 .phase-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .phase-form-grid :deep(.el-input-number) { width: 100%; }
 @media (max-width: 540px) { .phase-form-grid { grid-template-columns: 1fr; } }

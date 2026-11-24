@@ -13,7 +13,7 @@ export const MENU_LABELS: Record<string, string> = {
   '/admin?section=audit-logs': '操作审计日志', '/admin?section=master-data': '基础数据管理（通用基础数据）', '/admin?section=database-backup': '备份恢复',
   '/admin?section=simulation-data': '仿真数据管理', '/admin?section=runtime-status': '系统运行状态',
 }
-export const OPERATOR_PERMISSION_KEYS: Permission[] = ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE', 'SIMULATION_CONTROL', 'ORDINARY_REPORT_EXPORT']
+export const OPERATOR_PERMISSION_KEYS: Permission[] = ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE', 'SIMULATION_CONTROL', 'ORDINARY_REPORT_EXPORT', 'OFFICIAL_TEMPLATE_MAINTAIN']
 export function validMenuPaths(value: unknown, allowEmpty = false): value is string[] {
   return Array.isArray(value) && (allowEmpty || value.length > 0) && value.every(path => typeof path === 'string' && Object.hasOwn(MENU_LABELS, path)) && new Set(value).size === value.length
 }
@@ -24,7 +24,7 @@ export function isRoleProfile(value: unknown, mode: 'read' | 'write' = 'write'):
     || !Array.isArray(value.permissions) || !value.permissions.every(p => typeof p === 'string' && Object.hasOwn(PERMISSION_LABELS, p))
     || new Set(value.permissions).size !== value.permissions.length || !value.permissions.includes('BUSINESS_READ') || !validMenuPaths(value.menuPaths, mode === 'read')) return false
   if (value.baseRole === 'OPERATOR') return value.permissions.every(p => OPERATOR_PERMISSION_KEYS.includes(p))
-    && value.menuPaths.every(path => !path.startsWith('/admin') || path === '/admin/data-exchange')
+    && value.menuPaths.every(path => !path.startsWith('/admin') || path === '/admin/data-exchange' || path === '/admin?section=scenario-templates')
   // 管理员配置保留账号治理入口，防止角色编辑造成全系统管理员失联。
   return value.permissions.includes('USER_ROLE_MAINTAIN') && value.menuPaths.includes('/admin')
 }

@@ -30,7 +30,7 @@ const ber = (value: number | null) => value === null ? '暂无数据' : formatBe
     <h3>候选排序与约束</h3>
     <div class="runtime-decision-panel__table" tabindex="0" aria-label="可横向滚动的候选链路排序表">
       <table>
-        <thead><tr><th>方向</th><th>链路</th><th>体制</th><th>顺位</th><th>GXB（dB）</th><th>BER</th><th>接收干扰（dBm）</th><th>判断</th></tr></thead>
+        <thead><tr><th>方向</th><th>链路</th><th>体制</th><th>顺位</th><th>GXB（dB）</th><th>误码率</th><th>接收干扰（dBm）</th><th>判断</th></tr></thead>
         <tbody>
           <tr v-for="item in candidates" :key="`${item.routeKey}:${item.linkId}`" :data-link-id="item.linkId">
             <td>{{ direction(item.direction) }}</td><td>{{ item.linkId }}</td><td>{{ LINK_TYPE_LABELS[item.type] }}</td><td>{{ item.rank }}</td>
@@ -45,7 +45,7 @@ const ber = (value: number | null) => value === null ? '暂无数据' : formatBe
       <strong>{{ direction(item.direction) }} · {{ item.selectedLinkId ?? '无可用链路' }}</strong>
       <span>帧 {{ item.frameId }} · {{ formatSimulationTime(item.simulationTime) }}</span>
       <span>{{ runtimeDecisionReason(item.reason) }}</span>
-      <span>GXB {{ metric(item.gxbDb, ' dB') }} · BER {{ ber(item.ber) }}</span>
+      <span>GXB {{ metric(item.gxbDb, ' dB') }} · 误码率 {{ ber(item.ber) }}</span>
     </article>
     <h3>决策变更记录（本机）</h3>
     <ol class="runtime-decision-panel__history">

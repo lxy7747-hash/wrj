@@ -103,7 +103,7 @@ describe('deterministic fixture contract', () => {
     const config = structuredClone((fixtures as DeterministicFixtureSet).scenario)
     expect(validate(config)).toBe(true)
     config.linkSettings = readLinkSettings(config)
-    Object.assign(config.links[0]!, { enabled: false, antennaGainCorrectionDb: -2, coding: null, antiJammingGainDb: 1, spatialIsolationDb: 2, relayPlatformId: null })
+    Object.assign(config.links[0]!, { enabled: false, antennaGainCorrectionDb: -2, antiJammingGainDb: 1, spatialIsolationDb: 2, relayPlatformId: null })
     expect(validate(config), JSON.stringify(validate.errors)).toBe(true)
     for (const enabled of ['false', null, 0]) {
       config.links[0]!.enabled = enabled as never
@@ -116,9 +116,6 @@ describe('deterministic fixture contract', () => {
     config.linkSettings.priority[0] = config.linkSettings.priority[1]!
     expect(validate(config)).toBe(false)
     config.linkSettings.priority = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER']
-    config.links[0]!.coding = 'bad\ncode'
-    expect(validate(config)).toBe(false)
-    config.links[0]!.coding = 'UNCODED'
     config.links[0]!.spatialIsolationDb = -1
     expect(validate(config)).toBe(false)
   })

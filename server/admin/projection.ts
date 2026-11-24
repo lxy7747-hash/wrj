@@ -61,6 +61,7 @@ export interface BackupStorage {
   listBackups(): BackupRecord[]
   backup(backupId?: string, name?: string): AdminResult<BackupRecord>
   restore(backupId: string): AdminResult<RestoreResult>
+  deleteBackup?(backupId: string): AdminResult<DeleteResult>
   planStatus?(): BackupPlanStatus
   savePlan?(plan: BackupPlan): AdminResult<BackupPlanStatus>
 }
@@ -434,6 +435,15 @@ export class AdminProjection {
     const rolledBack = integrityValid && record.backupId === 'BACKUP-ROLLBACK-001'
     return { ok: true, data: { prebackupId: 'PREBACKUP-002', integrityValid, progress: integrityValid ? 100 : 0,
       result: integrityValid && !rolledBack ? 'SUCCESS' : 'FAILURE', rolledBack, generated: false } }
+  }
+
+  /** 删除指定备份记录及对应的受控备份文件。 */
+  deleteBackup(backupId: string): AdminResult<DeleteResult> {
+    if (this.backupStorage?.deleteBackup) return this.backupStorage.deleteBackup(backupId)
+    const index = this.backups.findIndex((item) => item.backupId === backupId)
+    if (index < 0) return { ok: false, code: 'NOT_FOUND', status: 404, message: '备份记录不存在。', fieldPath: 'backupId' }
+    this.backups.splice(index, 1)
+    return { ok: true, data: { deleted: true, objectId: backupId } }
   }
 
   /** 重置本阶段内存变更，恢复权威夹具。 */

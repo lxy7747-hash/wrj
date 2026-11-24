@@ -1,11 +1,11 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import type { CapabilityState, ConfirmationContext, ScenarioTemplate } from '../../contracts/domain-models'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   canMaintain: boolean
   allowApply?: boolean
   pending: boolean
-  draftAvailable: boolean
   draftLocked: boolean
   templates: ScenarioTemplate[]
   state: CapabilityState
@@ -19,6 +19,7 @@ withDefaults(defineProps<{
 const emit = defineEmits<{
   create: []
   import: []
+  refresh: []
   load: [templateId: string]
   copy: [template: ScenarioTemplate]
   duplicate: [template: ScenarioTemplate]
@@ -26,6 +27,14 @@ const emit = defineEmits<{
   export: [template: ScenarioTemplate]
   delete: [templateId: string]
 }>()
+
+const keyword = ref('')
+const query = computed(() => keyword.value.trim().toLowerCase())
+const visibleTemplates = computed(() => {
+  if (!props.canMaintain || !query.value) return props.templates
+  return props.templates.filter(template =>
+    template.name.toLowerCase().includes(query.value) || template.templateId.toLowerCase().includes(query.value))
+})
 
 const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
   CLOSED: '已完成',
@@ -38,21 +47,21 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
 </script>
 
 <template>
-  <section class="console-panel scenario-section" aria-labelledby="scenario-template-title" data-testid="template-library">
+  <section class="console-panel scenario-section" :aria-labelledby="canMaintain ? undefined : 'scenario-template-title'" data-testid="template-library">
     <div class="section-heading">
-<!--      <div>-->
-<!--        <p class="section-kicker">模板与版本</p>-->
-<!--        <h3 id="scenario-template-title">场景模板库</h3>-->
-<!--      </div>-->
-      <div class="platform-counts" aria-label="模板库权限和数量">
-        <el-tag :type="canMaintain ? 'success' : 'info'">{{ canMaintain ? '管理员维护' : '场景配置使用' }}</el-tag>
+      <div v-if="canMaintain" class="template-search-row">
+        <el-input v-model="keyword" clearable placeholder="搜索模板名称或编号" aria-label="搜索模板名称或编号" data-testid="template-search" />
+        <span role="status" class="template-count">{{ query ? `${visibleTemplates.length} / ${templates.length} 个模板` : `共 ${templates.length} 个模板` }}</span>
+      </div>
+      <div v-else id="scenario-template-title" class="platform-counts" aria-label="模板库权限和数量">
+        <el-tag type="info">场景配置使用</el-tag>
         <el-tag>模板 {{ templates.length }}</el-tag>
       </div>
-    </div>
-
-    <div v-if="canMaintain" class="platform-actions">
-      <el-button type="primary" :disabled="pending || !draftAvailable" data-testid="create-template" @click="emit('create')">新建模板</el-button>
-      <el-button :disabled="pending" data-testid="import-template" @click="emit('import')">导入 JSON</el-button>
+      <div v-if="canMaintain" class="platform-actions">
+        <el-button :disabled="pending" data-testid="refresh-templates" @click="emit('refresh')">刷新</el-button>
+        <el-button :disabled="pending" data-testid="import-template" @click="emit('import')">导入 JSON</el-button>
+        <el-button type="primary" :disabled="pending" data-testid="create-template" @click="emit('create')">新建模板</el-button>
+      </div>
     </div>
 
     <el-alert
@@ -64,13 +73,13 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
       show-icon
       data-testid="template-feedback"
     />
-    <div v-if="state === 'LOADING'" class="console-placeholder" aria-live="polite">正在加载场景模板…</div>
+    <div v-if="state === 'LOADING' && (!canMaintain || !templates.length)" class="console-placeholder" aria-live="polite">正在加载场景模板…</div>
     <el-empty v-else-if="templates.length === 0 && state !== 'ERROR'" description="模板库暂无数据" />
-    <el-table v-else :data="templates" stripe data-testid="template-table">
-      <el-table-column prop="templateId" label="模板 ID" min-width="130" />
+    <el-table v-else :data="visibleTemplates" :aria-busy="pending" row-key="templateId" empty-text="没有匹配的模板" stripe data-testid="template-table">
+      <el-table-column v-if="!canMaintain" prop="templateId" label="模板 ID" min-width="130" />
       <el-table-column prop="name" label="模板名称" min-width="220" show-overflow-tooltip />
       <el-table-column prop="version" label="版本" width="80" />
-      <el-table-column label="类型" width="90"><template #default>场景模板</template></el-table-column>
+      <el-table-column v-if="!canMaintain" label="类型" width="90"><template #default>场景模板</template></el-table-column>
       <el-table-column prop="referenceCount" label="历史引用" width="90" />
       <el-table-column label="操作" fixed="right" :width="canMaintain ? 310 : 210">
         <template #default="{ row }">
@@ -78,9 +87,12 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
           <el-button v-if="allowApply" link type="primary" :disabled="pending || draftLocked" :data-testid="`copy-template-${row.templateId}`" @click="emit('copy', row)">应用到当前场景</el-button>
           <template v-if="canMaintain">
             <el-button link type="primary" :disabled="pending" :data-testid="`duplicate-template-${row.templateId}`" @click="emit('duplicate', row)">复制</el-button>
-            <el-button link type="primary" :disabled="pending || !draftAvailable" :data-testid="`update-template-${row.templateId}`" @click="emit('update', row)">更新</el-button>
+            <el-button link type="primary" :disabled="pending" :data-testid="`update-template-${row.templateId}`" @click="emit('update', row)">更新</el-button>
             <el-button link type="primary" :disabled="pending" :data-testid="`export-template-${row.templateId}`" @click="emit('export', row)">导出</el-button>
-            <el-popconfirm title="确认删除该场景模板？" confirm-button-text="删除" cancel-button-text="取消" @confirm="emit('delete', row.templateId)">
+            <el-tooltip v-if="row.referenceCount > 0" content="已有历史引用，无法删除" placement="top">
+              <span class="template-delete"><el-button link type="danger" disabled :data-testid="`delete-template-${row.templateId}`">删除</el-button></span>
+            </el-tooltip>
+            <el-popconfirm v-else title="确认删除该场景模板？" confirm-button-text="删除" cancel-button-text="取消" @confirm="emit('delete', row.templateId)">
               <template #reference><el-button link type="danger" :disabled="pending" :data-testid="`delete-template-${row.templateId}`">删除</el-button></template>
             </el-popconfirm>
           </template>
@@ -124,25 +136,37 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
   border-bottom: 1px solid var(--console-border);
 }
 
-.section-heading h3,
-.section-kicker {
-  margin: 0;
-}
-
-.section-kicker {
-  margin-bottom: 0.25rem;
-  color: var(--console-cyan);
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
+.section-heading,
 .platform-counts,
-.platform-actions {
+.platform-actions,
+.template-search-row {
   flex-wrap: wrap;
 }
 
-.platform-actions,
+.platform-actions :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.template-count {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.template-search-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.template-search-row .el-input {
+  width: min(100%, 290px);
+}
+
+.template-delete {
+  display: inline-block;
+  margin-left: 12px;
+}
+
 .template-detail {
   margin-top: 1rem;
 }

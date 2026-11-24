@@ -1505,6 +1505,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "minimum": 0,
             "maximum": 9007199254740991
           },
+          "detailDeferred": {
+            "type": "boolean"
+          },
           "aggregate": {
             "type": "object",
             "additionalProperties": false,
@@ -1531,6 +1534,67 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "averageConnectedDurationS": {
+                "type": "number",
+                "minimum": 0
+              },
+              "jammingDurationS": {
+                "type": "number",
+                "minimum": 0
+              },
+              "switchCountTrend": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "time",
+                    "value"
+                  ],
+                  "properties": {
+                    "time": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "value": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "breakBefore": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              "jammingDurationTrend": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "time",
+                    "value"
+                  ],
+                  "properties": {
+                    "time": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "value": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "breakBefore": {
+                      "type": "boolean"
+                    }
+                  }
+                }
               },
               "missing": {
                 "type": "array",
@@ -1623,6 +1687,32 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                   "minLength": 1
                 }
               }
+            }
+          }
+        }
+      },
+      "qualityJammingDurationTrend": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 5000,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "time",
+            "value"
+          ],
+          "properties": {
+            "time": {
+              "type": "number",
+              "minimum": 0
+            },
+            "value": {
+              "type": "number",
+              "minimum": 0
+            },
+            "breakBefore": {
+              "type": "boolean"
             }
           }
         }
@@ -3186,7 +3276,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "dataRate",
       "modulation",
       "berThreshold",
-      "coding",
       "rxFrequency",
       "rxBandwidth",
       "antennaGain.tx",
@@ -3333,6 +3422,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
               "laser"
             ]
           }
+        },
+        "then": {
+          "not": {
+            "required": [
+              "inheritPortParameters"
+            ]
+          }
         }
       },
       {
@@ -3381,16 +3477,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "boolean",
         "default": true
       },
+      "inheritPortParameters": {
+        "type": "boolean",
+        "const": true,
+        "description": "为 true 时从平台端口读取收发参数，并保留原有链路字段；仅适用于非激光链路。"
+      },
       "antennaGainCorrectionDb": {
         "type": "number",
         "default": 0
-      },
-      "coding": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$"
       },
       "antiJammingGainDb": {
         "type": "number",
@@ -3877,97 +3971,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     ]
   },
-  "LinkSwitchRule": {
-    "allOf": [
-      {
-        "if": {
-          "required": [
-            "trigger"
-          ],
-          "properties": {
-            "trigger": {
-              "enum": [
-                "DISTANCE_ABOVE",
-                "DISTANCE_BELOW"
-              ]
-            }
-          }
-        },
-        "then": {
-          "required": [
-            "distanceThresholdM"
-          ],
-          "not": {
-            "required": [
-              "jammerId"
-            ]
-          }
-        },
-        "else": {
-          "required": [
-            "jammerId"
-          ],
-          "not": {
-            "required": [
-              "distanceThresholdM"
-            ]
-          }
-        }
-      }
-    ],
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "id",
-      "trigger",
-      "sourcePlatformId",
-      "targetPlatformId",
-      "toLinkId"
-    ],
-    "properties": {
-      "id": {
-        "type": "string",
-        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
-      },
-      "enabled": {
-        "type": "boolean",
-        "default": true
-      },
-      "trigger": {
-        "type": "string",
-        "enum": [
-          "DISTANCE_ABOVE",
-          "DISTANCE_BELOW",
-          "JAMMING_ACTIVE",
-          "JAMMING_STOPPED"
-        ]
-      },
-      "sourcePlatformId": {
-        "type": "string",
-        "minLength": 1
-      },
-      "targetPlatformId": {
-        "type": "string",
-        "minLength": 1
-      },
-      "toLinkId": {
-        "type": "string",
-        "minLength": 1,
-        "description": "切换目标链路，须连接同一对源、目标平台。"
-      },
-      "distanceThresholdM": {
-        "type": "number",
-        "exclusiveMinimum": 0,
-        "description": "距离条件的阈值，单位 m；仅 DISTANCE_ABOVE/DISTANCE_BELOW 使用。"
-      },
-      "jammerId": {
-        "type": "string",
-        "minLength": 1,
-        "description": "干扰条件引用的干扰设备；仅 JAMMING_ACTIVE/JAMMING_STOPPED 使用。"
-      }
-    }
-  },
-  "ScenarioLinkSettingsWrite": {
+    "ScenarioLinkSettingsWrite": {
     "allOf": [
       {
         "$ref": "#/components/schemas/ScenarioLinkSettings"
@@ -4185,14 +4189,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "default": true,
         "description": "防抖：稳定窗内候选链路变化时重新计数，确认选路结果一致后才切换。"
       },
-      "switchRules": {
-        "type": "array",
-        "description": "阶段切换规则；按列表顺序，第一条条件成立的规则决定源到目标的当前链路。",
-        "items": {
-          "$ref": "#/components/schemas/LinkSwitchRule"
-        }
-      },
-      "linkCalc": {
+            "linkCalc": {
         "type": "object",
         "additionalProperties": false,
         "description": "link_calc 全局阈值与信道编码；缺省时按《与前端字段确认说明》默认值生成。",
@@ -4252,11 +4249,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "hotLinks": {
         "type": "object",
         "additionalProperties": false,
-        "description": "热链配置（全局）；每条热链为首尾相接的链路编号序列。缺省时按已启用链路自动串联。",
+        "description": "热链配置（全局）；每条热链为首尾相接的链路编号序列。缺省表示未配置，由用户显式添加。",
         "required": [
           "forward",
-          "reverse",
-          "endPlatformType"
+          "reverse"
         ],
         "properties": {
           "forward": {
@@ -4278,16 +4274,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                 "minLength": 1
               }
             }
-          },
-          "endPlatformType": {
-            "type": "string",
-            "enum": [
-              "REAR_COMMAND_NODE",
-              "GROUND_CLUSTER_COMMAND_NODE",
-              "AIRBORNE_MISSION_CLUSTER"
-            ],
-            "default": "REAR_COMMAND_NODE",
-            "description": "热链终点平台类型；脚本 end_platform_type 写对应参考模型名。"
           }
         }
       },
@@ -6277,6 +6263,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "integer",
         "minimum": 0
       },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      },
       "officialLibraryChanged": {
         "const": false
       },
@@ -6794,6 +6784,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "format": {
         "enum": [
           "SYSTEM_SQLITE_V1",
+          "SYSTEM_SQLITE_V2",
           "MAIN_SQLITE_V1"
         ]
       }
@@ -12230,6 +12221,18 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
               "null"
             ],
             "description": "Raw upstream delay; unit unconfirmed."
+          },
+          "marginDb": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "delayMs": {
+            "type": [
+              "number",
+              "null"
+            ]
           }
         }
       },
@@ -12304,6 +12307,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                   ]
                 },
                 "lossDb": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "frequencyGHz": {
                   "type": [
                     "number",
                     "null"
@@ -12463,6 +12472,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                       "number",
                       "null"
                     ]
+                  },
+                  "probability": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
                   }
                 }
               }
@@ -12513,6 +12528,64 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                 "SWEEP",
                 null
               ]
+            },
+            "jamFreqHz": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          }
+        }
+      },
+      "antennaGainDbi": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "eirpDbw": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "freqBands": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "frequencyGHz",
+            "bandwidthMHz",
+            "mode",
+            "engineMode"
+          ],
+          "properties": {
+            "frequencyGHz": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "bandwidthMHz": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "mode": {
+              "enum": [
+                "BARRAGE",
+                "SPOT",
+                "SWEEP",
+                null
+              ]
+            },
+            "engineMode": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         }
@@ -12548,6 +12621,55 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "engineMode": {
         "type": [
           "string",
+          "null"
+        ]
+      }
+    }
+  },
+  "EnginePathQuality": {
+    "type": "object",
+    "required": [
+      "pathId",
+      "gxbDb",
+      "ber",
+      "marginDb",
+      "delayMs",
+      "rateBps"
+    ],
+    "properties": {
+      "pathId": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "gxbDb": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "ber": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "marginDb": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "delayMs": {
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "rateBps": {
+        "type": [
+          "number",
           "null"
         ]
       }
@@ -12608,6 +12730,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "array",
         "items": {
           "$ref": "#/components/schemas/EngineLinkSegment"
+        }
+      },
+      "pathQuality": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EnginePathQuality"
         }
       },
       "jammers": {

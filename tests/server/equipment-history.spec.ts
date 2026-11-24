@@ -278,12 +278,13 @@ describe('D1 设备历史、引用防删与显式重建', () => {
     expect(f.equipment.delete(equipment.equipmentId, 2, 'admin')).toBe(true)
     expect(f.backup.backup('DEL-FMT').ok).toBe(true)
 
-    // 新格式恢复：当前记录、历史、引用、核验与发布引用均保留。
+    // 装备库不在系统备份范围内（2026-11-24 有意如此）：恢复不回写装备数据，保留当前状态。
+    // 当前装备已在备份之后删除，因此恢复新格式备份后仍是已删除状态，引用已解除。
     expect(f.backup.restore('NEW-FMT')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
     const restored = f.equipment.historyDetails(equipment.equipmentId)
-    expect(restored.deleted).toBe(false)
+    expect(restored.deleted).toBe(true)
     expect(restored.history.map((row: { version: number }) => row.version)).toEqual([2, 1])
-    expect(restored.references).toHaveLength(1)
+    expect(restored.references).toHaveLength(0)
     expect(restored.verification).toMatchObject({ evidenceSummary: '核查通过' })
     expect(f.equipment.publishedReferences('PUB-EQ')).toHaveLength(1)
     // DELETE 事件随备份恢复。
@@ -300,15 +301,16 @@ describe('D1 设备历史、引用防删与显式重建', () => {
     catalog.prepare('UPDATE system_backups SET checksum=? WHERE backup_id=?').run(createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase(), 'OLD-FMT')
     catalog.close()
     expect(f.backup.restore('OLD-FMT')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
-    expect(f.equipment.historyDetails(equipment.equipmentId).pendingVerification).toBe(true)
+    // 装备库不在备份范围内，恢复不再改动装备数据，也不再批量标记待核验（2026-11-24）。
+    expect(f.equipment.historyDetails(equipment.equipmentId).pendingVerification).toBe(false)
 
     // 篡改：发布引用版本缺失被拒绝，恢复保留 prebackupId 并回滚。
     expect(f.backup.backup('TAMPER').ok).toBe(true)
     const tamperPath = join(f.backup.directory, 'TAMPER.system.db')
     const tamper = new DatabaseSync(tamperPath)
     const tamperTables = JSON.parse(String(tamper.prepare('SELECT payload FROM snapshot').get()?.payload)) as Array<{ scope: string; table: string; rows: Array<Record<string, unknown>> }>
-    const publishedRow = { equipment_id: equipment.equipmentId, equipment_version: 99, target_type: 'RUN', target_id: 'RUN-X', target_version: '1', source_summary: 'x', created_at: '2026-09-21T00:00:00.000Z' }
-    tamperTables.find(table => table.scope === 'equipment' && table.table === 'equipment_published_references')!.rows.push(publishedRow)
+    // 装备库已不在备份范围（2026-11-24），改为篡改范围内的账号表：去掉全部账号后“缺少启用的管理员”，恢复必须被拒绝。
+    tamperTables.find(table => table.scope === 'main' && table.table === 'users')!.rows.length = 0
     tamper.prepare('UPDATE snapshot SET payload=?').run(JSON.stringify(tamperTables)); tamper.close()
     const catalog2 = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
     catalog2.prepare('UPDATE system_backups SET checksum=? WHERE backup_id=?').run(createHash('sha256').update(readFileSync(tamperPath)).digest('hex').toUpperCase(), 'TAMPER')

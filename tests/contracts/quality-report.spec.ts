@@ -34,6 +34,29 @@ describe('导入质量报告投影', () => {
     expect(view.kpis).toEqual({ averageConnectedDurationS: 5, averageJsrDb: 20, averageBer: 0.2, jammingDurationS: 5 })
   })
 
+  it('使用同一组裁剪后的观测区间计算累计干扰时长，跨缺测区间断线', () => {
+    const filter = { from: 5, to: 35 }
+    const source = dataset()
+    source.samples = source.samples.flatMap(row => [row, { ...row, linkId: 'L-2' }])
+    const trend = [{ time: 5, value: 0 }, { time: 10, value: 5 }, { time: 30, value: 5, breakBefore: true }, { time: 35, value: 10 }]
+    const view = qualityReportView(source, evidence, filter)
+    expect(view.kpis.jammingDurationS).toBe(10)
+    expect(view.jammingDurationTrend).toEqual(trend)
+    const attached = attachQualityReport(report(), source, filter, undefined, undefined, undefined, true)
+    expect(attached.localEvidence?.quality?.samples.map(row => row.time)).toEqual([10, 10, 30, 30])
+    expect(attached.localEvidence?.qualityJammingDurationTrend).toEqual(trend)
+    expect(attachQualityReport(attached, source, filter).localEvidence).not.toHaveProperty('qualityJammingDurationTrend')
+    const unknown = attachQualityReport(attached, dataset(false), filter, undefined, undefined, undefined, true)
+    expect(unknown.localEvidence).not.toHaveProperty('qualityJammingDurationTrend')
+    expect(unknown.localEvidence?.qualityKpis).not.toHaveProperty('jammingDurationS')
+
+    const quiet = dataset()
+    quiet.samples = quiet.samples.map(row => ({ ...row, interferenceActive: false }))
+    const explicitZero = qualityReportView(quiet, evidence, filter)
+    expect(explicitZero.kpis.jammingDurationS).toBe(0)
+    expect(explicitZero.jammingDurationTrend).toEqual(trend.map(point => ({ ...point, value: 0 })))
+  })
+
   it('只对来源明确给出的干扰活动状态计算时长，缺失时保持缺测', () => {
     const view = qualityReportView(dataset(false), evidence)
     expect(view.kpis.jammingDurationS).toBeUndefined()
@@ -155,6 +178,42 @@ describe('导入质量报告投影', () => {
     expect(empty.localEvidence?.quality?.source.sha256).toBe('c'.repeat(64))
     expect(empty.localEvidence?.quality?.samples).toEqual([])
     expect(empty.localEvidence?.qualityKpis?.averageBer).toBeUndefined()
+  })
+
+  it('已在运行索引校验的链路没有导入质量覆盖时保留来源和缺测状态', () => {
+    const attached = attachQualityReport(report(), dataset(), { linkId: 'L-REPORT-ONLY' })
+    const result = attached.localEvidence!
+    expect(result.quality?.source.sha256).toBe('c'.repeat(64))
+    expect(result.quality?.samples).toEqual([])
+    expect(result.qualityKpis).toEqual({})
+    expect(result.qualityConnectivityRates).toEqual([])
+    const summary = new Map(localReportTables(result)[0]!.rows.map(([label, value]) => [label, value]))
+    for (const metric of ['平均连通时长', '切换次数', '平均干信比', '平均误码率', '干扰持续时长']) {
+      expect(summary.get(metric)).toBe('暂无数据')
+    }
+  })
+
+  it('节点和时间筛选保留原始运行内的实测对端，即使本范围没有对端关联事件', () => {
+    const trimmed = { ...evidence, nodes: [evidence.nodes[0]!] }
+    const attached = attachQualityReport({ ...report(), localEvidence: trimmed }, dataset(),
+      { nodeId: 'A', from: 5, to: 15 }, undefined, evidence.endTimeS, evidence)
+    const result = attached.localEvidence!
+    expect(result.nodes).toEqual(trimmed.nodes)
+    expect(result.relatedNodeIds).toEqual(['B'])
+    expect(result.quality?.samples.map(row => [row.time, row.sourcePlatform, row.destPlatform])).toEqual([[10, 'A', 'B']])
+    expect(qualityReportView(result.quality!, result).samples).toHaveLength(1)
+    expect(result.qualityKpis?.averageConnectedDurationS).toBe(5)
+  })
+
+  it('不允许原运行范围外的节点记录给选中的时间区间填充指标', () => {
+    expect(() => qualityReportView(dataset(), evidence, { nodeId: 'NON-RUN-NODE' })).toThrow('报告质量数据的节点筛选无效。')
+    const outside = dataset()
+    outside.samples = outside.samples.map(row => ({ ...row, destPlatform: 'NON-RUN-NODE' }))
+    const clipped = qualityReportView(outside, evidence, { nodeId: 'A', from: 1, to: 9 })
+    expect(clipped.samples).toEqual([])
+    expect(clipped.kpis).toEqual({})
+    expect(clipped.connectivityRates).toEqual([])
+    expect(() => qualityReportView(outside, evidence, { nodeId: 'A', from: 0, to: 9 })).toThrow('质量数据引用了当前报告范围外的节点。')
   })
 
   it('HTML 和 CSV 导出复用筛选后的质量来源、测量表和实际曲线', async () => {

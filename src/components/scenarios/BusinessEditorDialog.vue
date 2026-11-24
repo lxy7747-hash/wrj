@@ -78,10 +78,10 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
       <el-form-item required label="信息类型" :error="fieldError('informationType')"><el-select v-model="editor.informationType" data-testid="demand-type">
         <el-option v-for="type in typeOptions" :key="type" :label="type" :value="type" />
       </el-select></el-form-item>
-      <el-form-item required v-if="!embedded" label="源平台" :error="fieldError('sourcePlatformId')"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
+      <el-form-item required v-if="!embedded" label="源节点" :error="fieldError('sourcePlatformId')"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
-      <el-form-item required v-if="!embedded" label="目标平台" :error="fieldError('destinationPlatformIds')"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
+      <el-form-item required v-if="!embedded" label="目标节点" :error="fieldError('destinationPlatformIds')"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
       <el-form-item required :label="'单报文信息量'" :error="fieldError('volumeMb')">

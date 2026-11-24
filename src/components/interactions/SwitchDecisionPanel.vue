@@ -25,7 +25,7 @@ const stateType = computed(() => ({
 
 /** 将切换原因码转换为中文显示。 */
 function reasonLabel(reason: string): string {
-  return ({ BER_THRESHOLD_AND_HYSTERESIS: 'BER 阈值与滞回条件满足', COOLDOWN_ACTIVE: '切换冷却期未结束', INTERFERENCE: '受干扰触发切换', LINK_DOWN: '原链路中断触发切换' } as Record<string, string>)[reason] ?? reason
+  return ({ BER_THRESHOLD_AND_HYSTERESIS: '误码率阈值与滞回条件满足', COOLDOWN_ACTIVE: '切换冷却期未结束', INTERFERENCE: '受干扰触发切换', LINK_DOWN: '原链路中断触发切换' } as Record<string, string>)[reason] ?? reason
 }
 
 /** 以可读科学计数法展示误码率。 */
@@ -50,7 +50,7 @@ function formatBer(value: number): string {
       <el-table-column prop="eventId" label="事件" width="92" />
       <el-table-column label="结果" width="82"><template #default="scope"><el-tag :type="scope.row.decision === 'ACCEPTED' ? 'success' : 'danger'" size="small">{{ scope.row.decision === 'ACCEPTED' ? '接受' : '拒绝' }}</el-tag></template></el-table-column>
       <el-table-column label="路由变化" min-width="190"><template #default="scope">{{ scope.row.oldLinkId }} → {{ scope.row.newLinkId }}</template></el-table-column>
-      <el-table-column label="BER 变化" min-width="175"><template #default="scope">{{ formatBer(scope.row.oldBer) }} → {{ formatBer(scope.row.newBer) }}</template></el-table-column>
+      <el-table-column label="误码率变化" min-width="175"><template #default="scope">{{ formatBer(scope.row.oldBer) }} → {{ formatBer(scope.row.newBer) }}</template></el-table-column>
       <el-table-column label="稳定/要求" width="105"><template #default="scope">{{ scope.row.stabilityFrames }} / {{ scope.row.minimumStableFrames }} 帧</template></el-table-column>
       <el-table-column label="滞回" width="78"><template #default="scope">{{ scope.row.hysteresisSatisfied ? '满足' : '未满足' }}</template></el-table-column>
       <el-table-column label="冷却" width="92"><template #default="scope">{{ scope.row.cooldownRemainingS === 0 ? '已结束' : `${scope.row.cooldownRemainingS} s` }}</template></el-table-column>

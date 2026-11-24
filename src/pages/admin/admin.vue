@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
@@ -12,6 +12,7 @@ import BackupRestoreWizard from '../../components/admin/BackupRestoreWizard.vue'
 import ArchivePanel from '../../components/admin/ArchivePanel.vue'
 import HealthPanel from '../../components/admin/HealthPanel.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
+import TemplateDetailsDialog from '../../components/admin/TemplateDetailsDialog.vue'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
 import { canVisitMenu } from '../../features/admin/access-control'
@@ -20,7 +21,10 @@ const scenarioStore = useScenarioStore()
 const {
   draft,
   templates,
-  selectedTemplate,
+  dirty,
+  scenes,
+  listState,
+  listMessage,
   templateState,
   templateResultMessage,
   lastConfirmation,
@@ -49,6 +53,7 @@ function selectBasicCategory(category: string | number): void {
  * @returns 路由查询参数选中场景模板维护时返回 `true`。
  */
 const templateMaintenanceVisible = computed(() => route.query.section === 'scenario-templates')
+const canMaintainTemplates = computed(() => auth.permissions.includes('OFFICIAL_TEMPLATE_MAINTAIN'))
 
 /**
  * 判断当前是否显示操作审计日志页面。
@@ -60,7 +65,26 @@ const auditLogsVisible = computed(() => route.query.section === 'audit-logs')
  * 判断场景模板维护是否处于不可重复操作阶段。
  * @returns 模板正在加载、校验或执行时返回 `true`。
  */
-const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
+const templateFile = ref<HTMLInputElement | null>(null)
+const readingTemplate = ref(false)
+const templatePending = computed(() => readingTemplate.value || ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
+const templateEdit = ref<{ target: ScenarioTemplate | null; sourceKey: string; name: string } | null>(null)
+const canReadScenes = computed(() => canVisitMenu(auth.principal, '/scenarios'))
+const sourceListPending = computed(() => canReadScenes.value && listState.value === 'LOADING')
+const sceneSources = computed(() => {
+  const saved = canReadScenes.value ? scenes.value.map(scene => {
+    const { id, name } = scene.config.scenario
+    const repeated = scenes.value.some(other => other !== scene && other.config.scenario.name === name)
+    return { key: `saved:${id}`, label: `${name}${repeated ? `（${id}）` : ''} · 修订 ${scene.revision}`, scene }
+  }) : []
+  const current = draft.value
+  if (!current) return saved
+  const suffix = dirty.value || current.revision === 0 ? '当前未保存草稿' : '当前场景'
+  return [{ key: 'current', label: `${current.config.scenario.name} · ${suffix}`, scene: current }, ...saved]
+})
+const selectedSource = computed(() => sceneSources.value.find(source => source.key === templateEdit.value?.sourceKey)?.scene)
+const templateDetails = ref<ScenarioTemplate | null>(null)
+const templateExport = ref<{ title: string; filename: string; json: string } | null>(null)
 
 /**
  * 加载模板列表；新建模板只使用用户已选择的场景，不隐式读取默认编号。
@@ -73,22 +97,32 @@ async function loadTemplateMaintenance(): Promise<void> {
   await Promise.all(requests)
 }
 
-/**
- * 提示管理员输入模板名称并新建官方模板。
- * @returns 操作结束后无返回值。
- * @sideEffects 确认输入后调用模板新建动作；取消不改变模板库。
- */
-async function createTemplate(): Promise<void> {
-  try {
-    const { value } = await ElMessageBox.prompt('模板将保存当前完整场景草稿。', '新建场景模板', {
-      confirmButtonText: '新建',
-      cancelButtonText: '取消',
-      inputValue: draft.value === null ? '' : `${draft.value.config.scenario.name} 模板`,
-      inputValidator: (name) => name.trim() !== '' || '请输入模板名称。',
-    })
-    if (await scenarioStore.createTemplate(value)) ElMessage.success(templateResultMessage.value)
-  } catch {
-    // 用户取消输入时保持模板库不变。
+function openTemplateSource(target: ScenarioTemplate | null): void {
+  if (templatePending.value) return
+  if (templateState.value === 'ERROR') {
+    scenarioStore.$patch({ templateState: 'EMPTY', templateResultCode: 'EMPTY', templateResultMessage: '' })
+  }
+  templateEdit.value = { target, sourceKey: draft.value ? 'current' : '', name: target?.name ?? '' }
+  suggestTemplateName()
+  if (canReadScenes.value && !sourceListPending.value) void scenarioStore.loadScenes()
+}
+
+function suggestTemplateName(): void {
+  const edit = templateEdit.value
+  const source = selectedSource.value
+  if (edit && !edit.target && !edit.name.trim() && source) edit.name = `${source.config.scenario.name} 模板`
+}
+
+async function saveTemplateSource(): Promise<void> {
+  const edit = templateEdit.value
+  const source = selectedSource.value
+  if (!edit || !source || !edit.name.trim() || templatePending.value || sourceListPending.value) return
+  const saved = edit.target
+    ? await scenarioStore.updateTemplate(edit.target.templateId, edit.target.name, source)
+    : await scenarioStore.createTemplate(edit.name, source.config, source.uiExtensions)
+  if (saved && templateEdit.value === edit) {
+    templateEdit.value = null
+    ElMessage.success(templateResultMessage.value)
   }
 }
 
@@ -115,57 +149,70 @@ async function duplicateTemplate(template: ScenarioTemplate): Promise<void> {
   if (await scenarioStore.createTemplate(name, source.config, source.uiExtensions)) ElMessage.success(templateResultMessage.value)
 }
 
-/**
- * 从 JSON 文本导入官方模板。
- * @returns 操作结束后无返回值。
- * @sideEffects 确认输入后调用模板导入动作，不访问真实文件。
- */
-async function importTemplate(): Promise<void> {
+async function importTemplate(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || templatePending.value) return
+  if (templateState.value === 'ERROR') {
+    scenarioStore.$patch({ templateState: 'EMPTY', templateResultCode: 'EMPTY', templateResultMessage: '' })
+  }
+
+  const epoch = scenarioStore.requestEpoch
+  const current = () => templateMaintenanceVisible.value && scenarioStore.requestEpoch === epoch
+  readingTemplate.value = true
   try {
-    const { value } = await ElMessageBox.prompt('粘贴包含 name、config 及可选 uiExtensions 的模板 JSON。', '导入场景模板', {
-      confirmButtonText: '导入',
-      cancelButtonText: '取消',
-      inputType: 'textarea',
-      inputPlaceholder: '{ "name": "模板名称", "config": { ... } }',
-      inputValidator: (text) => text.trim() !== '' || '请输入模板 JSON。',
-    })
-    if (await scenarioStore.importTemplate(value)) ElMessage.success(templateResultMessage.value)
-  } catch {
-    // 用户取消输入时保持模板库不变。
+    const buffer = await file.arrayBuffer().catch(() => null)
+    if (!current()) return
+    if (buffer === null) {
+      ElMessage.error(`无法读取模板文件“${file.name}”。`)
+      return
+    }
+
+    let text: string
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+    } catch {
+      ElMessage.error(`“${file.name}”不是有效的 UTF-8 文件。`)
+      return
+    }
+    if (!text.trim()) {
+      ElMessage.error(`模板文件“${file.name}”为空。`)
+      return
+    }
+    if (await scenarioStore.importTemplate(text) && current()) {
+      ElMessage.success(`已导入模板文件“${file.name}”。`)
+    }
+  } finally {
+    readingTemplate.value = false
   }
 }
 
-/**
- * 使用当前场景草稿更新指定官方模板。
- * @param template 待更新的官方模板。
- * @returns 操作结束后无返回值。
- * @sideEffects 确认后调用模板更新动作；取消不改变模板库。
- */
-async function updateTemplate(template: ScenarioTemplate): Promise<void> {
-  try {
-    await ElMessageBox.confirm(`确认使用当前场景草稿更新“${template.name}”？`, '更新场景模板', {
-      confirmButtonText: '更新',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    if (await scenarioStore.updateTemplate(template.templateId, template.name)) ElMessage.success(templateResultMessage.value)
-  } catch {
-    // 用户取消更新时保持模板版本不变。
-  }
+async function viewTemplate(templateId: string): Promise<void> {
+  const template = await scenarioStore.loadTemplate(templateId)
+  if (template && templateMaintenanceVisible.value) templateDetails.value = template
 }
 
-/**
- * 生成指定官方模板的 JSON 预览。
- * @param template 待导出的官方模板。
- * @returns 操作结束后无返回值。
- * @sideEffects 调用模板导出动作并通过 Element Plus 展示内存预览，不创建文件。
- */
 async function exportTemplate(template: ScenarioTemplate): Promise<void> {
-  const preview = await scenarioStore.exportTemplate(template.templateId)
-  if (preview === undefined) return
-  await ElMessageBox.alert(preview, `导出预览 · ${template.name}`, {
-    confirmButtonText: '关闭',
-  })
+  const json = await scenarioStore.exportTemplate(template.templateId)
+  if (json === undefined || !templateMaintenanceVisible.value) return
+  const selected = scenarioStore.selectedTemplate
+  const exported = selected?.templateId === template.templateId ? selected : template
+  const safeName = `${exported.templateId}-v${exported.version}`.replace(/[^a-zA-Z0-9_-]/g, '_')
+  templateExport.value = { title: `导出预览 · ${exported.name}`, filename: `${safeName}.json`, json }
+}
+
+function downloadTemplateJson(): void {
+  const preview = templateExport.value
+  if (!preview) return
+  const url = URL.createObjectURL(new Blob([preview.json], { type: 'application/json;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = preview.filename
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
 
 async function deleteTemplate(templateId: string): Promise<void> {
@@ -174,30 +221,100 @@ async function deleteTemplate(templateId: string): Promise<void> {
 
 watch(templateMaintenanceVisible, (visible) => {
   if (visible) void loadTemplateMaintenance()
+  else {
+    templateEdit.value = null
+    templateDetails.value = null
+    templateExport.value = null
+  }
 }, { immediate: true })
 </script>
 
 <template>
-  <section v-if="templateMaintenanceVisible" class="page admin-page" aria-label="场景模板维护">
+  <section v-if="templateMaintenanceVisible" class="page admin-page template-maintenance-page" aria-label="场景模板维护">
     <TemplateLibrary
-      :can-maintain="true"
+      :can-maintain="canMaintainTemplates"
       :allow-apply="false"
       :pending="templatePending"
-      :draft-available="draft !== null"
       :draft-locked="draft?.locked ?? false"
       :templates="templates"
       :state="templateState"
-      :result-message="templateResultMessage"
-      :selected-template="selectedTemplate"
+      :result-message="templateEdit ? '' : templateResultMessage"
+      :selected-template="null"
       :last-confirmation="lastConfirmation"
-      @create="createTemplate"
-      @import="importTemplate"
-      @load="scenarioStore.loadTemplate"
+      @create="openTemplateSource(null)"
+      @import="templateFile?.click()"
+      @refresh="scenarioStore.loadTemplates"
+      @load="viewTemplate"
       @duplicate="duplicateTemplate"
-      @update="updateTemplate"
+      @update="openTemplateSource"
       @export="exportTemplate"
       @delete="deleteTemplate"
     />
+    <input ref="templateFile" type="file" accept=".json,application/json" hidden
+      aria-label="选择模板 JSON 文件" data-testid="template-import-file" @change="importTemplate">
+
+    <el-dialog
+      :model-value="templateEdit !== null"
+      :title="templateEdit?.target ? '更新场景模板' : '新建场景模板'"
+      width="min(540px, calc(100vw - 2rem))"
+      append-to-body
+      :close-on-click-modal="false"
+      :close-on-press-escape="!templatePending"
+      :show-close="!templatePending"
+      @update:model-value="!$event && (templateEdit = null)"
+    >
+      <el-form v-if="templateEdit" label-position="top" data-testid="template-source-dialog" @submit.prevent="saveTemplateSource">
+        <el-form-item v-if="templateEdit.target" label="目标模板">
+          <span>{{ templateEdit.target.name }} · 版本 {{ templateEdit.target.version }}</span>
+        </el-form-item>
+        <el-form-item label="场景来源" required>
+          <el-select
+            v-model="templateEdit.sourceKey"
+            placeholder="请选择场景"
+            filterable
+            :loading="sourceListPending"
+            :disabled="templatePending"
+            style="width: 100%"
+            data-testid="template-source-select"
+            @change="suggestTemplateName"
+          >
+            <el-option v-for="source in sceneSources" :key="source.key" :label="source.label" :value="source.key" />
+          </el-select>
+        </el-form-item>
+        <el-alert v-if="canReadScenes && listState === 'ERROR'" type="error" :closable="false" :title="listMessage">
+          <el-button link type="primary" :disabled="templatePending" @click="scenarioStore.loadScenes()">重试</el-button>
+        </el-alert>
+        <p v-else-if="!sourceListPending && sceneSources.length === 0" class="maintenance-note">
+          {{ canReadScenes ? '暂无已保存场景。' : '当前账号无场景列表访问权限。' }}
+        </p>
+        <el-form-item v-if="!templateEdit.target" label="模板名称" required>
+          <el-input v-model="templateEdit.name" :disabled="templatePending" data-testid="template-source-name" />
+        </el-form-item>
+        <p v-else class="maintenance-note">更新会以所选场景替换模板内容，并生成新版本。</p>
+        <el-alert v-if="templateState === 'ERROR' && templateResultMessage" type="error" :closable="false" :title="templateResultMessage" />
+      </el-form>
+      <template #footer>
+        <el-button :disabled="templatePending" @click="templateEdit = null">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="templatePending"
+          :disabled="!selectedSource || !templateEdit?.name.trim() || sourceListPending"
+          data-testid="save-template-source"
+          @click="saveTemplateSource"
+        >{{ templateEdit?.target ? '更新' : '新建' }}</el-button>
+      </template>
+    </el-dialog>
+
+    <TemplateDetailsDialog :template="templateDetails" @close="templateDetails = null" />
+
+    <el-dialog :model-value="templateExport !== null" :title="templateExport?.title ?? '导出预览'" width="min(760px, calc(100vw - 2rem))" append-to-body
+      @update:model-value="!$event && (templateExport = null)">
+      <pre v-if="templateExport" class="template-json" data-testid="template-export-preview" tabindex="0" aria-label="模板 JSON 预览">{{ templateExport.json }}</pre>
+      <template #footer>
+        <el-button data-testid="close-template-export" @click="templateExport = null">关闭</el-button>
+        <el-button type="primary" data-testid="download-template-json" @click="downloadTemplateJson">下载 JSON</el-button>
+      </template>
+    </el-dialog>
   </section>
 
   <section v-else-if="basicDataVisible" class="page admin-page basic-data-page" aria-label="基础数据管理" data-testid="basic-data-management">
@@ -232,6 +349,27 @@ watch(templateMaintenanceVisible, (visible) => {
   min-width: 0;
   gap: var(--space-4, 1rem);
   padding-top: var(--space-3, 0.75rem) !important;
+}
+
+.template-maintenance-page { align-content: start; }
+
+.maintenance-note {
+  margin: 0 0 0.85rem;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+.template-json {
+  max-height: 55vh;
+  margin: 0;
+  overflow: auto;
+  padding: 0.9rem;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .basic-data-page { align-content: start; }

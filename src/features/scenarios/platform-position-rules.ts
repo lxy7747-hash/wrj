@@ -3,6 +3,13 @@ import type { PlatformType } from '../../contracts/domain-models'
 /** 通信卫星按 GEO 定点处理，与模板脚本 `position 0n 120e altitude 35786 km` 一致；界面不提供编辑。 */
 export const SATELLITE_GEO_POSITION = { longitude: 120, latitude: 0, altitude: 35_786_000 } as const
 
+/** 节点配置中新增航点、盘旋点、返航点的默认高度（m）与默认速度（m/s）。 */
+export const PLATFORM_POINT_DEFAULT_ALTITUDE = 3000
+export const PLATFORM_POINT_DEFAULT_SPEED = 200
+
+/** 后方指挥节点的预填位置，可改为任意合法经纬度。 */
+export const REAR_DEFAULT_ORIGIN = { longitude: 118.5, latitude: 24, altitude: 0 } as const
+
 /** 来源：`comm_platform_INS.txt` 中 `mission_uav_01` route 的首点。 */
 export const RELAY_DEFAULT_ORIGIN = { longitude: 119.55, latitude: 24.66, altitude: 3200 } as const
 
@@ -17,7 +24,7 @@ export const RELAY_DEFAULT_ROUTE = {
   ],
 } as const
 
-/** 编辑器按边界限位；文件导入仅校验，不裁剪来源坐标。 */
+/** 无人机作业集群与前出中继的区域位置限制。 */
 export const PLATFORM_POSITION_RULES: Partial<Record<PlatformType, {
   minLongitude: number
   maxLongitude: number
@@ -25,7 +32,5 @@ export const PLATFORM_POSITION_RULES: Partial<Record<PlatformType, {
   maxLatitude: number
 }>> = {
   AIRBORNE_MISSION_CLUSTER: { minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 },
-  REAR_COMMAND_NODE: { minLongitude: 118.5, maxLongitude: 120, minLatitude: 24, maxLatitude: 25 },
   FORWARD_RELAY_NODE: { minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 },
-  GROUND_JAMMER_DETECTION_STATION: { minLongitude: 121.2, maxLongitude: 121.8, minLatitude: 24.8, maxLatitude: 25.4 },
 }

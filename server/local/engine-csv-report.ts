@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { CSV_NO_DATA, inspectCsvRecord, parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
+import { CSV_NO_DATA, inspectCsvCells, parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
 import { evidenceBundlePayload } from '../../src/features/data-exchange/evidence-contract.js'
 import { buildFileSetSource, type EvidenceSource, type FileSetInput } from '../../src/features/reports/report-evidence.js'
 import { readStableUtf8Lines } from './afsim-log-reader.js'
@@ -30,31 +30,41 @@ export async function readEngineCsvSource(
     const path = await getFile(name)
     if (!path) throw new Error('任务 CSV 缺失或摘要校验失败。')
     const contract = TIME_SERIES_CONTRACTS.find(item => item.name === name)!
+    const expectedHeader = contract.fields.join(',')
+    const col = Object.fromEntries(contract.fields.map((field, index) => [field, index])) as Record<string, number>
+    const taskIdIdx = col.task_id!, schemaIdx = col.SchemaVersion!, timeIdx = col.Time!
+    const srcIdx = col.SourcePlatform!, dstIdx = col.DestPlatform!
+    const linkTypeIdx = col.LinkType, linkStatusIdx = col.LinkStatus, gxbIdx = col.GXB, berIdx = col.BER, rxIdx = col.ReceivedPower
+    const fsIdx = col.FreeSpaceLoss, mpIdx = col.SeaMultipathLoss, atmIdx = col.AtmosphericLoss, crIdx = col.CloudRainLoss, jamIdx = col.JammingLoss, totIdx = col.TotalLoss
+    const dirIdx = col.Direction, oldTypeIdx = col.OldLinkType, newTypeIdx = col.NewLinkType, oldBerIdx = col.OldBER, newBerIdx = col.NewBER, reasonIdx = col.SwitchReason
     let rows = 0
     const source = await readStableUtf8Lines(path, (line, lineNumber) => {
       if (lineNumber === 1) {
-        if (line !== contract.fields.join(',')) throw new Error('任务 CSV 表头不符合 1.1 契约。')
+        if (line !== expectedHeader) throw new Error('任务 CSV 表头不符合 1.1 契约。')
         return
       }
-      const issues = inspectCsvRecord(contract, line, lineNumber)
+      const cells = parseCsvLine(line)
+      const issues = inspectCsvCells(contract, cells, lineNumber)
       if (issues.length) throw new Error(`${name}: ${issues[0]!.message}`)
-      const cells = parseCsvLine(line)!
-      const row = Object.fromEntries(contract.fields.map((field, index) => [field, cells[index]!]))
-      if (row.task_id !== taskId || row.SchemaVersion !== '1.1') throw new Error('任务 CSV 的任务或版本不匹配。')
+      if (cells![taskIdIdx] !== taskId || cells![schemaIdx] !== '1.1') throw new Error('任务 CSV 的任务或版本不匹配。')
       rows += 1
-      const time = Number(row.Time)
-      const number = (field: string) => row[field] === CSV_NO_DATA ? null : Number(row[field])
+      const time = Number(cells![timeIdx])
+      const numberAt = (index: number | undefined) => {
+        const raw = index === undefined ? undefined : cells![index]
+        return raw === undefined || raw === CSV_NO_DATA ? null : Number(raw)
+      }
       if (name === 'link_switch.csv') {
-        input.switch.push({ time, sourcePlatform: row.SourcePlatform!, destPlatform: row.DestPlatform!, direction: row.Direction!,
-          oldLinkType: row.OldLinkType!, newLinkType: row.NewLinkType!, oldBer: number('OldBER'), newBer: number('NewBER'), reason: row.SwitchReason! })
+        input.switch.push({ time, sourcePlatform: cells![srcIdx]!, destPlatform: cells![dstIdx]!, direction: cells![dirIdx!]!,
+          oldLinkType: cells![oldTypeIdx!]!, newLinkType: cells![newTypeIdx!]!, oldBer: numberAt(oldBerIdx), newBer: numberAt(newBerIdx), reason: cells![reasonIdx!]! })
         return
       }
-      const linkId = row.LinkType === CSV_NO_DATA ? null : linkIds.get(key(row.SourcePlatform!, row.DestPlatform!, row.LinkType!))
-      if (row.LinkType !== CSV_NO_DATA && !linkId) throw new Error('任务 CSV 无法唯一关联本次运行冻结的链路。')
-      const common = { time, linkId: linkId ?? null, sourcePlatformId: row.SourcePlatform === CSV_NO_DATA ? null : row.SourcePlatform!, targetPlatformId: row.DestPlatform === CSV_NO_DATA ? null : row.DestPlatform! }
-      if (name === 'link_state.csv') input.state.push({ ...common, linkStatus: row.LinkStatus!, gxbDb: number('GXB'), ber: number('BER'), receivedPower: number('ReceivedPower') })
-      else input.loss.push({ ...common, freeSpaceLossDb: number('FreeSpaceLoss'), seaMultipathLossDb: number('SeaMultipathLoss'),
-        atmosphericLossDb: number('AtmosphericLoss'), cloudRainLossDb: number('CloudRainLoss'), jammingLossDb: number('JammingLoss'), totalLossDb: number('TotalLoss') })
+      const srcPlat = cells![srcIdx]!, dstPlat = cells![dstIdx]!, linkType = cells![linkTypeIdx!]!
+      const linkId = linkType === CSV_NO_DATA ? null : linkIds.get(key(srcPlat, dstPlat, linkType))
+      if (linkType !== CSV_NO_DATA && !linkId) throw new Error('任务 CSV 无法唯一关联本次运行冻结的链路。')
+      const common = { time, linkId: linkId ?? null, sourcePlatformId: srcPlat === CSV_NO_DATA ? null : srcPlat, targetPlatformId: dstPlat === CSV_NO_DATA ? null : dstPlat }
+      if (name === 'link_state.csv') input.state.push({ ...common, linkStatus: cells![linkStatusIdx!]!, gxbDb: numberAt(gxbIdx), ber: numberAt(berIdx), receivedPower: numberAt(rxIdx) })
+      else input.loss.push({ ...common, freeSpaceLossDb: numberAt(fsIdx), seaMultipathLossDb: numberAt(mpIdx),
+        atmosphericLossDb: numberAt(atmIdx), cloudRainLossDb: numberAt(crIdx), jammingLossDb: numberAt(jamIdx), totalLossDb: numberAt(totIdx) })
     })
     if (source.waitingForLine || rows !== file.rowCount || source.source.sha256 !== file.sha256) throw new Error('任务 CSV 的行数、尾行或摘要不一致。')
     input.capabilities.push(kinds[name])

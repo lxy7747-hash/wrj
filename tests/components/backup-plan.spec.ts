@@ -4,13 +4,10 @@ import { createRouter, createMemoryHistory } from 'vue-router'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import ElementPlus, { ElMessageBox, ElMessage } from 'element-plus'
 import BackupRestoreWizard from '../../src/components/admin/BackupRestoreWizard.vue'
-import { useAdminStore } from '../../src/stores/admin'
 import { useAuthStore } from '../../src/stores/auth'
 
 let wrapper: VueWrapper | undefined
-const plan = { version: 1, enabled: false, name: '备份计划', intervalMinutes: 1440 }
-const status = { plan, nextRunAt: null, executions: [] }
-const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data, meta: { requestId: 'REQ-PLAN', generatedAt: '2026-09-21T00:00:00Z', page: 1, pageSize: 1, total: 1 } }) }) as Response
+const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data, meta: { requestId: 'REQ-BACKUP', generatedAt: '2026-09-21T00:00:00Z', page: 1, pageSize: 1, total: 1 } }) }) as Response
 beforeEach(() => { setActivePinia(createPinia()); useAuthStore().role = 'ADMIN' })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; ElMessage.closeAll(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 async function start(fetcher: ReturnType<typeof vi.fn>) {
@@ -21,42 +18,83 @@ async function start(fetcher: ReturnType<typeof vi.fn>) {
   await flushPromises()
 }
 
-it('页面正式加载计划、编辑、取消与启用，显示执行记录且仅一次成功提示', async () => {
-  const fetcher = vi.fn((url: string, init?: RequestInit) => Promise.resolve(response(url.endsWith('/backups') ? [] : init?.method === 'PUT'
-    ? { plan: { ...JSON.parse(String(init.body)), version: 2 }, nextRunAt: '2026-09-22T00:00:00Z', executions: [{ startedAt: '2026-09-21T00:00:00Z', completedAt: '2026-09-21T00:01:00Z', result: 'SUCCESS', backupId: 'A', message: '完成' }, { startedAt: '2026-09-21T01:00:00Z', completedAt: '2026-09-21T01:01:00Z', result: 'FAILURE', backupId: null, message: '磁盘故障' }] } : status)))
+it('不再展示定时备份计划区域，且空备份名称不执行创建', async () => {
+  const fetcher = vi.fn(() => Promise.resolve(response([])))
   await start(fetcher)
-  expect(wrapper!.text()).toContain('计划未启用')
-  expect(wrapper!.text()).toContain('暂无执行记录')
-  await wrapper!.get('input[aria-label="计划名称"]').setValue('每小时备份')
-  await wrapper!.getComponent({ name: 'ElSwitch' }).trigger('click')
-  wrapper!.getComponent({ name: 'ElInputNumber' }).vm.$emit('update:modelValue', 60)
-  const confirm = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValue('confirm' as never)
-  const message = vi.spyOn(ElMessage, 'success')
-  await wrapper!.get('[data-testid="backup-plan-save"]').trigger('click'); await flushPromises()
-  expect(fetcher).toHaveBeenCalledTimes(2)
-  await wrapper!.get('[data-testid="backup-plan-save"]').trigger('click'); await flushPromises()
-  expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('每 60 分钟'), '保存备份计划', expect.anything())
-  expect(useAdminStore().backupPlanStatus?.plan).toMatchObject({ name: '每小时备份', intervalMinutes: 60, enabled: true, version: 2 })
-  expect(message).toHaveBeenCalledExactlyOnceWith('备份计划已保存。')
-  expect(wrapper!.get('[data-testid="backup-executions"]').text()).toContain('磁盘故障')
-  expect(wrapper!.text()).toContain('下次执行')
-})
-
-it('错误可重试，空备份名称不执行；计划确认在途离页失效', async () => {
-  const fetcher = vi.fn((url: string) => Promise.resolve(response(url.endsWith('/backups') ? [] : {})))
-  await start(fetcher)
-  expect(wrapper!.get('[data-testid="backup-plan"]').text()).toContain('响应格式不正确')
+  expect(wrapper!.find('[data-testid="backup-plan"]').exists()).toBe(false)
+  expect(wrapper!.find('[data-testid="backup-feedback"]').exists()).toBe(false)
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).toContain('暂无备份记录')
+  expect(fetcher).toHaveBeenCalledTimes(1)
   await wrapper!.get('input[aria-label="备份名称"]').setValue(' ')
   const error = vi.spyOn(ElMessage, 'error')
   await wrapper!.get('[data-testid="backup-create"]').trigger('click')
   expect(error).toHaveBeenCalledOnce()
-  fetcher.mockImplementation((url: string) => Promise.resolve(response(url.endsWith('/backups') ? [] : status)))
-  await wrapper!.findAll('button').find(button => button.text() === '刷新记录')!.trigger('click'); await flushPromises()
-  let resolve!: () => void
-  vi.spyOn(ElMessageBox, 'confirm').mockImplementation(() => new Promise(done => { resolve = () => done('confirm' as never) }))
-  await wrapper!.get('[data-testid="backup-plan-save"]').trigger('click')
-  const count = fetcher.mock.calls.length
-  wrapper!.unmount(); wrapper = undefined
-  resolve(); await flushPromises()
-  expect(fetcher).toHaveBeenCalledTimes(count)
+})
+
+it('确认创建后使用加载状态，表格上方只显示实际错误', async () => {
+  let finishRequest!: (value: Response) => void
+  const pendingRequest = new Promise<Response>(resolve => { finishRequest = resolve })
+  const fetcher = vi.fn().mockResolvedValueOnce(response([])).mockReturnValueOnce(pendingRequest)
+  await start(fetcher)
+  vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+  const create = wrapper!.get('[data-testid="backup-create"]')
+  await create.trigger('click')
+  await flushPromises()
+
+  expect(create.attributes('disabled')).toBeDefined()
+  expect(wrapper!.find('[data-testid="backup-feedback"]').exists()).toBe(false)
+
+  finishRequest({ ok: false, json: async () => ({ ok: false, error: { code: 'ATOMIC_REPLACE_FAILED', message: '备份存储暂时不可用。' } }) } as Response)
+  await flushPromises()
+  expect(wrapper!.get('[data-testid="backup-feedback"]').text()).toContain('备份存储暂时不可用。')
+  expect(create.attributes('disabled')).toBeUndefined()
+})
+
+it('支持备份搜索、仅看可恢复筛选与删除备份', async () => {
+  const backups = [
+    { backupId: 'BK-VALID', name: '发布前快照', status: 'VALID', format: 'SYSTEM_SQLITE_V2', checksum: 'A'.repeat(64), createdAt: '2026-09-21T02:00:00Z' },
+    { backupId: 'BK-BROKEN', name: '损坏快照', status: 'INVALID', format: 'SYSTEM_SQLITE_V2', checksum: 'B'.repeat(64), createdAt: '2026-09-21T01:00:00Z' },
+  ]
+  const fetcher = vi.fn((_url: string, init?: RequestInit) => {
+    if (init?.method === 'DELETE') return Promise.resolve(response({ deleted: true, objectId: 'BK-BROKEN' }))
+    return Promise.resolve(response(backups))
+  })
+  await start(fetcher)
+
+  // 筛选仅可恢复与搜索关键词
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).toContain('损坏快照')
+  await wrapper!.get('[data-testid="filter-restorable"] input').setValue(true)
+  await flushPromises()
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).toContain('发布前快照')
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).not.toContain('损坏快照')
+  await wrapper!.get('[data-testid="filter-restorable"] input').setValue(false)
+  await wrapper!.get('input[aria-label="搜索备份"]').setValue('损坏')
+  await flushPromises()
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).toContain('损坏快照')
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).not.toContain('发布前快照')
+
+  // 删除损坏备份：确认后调用 DELETE 并从列表移除
+  vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+  const info = vi.spyOn(ElMessage, 'info')
+  await wrapper!.get('[data-testid="delete-backup-BK-BROKEN"]').trigger('click')
+  await flushPromises()
+  expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/api/v1/admin/backups/BK-BROKEN'), expect.objectContaining({ method: 'DELETE' }))
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).not.toContain('损坏快照')
+  expect(info).not.toHaveBeenCalled()
+})
+
+it.each([
+  [{ code: 'NOT_FOUND', message: 'The requested local mock resource was not found.' }, '当前后端未提供删除备份接口。'],
+  [{ code: 'NOT_FOUND', message: '备份记录不存在。', fieldPath: 'backupId' }, '备份记录不存在。'],
+])('删除返回 404 时显示对应中文提示并保留列表记录', async (error, message) => {
+  const backup = { backupId: 'BK-VALID', name: '发布前快照', status: 'VALID', format: 'SYSTEM_SQLITE_V2', checksum: 'A'.repeat(64), createdAt: '2026-09-21T02:00:00Z' }
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce(response([backup]))
+    .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ ok: false, error }) })
+  await start(fetcher)
+  vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+  await wrapper!.get('[data-testid="delete-backup-BK-VALID"]').trigger('click')
+  await flushPromises()
+  expect(wrapper!.get('[data-testid="backup-feedback"]').text()).toContain(message)
+  expect(wrapper!.get('[data-testid="backup-table"]').text()).toContain('发布前快照')
 })

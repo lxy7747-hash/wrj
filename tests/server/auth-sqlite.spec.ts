@@ -518,3 +518,42 @@ it('旧账号迁移及独立用户名/登录账号修改保留 ID、密码、角
     expect(await reopened.verify('new-login', PASSWORD)).toBe(true)
   } finally { reopened.close() }
 })
+
+it('管理员可重置其他账号密码为 123456 并撤销旧会话，同时阻止非管理员操作与重置自己', async () => {
+  const { api, login, storage } = await start()
+  const adminCookie = await login()
+  const operator = { userId: 'USR-RESET-OP', username: 'reset-op', displayName: '待重置操作员', role: 'OPERATOR', status: 'ACTIVE' }
+  const initialPassword = 'old-secret-password'
+  await api.post('/api/v1/admin/users').set(headers).set('Cookie', adminCookie)
+    .send({ operation: 'CREATE', user: operator, password: initialPassword }).expect(201)
+
+  const operatorCookie = await login(operator.username, initialPassword)
+
+  // 操作员无权调用密码重置接口
+  await api.post(`/api/v1/admin/users/${operator.userId}/reset-password`)
+    .set(headers).set('Cookie', operatorCookie).expect(403)
+
+  // 管理员不能重置自己的密码
+  const selfReset = await api.post('/api/v1/admin/users/USR-ADMIN/reset-password')
+    .set(headers).set('Cookie', adminCookie).expect(403)
+  expect(selfReset.body.error.code).toBe('PERMISSION_DENIED')
+  expect(await storage.verify('admin', PASSWORD)).toBe(true)
+
+  // 不存在的账号返回 404
+  await api.post('/api/v1/admin/users/USR-MISSING/reset-password')
+    .set(headers).set('Cookie', adminCookie).expect(404)
+
+  // 管理员重置其他账号密码为 123456
+  const reset = await api.post(`/api/v1/admin/users/${operator.userId}/reset-password`)
+    .set(headers).set('Cookie', adminCookie).expect(200)
+  expect(reset.body.data).toEqual({ reset: true, objectId: operator.userId })
+
+  // 旧会话失效、旧密码不可再登录、新密码 123456 可登录
+  expect((await api.get('/api/v1/auth/session').set(headers).set('Cookie', operatorCookie)).body.data.authenticated).toBe(false)
+  await api.post('/api/v1/auth/login').set(headers).send({ username: operator.username, passwordFixture: initialPassword }).expect(401)
+  await api.post('/api/v1/auth/login').set(headers).send({ username: operator.username, passwordFixture: '123456' }).expect(200)
+
+  // 审计日志记录了密码重置操作
+  expect(storage.readAudit().some((record: { action: string; objectId?: string; result: string }) =>
+    record.action === 'USER_PASSWORD_RESET' && record.objectId === operator.userId && record.result === 'SUCCESS')).toBe(true)
+})

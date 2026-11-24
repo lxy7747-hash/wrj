@@ -83,9 +83,9 @@ export interface Waypoint extends Position {
 export interface AntennaGain { tx: DecibelsIsotropic; rx: DecibelsIsotropic; }
 /** 可由基础数据快照填充的链路字段；来源元数据只记录显式应用的字段。 */
 export type LinkParameterField =
-  | 'frequency' | 'bandwidth' | 'txPower' | 'dataRate' | 'modulation' | 'berThreshold' | 'coding'
+  | 'frequency' | 'bandwidth' | 'txPower' | 'dataRate' | 'modulation' | 'berThreshold'
   | 'rxFrequency' | 'rxBandwidth' | 'antennaGain.tx' | 'antennaGain.rx' | 'antennaGainCorrectionDb'
-  | 'noiseFigureDb' | 'txPolarization' | 'rxPolarization';
+  | 'noiseFigureDb' | 'txPolarization' | 'rxPolarization' | 'eirpDbw' | 'gtDbk';
 /** 基础数据快照来源；目录实体的存在性和枚举 entryKey 的闭合由保存服务核对。 */
 export interface LinkParameterSource {
   kind: 'EQUIPMENT' | 'MASTER_DATA';
@@ -202,6 +202,8 @@ export interface Link {
   id: Identifier; type: LinkType; sourcePlatformId: Identifier; targetPlatformId: Identifier;
   /** 本条链路独立启停；旧配置缺省时沿用历史类型开关，否则默认启用。 */
   enabled?: boolean;
+  /** 为 true 时从平台端口读取收发参数，并保留原有链路字段；仅适用于非激光链路。 */
+  inheritPortParameters?: true;
   frequency: Megahertz; bandwidth: Megahertz; txPower: Watts; antennaGain: AntennaGain;
   modulation: Modulation; berThreshold: Ratio01; dataRate: MegabitsPerSecond; direction: LinkDirection;
   /** 前向/返向独立传输速率；缺省时兼容历史 dataRate。 */
@@ -211,8 +213,6 @@ export interface Link {
   laser?: LaserLinkParameters;
   /** 链路增益修正，单位 dB；独立于收发天线绝对增益，缺省为 0。 */
   antennaGainCorrectionDb?: Decibels;
-  /** 后端约定的编码标识；null 表示尚未指定，UNCODED 表示明确不编码。 */
-  coding?: string | null;
   /** 波形抗干扰增益和空域隔离衰减，单位 dB，缺省均为 0。 */
   antiJammingGainDb?: Decibels;
   spatialIsolationDb?: Decibels;
@@ -236,17 +236,6 @@ export interface Link {
   parameterSource?: LinkParameterSource;
 }
 export type DatalinkBand = 'C' | 'L';
-/** 链路切换触发条件：两端距离超过/低于阈值，或指定干扰设备开启/关闭。 */
-export type LinkSwitchTrigger = 'DISTANCE_ABOVE' | 'DISTANCE_BELOW' | 'JAMMING_ACTIVE' | 'JAMMING_STOPPED';
-/**
- * 场景级链路切换规则：条件满足时，源→目标的业务改走 toLinkId。
- * 距离条件使用 distanceThresholdM；干扰条件使用 jammerId。多条规则按冷却时间防止往复切换。
- */
-export interface LinkSwitchRule {
-  id: Identifier; enabled?: boolean; trigger: LinkSwitchTrigger;
-  sourcePlatformId: Identifier; targetPlatformId: Identifier; toLinkId: Identifier;
-  distanceThresholdM?: Meters; jammerId?: Identifier;
-}
 /** 场景级卫星启用与链路切换策略；单条链路开关保存在 Link.enabled。 */
 export interface ScenarioLinkSettings {
   /** 业务发送周期（s）；旧场景缺省为 5。 */
@@ -271,11 +260,9 @@ export interface ScenarioLinkSettings {
   failureGxbDb?: Decibels;
   failureBer?: Ratio01;
   priority: LinkType[];
-  /** 可配置的阶段切换规则；缺省表示只按优先级选主链路，不在仿真中切换。 */
-  switchRules?: LinkSwitchRule[];
   /** link_calc 全局阈值与编码；缺省时按《与前端字段确认说明》默认值生成。 */
   linkCalc?: LinkCalcSettings;
-  /** 热链配置（全局）；缺省时按已启用链路自动串联。 */
+  /** 热链配置（全局）；缺省表示未配置，由用户显式添加。 */
   hotLinks?: HotLinkSettings;
 }
 /**
@@ -284,8 +271,6 @@ export interface ScenarioLinkSettings {
  */
 export interface HotLinkSettings {
   forward: Identifier[][]; reverse: Identifier[][];
-  /** 热链终点的平台类型，生成时写参考模型名（如 REAR_COMM_PLATFORM）；默认后方指挥节点。 */
-  endPlatformType: Exclude<BusinessInformationNodeType, 'FORWARD_RELAY_NODE'>;
 }
 /** 信道编码增益（dB）：-1 关闭，0 无编码，5.0/6.5 卷积码，3.5 RS 码，8.0 Turbo 码。 */
 export type ChannelEncodingScheme = -1 | 0 | 5 | 6.5 | 3.5 | 8;
@@ -297,6 +282,16 @@ export interface LinkCalcSettings {
   jammingRangeKm: number;
   channelEncodingScheme: ChannelEncodingScheme;
 }
+export interface JammerBandParam {
+  frequency: Megahertz;
+  bandwidth: Megahertz;
+  /** 该频段独立干扰方式；缺省时沿用设备顶层 type。 */
+  mode?: 'BARRAGE' | 'SPOT' | 'SWEEP';
+  /** 瞄准带宽（MHz）；瞄准式时生效，其他模式在生成脚本时输出 0。 */
+  spotBandwidthMHz?: Megahertz;
+  /** 扫频占空比（0～1）；扫频式时生效，其他模式在生成脚本时输出 0。 */
+  sweepDutyCycle?: Ratio01;
+}
 export interface Jammer {
   /** 2026-11-06 模板侦测与链路计算参数；缺省时由读取副本补齐。 */
   radarFrequency?: Megahertz; radarBandwidth?: Megahertz; radarPower?: Watts;
@@ -304,6 +299,8 @@ export interface Jammer {
   antennaGainDbi?: DecibelsIsotropic; txLossDb?: Decibels; sweepDutyCycle?: Ratio01;
   id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT' | 'SWEEP'; defaultPower: Watts;
   frequency: Megahertz; bandwidth: Megahertz; detectionRange: Meters;
+  /** 干扰武器多频段参数（MHz）；缺省时按 frequency / bandwidth 视为单频段，保存时首组与顶层 frequency / bandwidth 同步。 */
+  weaponBands?: JammerBandParam[];
   /** 干扰有效作用距离（触发半径），合同单位 m；界面按 km 编辑。候选 weapon 无 maximum_range，生成器用距离门控。 */
   jammingRange: Meters;
   /** 干扰机离开后的释放距离，合同单位 m；界面按 km 编辑，缺省为干扰范围加 5 海里。 */
@@ -415,7 +412,7 @@ export interface ScenarioUiExtensions { jammers: JammerUiExtension[]; sensors: S
 /** 本地场景文件格式，与纯 ScenarioConfig 导入保持兼容。 */
 export interface ScenarioSnapshot { format: 'wrj.scenario.snapshot'; version: 1; config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; }
 export interface ScenarioDraftUpdate { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; expectedRevision: number; }
-export interface ScenarioDraft { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; revision: number; officialLibraryChanged: false; locked: boolean; }
+export interface ScenarioDraft { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; revision: number; createdAt?: Iso8601Utc; officialLibraryChanged: false; locked: boolean; }
 export interface ScenarioTemplate { templateId: Identifier; name: string; version: string; official: boolean; config: ScenarioConfig; referenceCount: number; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface ScriptContract { scriptId: Identifier; taskId: TaskId; scenarioId: ScenarioId; configVersion: string; target: 'AFSIM 2.9.0'; checksum: string; preview: string; generatedTime: Iso8601Utc; }
 export interface ScenarioValidationRequest { config: ScenarioConfig; }
@@ -601,9 +598,9 @@ export interface EngineLinkSegment {
   distanceM: number | null;
   losses: { freeSpaceDb: number | null; seaMultipathDb: number | null; atmosphericDb: number | null; cloudRainDb: number | null; jammingDb: number | null; totalDb: number | null; rainDb?: number | null; cloudDb?: number | null };
   /** delay 保留上游原值，单位未确认，不用于时长统计。 */
-  quality: { gxbDb: number | null; ber: number | null; rxPowerDbw: number | null; rxPowerDbm: number | null; delay?: number | null };
+  quality: { gxbDb: number | null; ber: number | null; rxPowerDbw: number | null; rxPowerDbm: number | null; delay?: number | null; marginDb?: number | null; delayMs?: number | null };
   inputTrace: { eirpDbw: number | null; gtDbk: number | null; dataRateMbps: number | null; frequencyGHz: number | null;
-    jammers: { jammerName: string | null; platformId: string | null; distanceM: number | null; eirpDbw: number | null; lossDb: number | null }[] };
+    jammers: { jammerName: string | null; platformId: string | null; distanceM: number | null; eirpDbw: number | null; lossDb: number | null; frequencyGHz?: number | null }[] };
 }
 export interface EnginePathNode { platformName: string | null; platformId: string | null; inPort: string | null; outPort: string | null }
 export interface EngineRoute {
@@ -617,15 +614,26 @@ export interface EngineRouteSwitch extends EngineRoute {
 }
 export interface EngineRouteAlarm { pathId: string | null; linkId: string | null; message: string | null }
 export interface EngineFrameEvent { type: string | null; pathId: string | null; newPathId?: string | null; oldPathId?: string | null; uavNames: string[]; jammerNames: string[]; uavIds: string[]; jammerIds: string[] }
+export interface EngineJammerBand {
+  frequencyGHz: number | null; bandwidthMHz: number | null;
+  mode: 'BARRAGE' | 'SPOT' | 'SWEEP' | null; engineMode: string | null;
+}
 export interface EngineJammer {
   name: string | null; platformId: string | null; detectStatus: string | null; deviceStatus: string | null;
   powerW: number | null; frequencyHz: number | null; rangeM: number | null;
+  antennaGainDbi?: number | null; eirpDbw?: number | null;
+  freqBands?: EngineJammerBand[];
   position?: { longitude: number | null; latitude: number | null; altitudeM: number | null };
   engineMode?: string | null;
   detections: { targetNames: string[]; targetIds: string[];
-    targets: { name: string | null; platformId: string | null; longitude: number | null; latitude: number | null; altitudeM: number | null }[];
+    targets: { name: string | null; platformId: string | null; longitude: number | null; latitude: number | null; altitudeM: number | null; probability?: number | null }[];
     platformType: string | null; frequencyHz: number | null; probability: number | null; rangeM: number | null }[];
-  actions: { action: string | null; targetName: string | null; targetPlatformId: string | null; mode: 'BARRAGE' | 'SPOT' | 'SWEEP' | null; engineMode: string | null }[];
+  actions: { action: string | null; targetName: string | null; targetPlatformId: string | null; mode: 'BARRAGE' | 'SPOT' | 'SWEEP' | null; engineMode: string | null; jamFreqHz?: number | null }[];
+}
+/** 引擎上报的整条热链质量，独立于单个设备段。 */
+export interface EnginePathQuality {
+  pathId: string | null;
+  gxbDb: number | null; ber: number | null; marginDb: number | null; delayMs: number | null; rateBps: number | null;
 }
 export interface EngineFrameSnapshot {
   /** frameId 保留上游非负秒值（可含小数）；simulationTime 为内部秒数，新帧按 frame_id 取值，历史归档保留已存秒值。 */
@@ -634,6 +642,7 @@ export interface EngineFrameSnapshot {
   wallTimeMs?: number | null;
   modelVersion: string | null; modulation: string | null;
   links: EngineLinkSegment[]; jammers: EngineJammer[];
+  pathQuality?: EnginePathQuality[];
   routing: { switches: EngineRouteSwitch[]; alarms: EngineRouteAlarm[] };
   events: EngineFrameEvent[]; initRouting: EngineRoute[] | null;
 }
@@ -712,6 +721,8 @@ export interface LocalReportEvidence {
   switchEvents?: LocalSwitchEvent[]
   /** 评估指标；引擎提供质量与干扰输出时填写，缺省项在报表中显示“暂无数据”。 */
   qualityKpis?: LocalQualityKpis
+  /** 同一质量指标观测区间计算的累计干扰时长。 */
+  qualityJammingDurationTrend?: LocalReportTrendPoint[]
   /** 按筛选边界裁剪后的有效观测连通率，避免表格截断样本导致图表丢失边界区间。 */
   qualityConnectivityRates?: Array<{ linkId: string; value: number }>
   /** 明确绑定本次运行的规范质量文件及测量记录；旧报告可省略。 */
@@ -721,13 +732,24 @@ export interface LocalReportEvidence {
   /** 由已验证引擎帧独立生成的规范 CSV；旧报告可省略。 */
   engineCsv?: EngineCsvEvidence
 }
+export const MAX_LOCAL_REPORT_TREND_POINTS = 5_000;
+export interface LocalReportTrendPoint { time: number; value: number; breakBefore?: boolean }
 export interface EngineFrameArchiveSummary {
   sourceSha256: string; frameCount: number; firstSimulationTime: number | null; lastSimulationTime: number | null;
   missingFieldNames: string[]; segmentRows: EngineFrameArchiveSegmentRow[];
   switchRows: EngineFrameArchiveSwitchRow[]; eventRows: EngineFrameArchiveEventRow[];
   /** Detail rows are bounded for report/UI/export memory; raw verified JSONL remains downloadable. */
   detailTruncated?: boolean; retainedDetailRows?: number;
-  aggregate?: { uniqueSingleSegmentCount: number; averageGxbDb?: number; averageBer?: number; switchCount: number; missing: string[] };
+  /** HTTP summary payload may defer large segmentRows until the detail pane is expanded. */
+  detailDeferred?: boolean;
+  aggregate?: {
+    uniqueSingleSegmentCount: number; averageGxbDb?: number; averageBer?: number; switchCount: number;
+    /** 由引擎帧状态连续区间计算的指标；无连续帧或没有可观测样本时省略。 */
+    averageConnectedDurationS?: number; jammingDurationS?: number;
+    /** 所选范围内按仿真时刻累计；缺少可观测数据时省略。 */
+    switchCountTrend?: LocalReportTrendPoint[]; jammingDurationTrend?: LocalReportTrendPoint[];
+    missing: string[];
+  };
 }
 export interface EngineCsvEvidence {
   sourceSha256: string
@@ -814,7 +836,7 @@ export interface RoleProfile { profileId: string; name: string; baseRole: Role; 
 export interface RoleAssignment { userId: string; profileId: string; }
 export interface AccessControlConfig { version: number; profiles: RoleProfile[]; assignments: RoleAssignment[]; }
 export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'; user: User; confirmationId?: Identifier; password?: string; }
-export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE' | 'VALID' | 'INVALID'; checksum: string; createdAt: Iso8601Utc; name?: string; format?: 'SYSTEM_SQLITE_V1' | 'MAIN_SQLITE_V1'; }
+export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE' | 'VALID' | 'INVALID'; checksum: string; createdAt: Iso8601Utc; name?: string; format?: 'SYSTEM_SQLITE_V1' | 'SYSTEM_SQLITE_V2' | 'MAIN_SQLITE_V1'; }
 export interface BackupRequest { operation: 'BACKUP'; backupId?: Identifier; name?: string; confirmationId: Identifier; }
 export interface BackupPlan { version: number; enabled: boolean; name: string; intervalMinutes: number; }
 export interface BackupExecution { startedAt: Iso8601Utc; completedAt: Iso8601Utc; result: 'SUCCESS' | 'FAILURE'; backupId: string | null; message: string; }

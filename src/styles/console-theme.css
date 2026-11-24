@@ -197,12 +197,20 @@ body {
   --el-table-tr-bg-color: var(--console-surface);
   --el-table-expanded-cell-bg-color: var(--console-bg-elevated);
   --el-table-header-bg-color: var(--console-surface-raised);
-  --el-table-row-hover-bg-color: #102a3d;
-  --el-table-current-row-bg-color: #123448;
+  --el-table-row-hover-bg-color: #1c4f6e;
+  --el-table-current-row-bg-color: #23607f;
   --el-table-border-color: var(--console-border);
   --el-table-text-color: var(--console-text);
   --el-table-header-text-color: var(--console-text-muted);
 }
+
+/* 表格行悬停：提高对比度并加左侧高亮，便于分辨鼠标指向的行 */
+.el-table__body tr > td.el-table__cell { transition: background-color 0.12s ease; }
+.el-table__body tr:hover > td.el-table__cell,
+.el-table__body tr.hover-row > td.el-table__cell { background-color: var(--el-table-row-hover-bg-color) !important; }
+.el-table__body tr:hover > td.el-table__cell:first-child,
+.el-table__body tr.hover-row > td.el-table__cell:first-child { box-shadow: inset 3px 0 0 var(--console-cyan); }
+.el-table__body tr.current-row > td.el-table__cell { background-color: var(--el-table-current-row-bg-color) !important; }
 
 .el-alert {
   --el-alert-bg-color: var(--console-bg-elevated);

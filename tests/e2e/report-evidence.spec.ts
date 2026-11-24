@@ -13,7 +13,7 @@ const { createMockServer } = await tsImport('../../server/app.ts', import.meta.u
 const { LocalMissionResults } = await tsImport('../../server/local/mission-results.ts', import.meta.url)
 const { ScenarioProjection } = await tsImport('../../server/scenarios/projection.ts', import.meta.url)
 const { createRunEvidenceStore } = await tsImport('../../server/local/run-evidence.ts', import.meta.url)
-const { exportEvidenceReport } = await tsImport('../../server/local/report-file.ts', import.meta.url)
+const { exportEvidenceReport, exportLocalReport } = await tsImport('../../server/local/report-file.ts', import.meta.url)
 const { REPORT_EVENT_CSV } = await tsImport('../fixtures/local-report-csv.ts', import.meta.url)
 const { POSITION_CSV } = await tsImport('../fixtures/local-replay.ts', import.meta.url)
 
@@ -55,6 +55,7 @@ test('报告证据 06→09：选来源/明细翻页/曲线，导出 HTML+PDF 覆
   const bundle = await store.import({ files: [{ fileName: 'link_state.csv', text: stateCsv }] }, scope, config)
 
   const server = createMockServer({ port: 0, missionResults, runEvidenceStore: store,
+    exportLocalReport: (...args: unknown[]) => exportLocalReport(exportsDir, ...(args as [never, never, never])),
     exportReportEvidence: (input: Parameters<typeof exportEvidenceReport>[1]) => exportEvidenceReport(exportsDir, input) })
   const errors: string[] = []
   try {
@@ -75,31 +76,11 @@ test('报告证据 06→09：选来源/明细翻页/曲线，导出 HTML+PDF 覆
     await page.waitForURL('**/situation')
     await page.goto(`/reports?resultId=${record.resultId}`)
 
-    const panel = page.getByTestId('report-evidence')
-    await expect(panel).toBeHidden()
-    await page.getByRole('button', { name: '排障工具与全量导出' }).click()
-    await expect(panel).toBeVisible({ timeout: 30_000 })
-    await panel.getByTestId('report-evidence-load').click()
-
-    // 选来源（仅一个文件集批次）→ 加载全量统计/明细/曲线。
-    const sourceSelect = panel.locator('.report-evidence__bar .el-select').first()
-    await expect(sourceSelect).toBeVisible()
-    await sourceSelect.click()
-    await page.getByRole('option').first().click()
-
-    await expect(panel.getByTestId('report-evidence-totals')).toContainText('state 1200')
-    await expect(panel.getByTestId('report-evidence-totals')).toContainText('当前筛选明细：1200 条')
-    await expect(panel).toContainText('共 1200 条')
-    const rowsLocator = panel.getByTestId('report-evidence-rows').locator('tbody tr')
-    await expect(rowsLocator).toHaveCount(200)
-    const firstId = await rowsLocator.first().innerText()
-    await panel.getByRole('button', { name: '下一页' }).click()
-    await expect(rowsLocator).toHaveCount(200)
-    await expect.poll(async () => rowsLocator.first().innerText()).not.toBe(firstId)
-
-    // 曲线存在，且有界分段可续取到末段（“曲线下一段”逐段追加为多个有界图，不无限塞入单图）。
-    await expect(panel.locator('svg').first()).toBeVisible()
-    const nextSegment = panel.getByRole('button', { name: '曲线下一段' })
+    // 曲线在主视图“折线图”页签加载，打开页签时补齐尚未选择的数据源。
+    await page.getByRole('tab', { name: '折线图', exact: true }).click()
+    const qualityTab = page.getByTestId('report-quality-evidence')
+    await expect(qualityTab.locator('svg').first()).toBeVisible()
+    const nextSegment = qualityTab.getByRole('button', { name: '曲线下一段' })
     let segments = 0
     while (await nextSegment.count()) {
       await nextSegment.click()
@@ -108,27 +89,26 @@ test('报告证据 06→09：选来源/明细翻页/曲线，导出 HTML+PDF 覆
       if (segments > 80) break
     }
     expect(segments).toBeGreaterThan(0)
-    expect(await panel.locator('svg').count()).toBeGreaterThan(1)
-    await expect(panel).toContainText('第2段')
+    expect(await qualityTab.locator('svg').count()).toBeGreaterThan(1)
+    await expect(qualityTab).toContainText('第2段')
 
-    // 导出 HTML：download=1 触发真实浏览器下载事件，保存后回读校验（中文/来源/全量计数/末点 2398）。
+    // 顶部统一导出 HTML：download=1 触发真实浏览器下载事件，保存后回读校验。
     const [htmlDownload] = await Promise.all([
       page.waitForEvent('download'),
-      panel.getByRole('button', { name: '导出证据 HTML' }).click(),
+      page.getByTestId('report-export').click(),
     ])
     const htmlFilePath = await htmlDownload.path()
     const html = await readFile(htmlFilePath!, 'utf8')
-    expect(html).toContain('报告证据')
-    expect(html).toContain('state')
-    expect(html).toContain('1200')
-    expect(html).toContain('2398')
+    expect(html).toContain('评估报告')
     await htmlDownload.saveAs(join(artifacts, 'evidence.html'))
     await testInfo.attach('evidence-export.html', { body: html, contentType: 'text/html' })
 
-    // 导出 PDF：download=1 真实浏览器下载事件，保存回读 %PDF 与体量（PDF 视觉由 pdfium 单独渲染检查）。
+    // 顶部统一导出 PDF：download=1 真实浏览器下载事件，保存回读 %PDF 与体量。
+    await page.locator('.reports-page__actions .el-select').first().click()
+    await page.getByRole('option', { name: 'PDF', exact: true }).click()
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      panel.getByRole('button', { name: '导出证据 PDF' }).click(),
+      page.getByTestId('report-export').click(),
     ])
     const pdfFilePath = await pdfDownload.path()
     const pdf = await readFile(pdfFilePath!)

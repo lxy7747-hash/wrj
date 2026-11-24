@@ -177,7 +177,7 @@ onBeforeUnmount(() => { store.clearMasterDetails(); store.resetMaintenance() })
                 <el-option v-if="entry.key && !parameterOptions.some(option => option.key === entry.key)" :value="entry.key" :label="`${publicParameter(entry.key)?.label ?? entry.key}（原有字段）`" disabled />
                 <el-option v-for="option in parameterOptions" :key="option.key" :value="option.key" :label="option.label" :disabled="parameterInUse(option.key, entry)" />
               </el-select>
-              <el-input v-else v-model="entry.key" placeholder="参数键，如 coding.UNCODED" aria-label="参数键" :disabled="pending || editor.kind === 'DEVICE'" />
+              <el-input v-else v-model="entry.key" placeholder="参数键，如 modulation.QPSK" aria-label="参数键" :disabled="pending || editor.kind === 'DEVICE'" />
               <el-select :model-value="entry.valueType" aria-label="参数值类型" :disabled="pending || editor.kind === 'DEVICE' || fixedParameterFormat(entry)" @update:model-value="changeValueType(entry, $event)"><el-option v-for="valueType in VALUE_TYPES" :key="valueType" :label="valueType" :value="valueType" /></el-select>
               <el-input v-if="entry.valueType === 'TEXT'" :model-value="String(entry.value)" placeholder="文本值" :disabled="pending || editor.kind === 'DEVICE'" @update:model-value="setTextValue(entry, $event)" />
               <el-input-number v-else-if="entry.valueType === 'NUMBER'" :model-value="typeof entry.value === 'number' && Number.isFinite(entry.value) ? entry.value : undefined" aria-label="参数值" :disabled="pending || editor.kind === 'DEVICE'" controls-position="right" @update:model-value="setNumberValue(entry, $event)" />

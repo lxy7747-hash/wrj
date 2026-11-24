@@ -125,7 +125,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
         <div v-if="kpis" class="report-kpis">
           <article><span>连通率</span><strong>{{ kpis.connectivityRate === undefined ? '暂无数据' : `${kpis.connectivityRate.toFixed(1)}%` }}</strong><small>单位：%</small></article>
           <article><span>{{ hasFilters ? '样本平均 SNR' : '平均 SNR' }}</span><strong>{{ kpis.avgSnrDb?.toFixed(2) }}</strong><small>单位：dB</small></article>
-          <article><span>{{ hasFilters ? '样本平均 BER' : '平均 BER' }}</span><strong>{{ kpis.avgBer === undefined ? '暂无数据' : formatBer(kpis.avgBer) }}</strong><small>单位：比率</small></article>
+          <article><span>{{ hasFilters ? '样本平均误码率' : '平均误码率' }}</span><strong>{{ kpis.avgBer === undefined ? '暂无数据' : formatBer(kpis.avgBer) }}</strong><small>单位：比率</small></article>
           <article><span>切换次数</span><strong>{{ kpis.switchCount }}</strong><small>单位：次</small></article>
           <article><span>干扰持续时间</span><strong>{{ kpis.interferenceDurationS ?? '暂无数据' }}</strong><small>单位：s</small></article>
           <article><span>平均连通时长</span><strong>{{ kpis.avgConnectivityDurationS ?? '暂无数据' }}</strong><small>单位：s</small></article>
@@ -142,7 +142,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
           <el-table-column label="SNR（dB）" width="110">
             <template #default="scope">{{ scope.row.currentSnr.toFixed(2) }}</template>
           </el-table-column>
-          <el-table-column label="BER（比率）" width="120">
+          <el-table-column label="误码率（比率）" width="120">
             <template #default="scope">{{ formatBer(scope.row.currentBer) }}</template>
           </el-table-column>
           <el-table-column prop="updatedAt" label="源时刻（s）" width="110" />
@@ -183,8 +183,8 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
             <h4>{{ series.linkId }} · {{ series.sourcePlatformId }} → {{ series.targetPlatformId }}</h4>
             <div class="report-curves">
               <figure v-for="metric in CURVE_METRICS" :key="metric">
-                <figcaption>{{ metric === 'snrDb' ? 'SNR（dB）' : metric === 'ber' ? 'BER（比率）' : '干扰功率（dBm）' }}</figcaption>
-                <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" :aria-label="`${series.linkId} ${metric} 时序曲线`">
+                <figcaption>{{ metric === 'snrDb' ? 'SNR（dB）' : metric === 'ber' ? '误码率（比率）' : '干扰功率（dBm）' }}</figcaption>
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" :aria-label="`${series.linkId} ${metric === 'ber' ? '误码率' : metric} 时序曲线`">
                   <path d="M4 8 V92 H96" class="report-curve__axis" />
                   <polyline :points="curvePoints(series.points, metric)" class="report-curve__line" />
                 </svg>
@@ -194,7 +194,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
             <el-table :data="series.points" size="small" stripe data-testid="report-time-series-table">
               <el-table-column prop="time" label="仿真时刻（s）" />
               <el-table-column prop="snrDb" label="SNR（dB）" />
-              <el-table-column label="BER（比率）"><template #default="scope">{{ formatBer(scope.row.ber) }}</template></el-table-column>
+              <el-table-column label="误码率（比率）"><template #default="scope">{{ formatBer(scope.row.ber) }}</template></el-table-column>
               <el-table-column prop="interferencePowerDbm" label="干扰功率（dBm）" />
             </el-table>
           </article>
@@ -204,7 +204,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       <el-tab-pane label="柱状图" name="bars" lazy>
         <div data-testid="report-bar-charts" class="report-series">
           <template v-if="series.length">
-            <ReportChart v-for="chart in barCharts" :key="chart.title" :title="chart.title" :unit="chart.unit" :rows="chart.rows" :source-range="chartSourceRange" :generated-time="report.generatedTime" />
+            <ReportChart v-for="chart in barCharts" :key="chart.title" :title="chart.title" :unit="chart.unit" :rows="chart.rows" use-echarts :source-range="chartSourceRange" :generated-time="report.generatedTime" />
           </template>
           <el-empty v-else description="暂无数据" />
         </div>
@@ -212,8 +212,8 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       <el-tab-pane label="雷达图" name="radar" lazy>
         <div data-testid="report-radar-chart">
           <template v-if="series.length">
-            <p>样本连通率使用默认 BER 门限（1E-5）。</p>
-            <ReportChart title="各链路样本连通率" unit="%" :rows="connectivityRates" radar :source-range="chartSourceRange" :generated-time="report.generatedTime" />
+            <p>样本连通率使用默认误码率门限（1E-5）。</p>
+            <ReportChart title="各链路样本连通率" unit="%" :rows="connectivityRates" radar use-echarts :source-range="chartSourceRange" :generated-time="report.generatedTime" />
           </template>
           <el-empty v-else description="暂无数据" />
         </div>

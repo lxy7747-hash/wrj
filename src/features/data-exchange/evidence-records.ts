@@ -111,15 +111,15 @@ export function parseEvidenceBundle(
       if (!link && record.LinkType !== CSV_NO_DATA) { issue(issues, 'EVIDENCE_LINK_AMBIGUOUS', stateFile.fileName, row, path, '链路端点与类型无法唯一映射到当前已启用链路。'); continue }
       if ((!linkTypes.has(record.LinkType!) && record.LinkType !== CSV_NO_DATA) || !['UP', 'DOWN', 'DEGRADED', CSV_NO_DATA].includes(record.LinkStatus!)) { issue(issues, 'EVIDENCE_STATE_ENUM_INVALID', stateFile.fileName, row, path, '链路类型或状态枚举无效。'); continue }
       const gxbDb = numeric(record.GXB), ber = numeric(record.BER), receivedPower = numeric(record.ReceivedPower)
-      if (gxbDb === null && record.GXB?.trim() !== '' && record.GXB !== CSV_NO_DATA || ber === null && record.BER?.trim() !== '' && record.BER !== CSV_NO_DATA || receivedPower === null && record.ReceivedPower?.trim() !== '' && record.ReceivedPower !== CSV_NO_DATA) { issue(issues, 'EVIDENCE_NUMBER_INVALID', stateFile.fileName, row, path, 'GXB/BER/接收功率必须为有限数值、暂无数据或留空。'); continue }
-      if (ber !== null && (ber < 0 || ber > 1)) { issue(issues, 'EVIDENCE_BER_RANGE_INVALID', stateFile.fileName, row, `${path}.BER`, 'BER 必须在 0 到 1 之间。'); continue }
+      if (gxbDb === null && record.GXB?.trim() !== '' && record.GXB !== CSV_NO_DATA || ber === null && record.BER?.trim() !== '' && record.BER !== CSV_NO_DATA || receivedPower === null && record.ReceivedPower?.trim() !== '' && record.ReceivedPower !== CSV_NO_DATA) { issue(issues, 'EVIDENCE_NUMBER_INVALID', stateFile.fileName, row, path, 'GXB、误码率和接收功率必须为有限数值、暂无数据或留空。'); continue }
+      if (ber !== null && (ber < 0 || ber > 1)) { issue(issues, 'EVIDENCE_BER_RANGE_INVALID', stateFile.fileName, row, `${path}.BER`, '误码率必须在 0 到 1 之间。'); continue }
       const signature = JSON.stringify([time, link?.id ?? null, record.LinkStatus, gxbDb, ber, receivedPower])
       if (link && duplicates.has(signature)) { issue(issues, 'EVIDENCE_DUPLICATE_ROW', stateFile.fileName, row, path, '同一状态行重复出现。'); continue }
       duplicates.add(signature)
       state.push({ time, linkId: link?.id ?? null, linkStatus: record.LinkStatus as EvidenceStateRecord['linkStatus'], gxbDb, ber, receivedPower, sourcePlatformId: record.SourcePlatform!, targetPlatformId: record.DestPlatform! })
     }
     receipts.push({ fileName: stateFile.fileName, sha256: source.sha256(stateFile.text), rows: state.length })
-    warnings.push('state 文件仅提供状态、GXB、BER 与接收功率，不提供也不能推导 SNR。')
+    warnings.push('state 文件仅提供状态、GXB、误码率与接收功率，不提供也不能推导 SNR。')
   }
 
   const lossFile = byKind.get('loss')
@@ -152,8 +152,8 @@ export function parseEvidenceBundle(
       const path = `rows[${row - 2}]`
       if (!scopeRowOk(record, scope)) { issue(issues, 'EVIDENCE_SCOPE_INVALID', switchFile.fileName, row, path, '任务标识或版本与当前运行不一致。'); continue }
       const time = requiredNumeric(record.Time), oldBer = requiredNumeric(record.OldBER), newBer = requiredNumeric(record.NewBER)
-      if (time === null || time < 0 || (oldBer === null && record.OldBER !== CSV_NO_DATA) || (newBer === null && record.NewBER !== CSV_NO_DATA)) { issue(issues, 'EVIDENCE_NUMBER_INVALID', switchFile.fileName, row, path, '时刻或新旧 BER 必须为有限数值。'); continue }
-      if ((oldBer !== null && (oldBer < 0 || oldBer > 1)) || (newBer !== null && (newBer < 0 || newBer > 1))) { issue(issues, 'EVIDENCE_BER_RANGE_INVALID', switchFile.fileName, row, path, 'BER 必须在 0 到 1 之间。'); continue }
+      if (time === null || time < 0 || (oldBer === null && record.OldBER !== CSV_NO_DATA) || (newBer === null && record.NewBER !== CSV_NO_DATA)) { issue(issues, 'EVIDENCE_NUMBER_INVALID', switchFile.fileName, row, path, '时刻或新旧误码率必须为有限数值。'); continue }
+      if ((oldBer !== null && (oldBer < 0 || oldBer > 1)) || (newBer !== null && (newBer < 0 || newBer > 1))) { issue(issues, 'EVIDENCE_BER_RANGE_INVALID', switchFile.fileName, row, path, '误码率必须在 0 到 1 之间。'); continue }
       if ((record.Direction !== 'FORWARD' && record.Direction !== 'REVERSE') || (!linkTypes.has(record.OldLinkType!) && record.OldLinkType !== CSV_NO_DATA) || (!linkTypes.has(record.NewLinkType!) && record.NewLinkType !== CSV_NO_DATA) || !record.SwitchReason?.trim()) {
         issue(issues, 'EVIDENCE_SWITCH_ENUM_INVALID', switchFile.fileName, row, path, '方向、链路类型或切换原因无效。'); continue
       }

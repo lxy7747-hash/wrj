@@ -204,6 +204,7 @@ describe('P1 in-memory authentication boundary', () => {
         'SCENARIO_DRAFT_WRITE',
         'SIMULATION_CONTROL',
         'ORDINARY_REPORT_EXPORT',
+        'OFFICIAL_TEMPLATE_MAINTAIN',
       ],
     })
 

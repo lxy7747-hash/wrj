@@ -56,7 +56,9 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(editor.props('appendToBody')).toBe(true)
     editor.vm.$emit('close')
     await flushPromises()
-    await button(wrapper, '关闭').trigger('click')
+    expect(dialog.findAll('button').some(row => row.text() === '关闭')).toBe(false)
+    expect(dialog.findAll('button').some(row => row.text() === '保存权限配置')).toBe(true)
+    await dialog.get('.el-dialog__headerbtn').trigger('click')
     await flushPromises()
     expect(dialog.props('modelValue')).toBe(false)
     expect(wrapper.findComponent(RoleProfiles).exists()).toBe(false)
@@ -131,24 +133,20 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(wrapper.findAll('.quality-card')).toHaveLength(0)
     expect(wrapper.text()).toContain('暂无数据')
   })
-  it('干信比、时延、可用率无数据显示暂无数据，引擎提供后直接展示', async () => {
+  it('干信比无数据显示暂无数据，测量到达后直接展示，卡片不再展开时延和可用率', async () => {
     const links = structuredClone(SITUATION_LINKS_F00042.slice(0, 1))
     const wrapper = setup(QualityMetricPanel, { links, nodes: [links[0]!.sourceName], sourceKey: 'A' })
     await flushPromises()
-    const cells = () => ['jsrDb', 'latencyMs', 'availabilityPercent'].map(key => wrapper.get('[data-metric="' + key + '"]').text())
-    const details = wrapper.get<HTMLDetailsElement>('.quality-card-details')
-    expect(details.element.open).toBe(false)
-    await details.get('summary').trigger('click')
-    expect(details.element.open).toBe(true)
-    expect(cells()).toEqual(['暂无数据', '暂无数据', '暂无数据'])
+    expect(wrapper.find('.quality-card-details').exists()).toBe(false)
+    expect(wrapper.get('[data-metric="jsrDb"]').text()).toBe('暂无数据')
+    expect(wrapper.text()).not.toContain('时延（ms）')
+    expect(wrapper.text()).not.toContain('可用率')
     const measured = structuredClone(links)
     measured[0]!.detailed = { ...measured[0]!.detailed!, jsrDb: -4.5, latencyMs: 12.34, availabilityPercent: 99.5 }
     await (wrapper as unknown as { setProps(props: { links: unknown[] }): Promise<void> }).setProps({ links: measured })
-    expect(cells()).toEqual(['-4.50', '12.3', '99.5'])
-    expect(wrapper.get('.quality-card-details').element).toBe(details.element)
-    expect(details.element.open).toBe(true)
-    await wrapper.setProps({ sourceKey: 'B' })
-    expect(wrapper.get<HTMLDetailsElement>('.quality-card-details').element.open).toBe(false)
+    expect(wrapper.get('[data-metric="jsrDb"]').text()).toBe('-4.50')
+    expect(wrapper.text()).not.toContain('12.3')
+    expect(wrapper.text()).not.toContain('99.5')
   })
   it('质量指标按链路类型筛选，只列出已出现的体制，换来源重置', async () => {
     const links = [
@@ -171,7 +169,7 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(typeSelect.props('modelValue')).toBe('')
     expect(rows()).toHaveLength(3)
   })
-  it('无质量测量的真实链路保留名称，指标和源时刻显示暂无数据；仍可筛选', async () => {
+  it('无质量测量的真实链路保留名称，摘要指标显示暂无数据；仍可筛选', async () => {
     const links = [
       { linkId: 'FILE-1', sourceName: '无人机01', destinationName: '后方通信车' },
       { linkId: 'FILE-2', sourceName: '无人机02', destinationName: '神通卫星' },
@@ -182,7 +180,7 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(rows()).toHaveLength(2)
     expect(rows()[0]!.get('.quality-card-heading strong').text()).toBe('无人机01 → 后方通信车')
     const metrics = Object.fromEntries(rows()[0]!.findAll('dl > div').map(row => [row.get('dt').text(), row.get('dd').text()]))
-    for (const label of ['干信比 GXB（dB）', 'BER', '接收功率（dBm）', '距离（m）', '源时刻', 'SNR（dB）', '路径损耗（dB）', '时延（ms）', '可用率（%）']) {
+    for (const label of ['干信比 GXB（dB）', '误码率', '发射辐射功率（dBW）', '距离（m）']) {
       expect(metrics[label], label).toBe('暂无数据')
     }
     wrapper.findAllComponents(ElSelect)[0]!.vm.$emit('update:modelValue', '无人机02')
@@ -306,13 +304,13 @@ describe('前端能力补齐的真实值与空态', () => {
       const adminMenus = ['账号管理', '场景模板维护', '操作审计日志', ...(enabled ? ['备份恢复'] : [])]
       expect(choices().map((row: VueWrapper) => row.text())).toEqual(adminMenus)
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', '感知、干扰与选路', ...adminMenus])
+        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', ...adminMenus])
       base.vm.$emit('update:modelValue', 'OPERATOR')
       base.vm.$emit('change', 'OPERATOR')
       await flushPromises()
-      expect(choices()).toHaveLength(0)
+      expect(choices().map((row: VueWrapper) => row.text())).toEqual(['场景模板维护'])
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', '感知、干扰与选路'])
+        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', '场景模板维护'])
     } finally { APP_CONFIG.systemManagement.showDatabaseBackup = original }
   })
   it('角色菜单中的评估报表跟随主导航显隐配置', async () => {
@@ -324,7 +322,7 @@ describe('前端能力补齐的真实值与空态', () => {
       await flushPromises()
       await button(wrapper, '新增角色').trigger('click')
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-        .toEqual(['态势主界面', '场景配置', '历史回放', '感知、干扰与选路', ...(APP_CONFIG.systemManagement.showDataExchange ? ['数据交换与接口'] : [])])
+        .toEqual(['态势主界面', '场景配置', '历史回放', ...(APP_CONFIG.systemManagement.showDataExchange ? ['数据交换与接口'] : []), '场景模板维护'])
     } finally { APP_CONFIG.showReports = original }
   })
   it.each([
@@ -365,8 +363,7 @@ describe('前端能力补齐的真实值与空态', () => {
     const menus = wrapper.get('[aria-label="菜单权限"]')
     expect(menus.text()).not.toContain('基础数据管理')
     expect(menus.text()).not.toContain('数据交换与接口')
-    expect(menus.text()).toContain('感知、干扰与选路')
-    for (const hiddenLabel of ['批量仿真', '能力蓝图', '需求追踪']) {
+    for (const hiddenLabel of ['批量仿真', '能力蓝图', '需求追踪', '感知、干扰与选路']) {
       expect(menus.text()).not.toContain(hiddenLabel)
     }
     await wrapper.get('[data-testid="profile-name"]').setValue('修改名称')

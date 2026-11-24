@@ -1,6 +1,6 @@
 import { apiFetch } from '../features/shared/api-fetch'
 import { saveDownload } from '../features/shared/download'
-import { isMissionResultRecord, isMissionResultSnapshot, isMissionResultParameterSnapshot, type MissionResultParameterComparison, type MissionResultRecord } from '../features/results/mission-result'
+import { isMissionResultRecord, isMissionResultSnapshot, isMissionResultParameterSnapshot, type MissionResultParameterComparison, type MissionResultParameters, type MissionResultRecord, type MissionResultSnapshot } from '../features/results/mission-result'
 import { defineStore } from 'pinia'
 import type {
   CapabilityState,
@@ -13,7 +13,7 @@ import type {
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, unwrapSuccessData } from './api-envelope'
-import { isLocalReport, isLocalReportExport, parseLocalReportFilter } from '../features/reports/local-report'
+import { isLocalReport, isLocalReportExport, LOCAL_REPORT_TRENDS_ACCEPT, parseLocalReportFilter } from '../features/reports/local-report'
 import { isLocalArchiveSnapshot } from '../features/admin/local-archive'
 
 type ExportFormat = ReportExportRequest['format']
@@ -84,13 +84,21 @@ function isExportResult(value: unknown): value is ReportExportResult | LocalRepo
     && typeof result.verifiedAt === 'string'
 }
 
-function isLocalReportFilterResult(value: unknown): value is LocalReportFilterResult {
+type MissionResultInitialFilter = Omit<LocalReportFilterResult, 'report'>
+interface MissionResultReportPayload {
+  record: MissionResultRecord
+  report: Report
+  parameters?: MissionResultParameters
+  initialFilter?: MissionResultInitialFilter
+}
+
+function isMissionResultFilterMeta(value: unknown, allowedKeys: readonly string[]): value is MissionResultInitialFilter {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const result = value as Partial<LocalReportFilterResult>
+  const result = value as Partial<MissionResultInitialFilter>
   const filter = result.filter
   const validFilter = filter !== undefined && parseLocalReportFilter(filter) !== null
-  return Object.keys(result).every(key => ['report', 'filter', 'timeline', 'timelineTotal', 'stages', 'links'].includes(key))
-    && isLocalReport(result.report) && validFilter
+  return Object.keys(result).every(key => allowedKeys.includes(key))
+    && validFilter
     && Array.isArray(result.timeline) && result.timeline.length <= 500 && result.timeline.every(event => event && typeof event === 'object'
       && ['id', 'type', 'subject'].every(key => typeof (event as unknown as Record<string, unknown>)[key] === 'string' && String((event as unknown as Record<string, unknown>)[key]).length > 0)
       && Number.isFinite(event.time) && event.time >= 0
@@ -98,6 +106,22 @@ function isLocalReportFilterResult(value: unknown): value is LocalReportFilterRe
     && Number.isSafeInteger(result.timelineTotal) && Number(result.timelineTotal) >= result.timeline.length
     && Array.isArray(result.stages) && result.stages.every(item => typeof item === 'string')
     && Array.isArray(result.links) && result.links.every(item => typeof item === 'string')
+}
+
+function isLocalReportFilterResult(value: unknown): value is LocalReportFilterResult {
+  if (!isMissionResultFilterMeta(value, ['report', 'filter', 'timeline', 'timelineTotal', 'stages', 'links'])) return false
+  return isLocalReport((value as Partial<LocalReportFilterResult>).report)
+}
+
+function isMissionResultReportPayload(value: unknown): value is MissionResultReportPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const payload = value as Partial<MissionResultReportPayload>
+  if (!Object.keys(payload).every(key => ['record', 'report', 'parameters', 'initialFilter'].includes(key))) return false
+  if (!isMissionResultParameterSnapshot({ record: payload.record, ...(payload.parameters === undefined ? {} : { parameters: payload.parameters }) })) return false
+  if (!isLocalReport(payload.report)) return false
+  if (payload.initialFilter !== undefined && !isMissionResultFilterMeta(payload.initialFilter, ['filter', 'timeline', 'timelineTotal', 'stages', 'links'])) return false
+  const e = payload.report.localEvidence
+  return (e.simulationComplete || payload.record!.executionSource === 'REMOTE_WS') && !e.waitingForPositionLine
 }
 
 // —— D3 报告证据（独立响应，不复用旧 Report.localEvidence 合同）——
@@ -151,6 +175,8 @@ export const useReportStore = defineStore('report', {
     comparisonsLoaded: false,
     comparisonsEpoch: 0,
     localFilterResult: null as LocalReportFilterResult | null,
+    preloadedEmptyFilterResultId: null as string | null,
+    engineSegmentsLoading: false,
     evidenceOverview: null as EvidenceOverviewView | null,
     /** 当前 report/result 的完整可选来源目录；选中来源的详情响应不能把它缩成单项。 */
     evidenceSourcesCatalog: [] as EvidenceSourceView[],
@@ -225,12 +251,20 @@ export const useReportStore = defineStore('report', {
       const epoch = this.requestEpoch
       this.capabilityState = 'LOADING'
       try {
-        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/mission-results/${encodeURIComponent(resultId)}`, { headers: { 'X-Demo-Role': useAuthStore().role } })
-        const snapshot = await readSuccess(response, isMissionResultSnapshot)
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/mission-results/${encodeURIComponent(resultId)}`, {
+          headers: { Accept: LOCAL_REPORT_TRENDS_ACCEPT, 'X-Demo-Role': useAuthStore().role, 'X-Mission-Result-View': 'report' },
+        })
+        const snapshot = await readSuccess(response, (value): value is MissionResultSnapshot | MissionResultReportPayload =>
+          isMissionResultSnapshot(value) || isMissionResultReportPayload(value))
         if (epoch !== this.requestEpoch) return false
         if (snapshot.record.resultId !== resultId) throw new Error('运行结果与请求不一致。')
         this.resultSource = snapshot.record
+        this.preloadedEmptyFilterResultId = null
         this.localFilterResult = null
+        if ('initialFilter' in snapshot && snapshot.initialFilter) {
+          this.localFilterResult = { ...snapshot.initialFilter, report: snapshot.report }
+          this.preloadedEmptyFilterResultId = snapshot.record.resultId
+        }
         this.resultComparisons = snapshot.parameters === undefined ? [] : [{ record: snapshot.record, parameters: snapshot.parameters }]
         this.reports = [snapshot.report]
         this.selectedReport = snapshot.report
@@ -244,7 +278,7 @@ export const useReportStore = defineStore('report', {
         return false
       }
     },
-    /** 历史参数只在打开对比页签时读取，不阻塞当前报告与 CSV 明细。 */
+    /** 历史参数只在打开运行参数对比时读取，不阻塞当前报告与 CSV 明细。 */
     async loadResultComparisons(): Promise<boolean> {
       const source = this.resultSource
       if (!source) return false
@@ -437,12 +471,20 @@ export const useReportStore = defineStore('report', {
     async applyLocalFilter(filter: LocalReportFilter): Promise<boolean> {
       const source = this.resultSource, report = this.selectedReport
       if (!source || !report?.localEvidence) { this.showError(undefined, '当前报告不支持精确筛选。', 'FILTER_UNSUPPORTED'); return false }
+      const hasFilterKeys = Object.values(filter).some(value => value !== undefined)
+      if (!hasFilterKeys && this.preloadedEmptyFilterResultId === source.resultId && this.localFilterResult !== null) {
+        this.preloadedEmptyFilterResultId = null
+        this.capabilityState = 'SUCCESS'; this.resultCode = 'SUCCESS'; this.resultMessage = '已应用精确筛选。'
+        return true
+      }
+      this.preloadedEmptyFilterResultId = null
       const epoch = ++this.requestEpoch
+      this.engineSegmentsLoading = false
       this.capabilityState = 'LOADING'
       try {
         const params = new URLSearchParams({ resultId: source.resultId })
         for (const [key, value] of Object.entries(filter)) if (value !== undefined) params.set(key, String(value))
-        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/filter?${params}`, { headers: { 'X-Demo-Role': useAuthStore().role } })
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/filter?${params}`, { headers: { Accept: LOCAL_REPORT_TRENDS_ACCEPT, 'X-Demo-Role': useAuthStore().role } })
         const result = await readSuccess(response, isLocalReportFilterResult)
         if (epoch !== this.requestEpoch) return false
         if (result.report.reportId !== report.reportId || result.report.runId !== report.runId
@@ -476,6 +518,31 @@ export const useReportStore = defineStore('report', {
         this.resultCode = failure?.error.code ?? 'FILTER_UNSUPPORTED'
         this.resultMessage = failure?.error.message ?? '精确筛选不可用，请重新生成结果。'
         return false
+      }
+    },
+
+    /** 按需加载被首屏延迟的大型引擎链路段明细，避免打开明细页签前阻塞首屏。 */
+    async loadEngineSegments(filter: LocalReportFilter = {}): Promise<boolean> {
+      const source = this.resultSource, report = this.selectedReport
+      if (!source || !report?.localEvidence || this.engineSegmentsLoading) return false
+      const epoch = this.requestEpoch
+      this.engineSegmentsLoading = true
+      try {
+        const params = new URLSearchParams({ resultId: source.resultId, includeEngineSegments: '1' })
+        for (const [key, value] of Object.entries(filter)) if (value !== undefined) params.set(key, String(value))
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/filter?${params}`, { headers: { Accept: LOCAL_REPORT_TRENDS_ACCEPT, 'X-Demo-Role': useAuthStore().role } })
+        const result = await readSuccess(response, isLocalReportFilterResult)
+        if (epoch !== this.requestEpoch) return false
+        if (result.report.reportId !== report.reportId || result.report.runId !== report.runId
+          || result.report.localEvidence?.eventFile.sha256 !== report.localEvidence.eventFile.sha256
+          || result.report.localEvidence?.positionFile.sha256 !== report.localEvidence.positionFile.sha256
+          || (['nodeId', 'linkId', 'stage', 'from', 'to'] as const).some(key => result.filter[key] !== filter[key])) throw new Error('引擎链路段明细与当前报告不一致。')
+        this.localFilterResult = result
+        return true
+      } catch {
+        return false
+      } finally {
+        if (epoch === this.requestEpoch) this.engineSegmentsLoading = false
       }
     },
 
@@ -704,6 +771,8 @@ export const useReportStore = defineStore('report', {
       this.comparisonsLoading = false
       this.comparisonsLoaded = false
       this.localFilterResult = null
+      this.preloadedEmptyFilterResultId = null
+      this.engineSegmentsLoading = false
       this.requestEpoch += 1
       this.reports = []
       this.selectedReport = null

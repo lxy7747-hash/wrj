@@ -65,7 +65,7 @@ function formatBer(value: number): string {
       <el-descriptions :column="4" border size="small">
         <el-descriptions-item label="最终路由">{{ decision.selectedLinkId }}</el-descriptions-item>
         <el-descriptions-item label="原路由">{{ decision.previousLinkId }}</el-descriptions-item>
-        <el-descriptions-item label="排名依据">{{ isForward ? '干扰影响最小' : 'BER 最低且满足稳定/滞回' }}</el-descriptions-item>
+        <el-descriptions-item label="排名依据">{{ isForward ? '干扰影响最小' : '误码率最低且满足稳定/滞回' }}</el-descriptions-item>
         <el-descriptions-item label="生效时刻">{{ decision.simulationTime }} s / {{ decision.frameId }}</el-descriptions-item>
       </el-descriptions>
       <el-table :data="candidates" size="small" border>
@@ -73,11 +73,11 @@ function formatBer(value: number): string {
         <el-table-column prop="linkId" label="链路" min-width="110" />
         <el-table-column label="可用性" width="90"><template #default="scope"><el-tag :type="scope.row.eligible ? 'success' : 'danger'" size="small">{{ scope.row.eligible ? '可用' : '淘汰' }}</el-tag></template></el-table-column>
         <el-table-column label="干扰影响" min-width="105"><template #default="scope">{{ scope.row.jamImpactDb }} dB</template></el-table-column>
-        <el-table-column label="BER" min-width="100"><template #default="scope">{{ formatBer(scope.row.ber) }}</template></el-table-column>
+        <el-table-column label="误码率" min-width="100"><template #default="scope">{{ formatBer(scope.row.ber) }}</template></el-table-column>
         <el-table-column prop="stabilityFrames" label="稳定帧" width="90" />
         <el-table-column label="淘汰原因" min-width="150"><template #default="scope">{{ eliminationLabel(scope.row.eliminationReason) }}</template></el-table-column>
       </el-table>
-      <p class="p4-panel__note">{{ isForward ? `先过滤不可用链路，再按干扰影响升序；选中值 ${decision.metric} dB。` : `按 BER 升序并要求至少 ${decision.minimumStableFrames} 个稳定帧，滞回阈值 ${formatBer(decision.hysteresisThreshold ?? 0)}。` }}</p>
+      <p class="p4-panel__note">{{ isForward ? `先过滤不可用链路，再按干扰影响升序；选中值 ${decision.metric} dB。` : `按误码率升序并要求至少 ${decision.minimumStableFrames} 个稳定帧，滞回阈值 ${formatBer(decision.hysteresisThreshold ?? 0)}。` }}</p>
     </div>
   </el-card>
 </template>

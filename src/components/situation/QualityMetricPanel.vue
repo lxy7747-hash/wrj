@@ -1,19 +1,32 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { SituationLinkView } from '../../features/situation/situation-model'
-import { formatBer, LINK_TYPE_LABELS } from '../../features/situation/situation-model'
-import { reportTime } from '../../features/reports/local-report'
+import { formatBer, LINK_TYPE_LABELS, qualityNodeOptionLabel } from '../../features/situation/situation-model'
 import type { RuntimeLinkQualityView } from '../../features/situation/runtime-quality-view'
 import { RUNTIME_STATUS_LABELS, runtimeDecisionReason } from '../../features/situation/runtime-quality-view'
+import { reportLinkLabel } from '../../features/reports/report-link-label'
+import type { SituationMapNode } from '../../features/situation/initial-nodes'
+import { nodeCategory } from '../../config/map.config'
 
 type QualityLink = Pick<SituationLinkView, 'linkId' | 'sourceName' | 'destinationName'>
   & Partial<Pick<SituationLinkView, 'snrDb' | 'ber' | 'updatedAt' | 'ageMs' | 'detailed' | 'type'>>
   & { runtimeQuality?: RuntimeLinkQualityView | null }
-const props = defineProps<{ links: QualityLink[]; nodes: string[]; sourceKey: string; selectedLinkId?: string }>()
+const props = defineProps<{
+  links: QualityLink[]
+  nodes: string[]
+  sourceKey: string
+  selectedLinkId?: string
+  nodePlatforms?: readonly Pick<SituationMapNode, 'platformId' | 'name' | 'type'>[]
+}>()
 const node = ref('')
 const linkId = ref('')
 const windowMs = ref(0)
 const linkType = ref('')
+const nodeLabels = computed(() => new Map(props.nodes.map((name, index) => {
+  const platform = props.nodePlatforms?.find(item => item.name === name || item.platformId === name)
+  return [name, qualityNodeOptionLabel(name, index, platform?.platformId, platform && nodeCategory(platform))]
+})))
+const nodeLabel = (name: string) => nodeLabels.value.get(name) ?? '未知节点'
 /** 只列出当前数据中实际出现的体制；缺少体制的链路在选择类型后不显示。 */
 const linkTypes = computed(() => [...new Set(props.links.flatMap(link => link.type ? [link.type] : []))])
 const rows = computed(() => props.links.filter(link => {
@@ -23,12 +36,6 @@ const rows = computed(() => props.links.filter(link => {
     && (ageMs === undefined || ageMs === null || ageMs <= windowMs.value)
 }))
 watch(() => props.sourceKey, () => { node.value = ''; linkId.value = ''; windowMs.value = 0; linkType.value = '' })
-/** 引擎可选提供的质量扩展字段；缺省显示“暂无数据”，有值后直接展示。 */
-const OPTIONAL_METRIC_COLUMNS = [
-  { key: 'jsrDb', label: '干信比 GXB（dB）', digits: 2 },
-  { key: 'latencyMs', label: '时延（ms）', digits: 1 },
-  { key: 'availabilityPercent', label: '可用率（%）', digits: 1 },
-] as const
 function metricText(value: number | null | undefined, digits: number): string {
   return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '暂无数据'
 }
@@ -44,11 +51,20 @@ watch(() => props.selectedLinkId, selected => {
 <template>
   <section class="quality-metric-panel quality-card-panel" aria-label="实时质量指标" data-testid="quality-metric-panel">
     <el-form label-position="top" class="quality-filters quality-card-filters">
-      <el-form-item label="节点"><el-select v-model="node" clearable placeholder="全部节点"><el-option v-for="name in nodes" :key="name" :label="name" :value="name" /></el-select></el-form-item>
+      <el-form-item label="节点">
+        <el-select v-model="node" clearable placeholder="全部节点">
+          <el-option v-for="name in nodes" :key="name" :value="name" :label="nodeLabel(name)" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="链路类型"><el-select v-model="linkType" clearable placeholder="全部类型" data-testid="quality-link-type"><el-option v-for="type in linkTypes" :key="type" :value="type" :label="LINK_TYPE_LABELS[type]" /></el-select></el-form-item>
       <details class="quality-card-advanced">
         <summary>更多筛选<span v-if="linkId || windowMs">（已应用）</span></summary>
-        <el-form-item label="链路"><el-select v-model="linkId" clearable placeholder="全部链路"><el-option v-for="link in links" :key="link.linkId" :value="link.linkId" :label="`${link.sourceName} → ${link.destinationName}`" /></el-select></el-form-item>
+        <el-form-item label="链路">
+          <el-select v-model="linkId" clearable placeholder="全部链路">
+            <el-option v-for="(link, index) in links" :key="link.linkId" :value="link.linkId"
+              :label="reportLinkLabel(link.linkId, index, link.type, [nodeLabel(link.sourceName), nodeLabel(link.destinationName)])" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="时间窗口"><el-select v-model="windowMs"><el-option label="当前时刻" :value="0" /><el-option label="最近1秒" :value="1000" /><el-option label="最近5秒" :value="5000" /></el-select></el-form-item>
         <p>时间筛选只适用于时效已知的数据。「暂无数据」表示没有测量值。</p>
       </details>
@@ -61,22 +77,10 @@ watch(() => props.selectedLinkId, selected => {
         </header>
         <dl class="quality-card-metrics">
           <div><dt>干信比 GXB（dB）</dt><dd data-metric="jsrDb">{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.gxbDb : row.detailed?.jsrDb, 2) }}</dd></div>
-          <div><dt>BER</dt><dd>{{ berText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.ber : row.ber) }}</dd></div>
-          <div><dt>接收功率（dBm）</dt><dd>{{ row.runtimeQuality ? row.runtimeQuality.measurement.quality.receivedPowerDbm ?? '暂无数据' : row.detailed?.receivedPower ?? '暂无数据' }}</dd></div>
+          <div><dt>误码率</dt><dd>{{ berText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.ber : row.ber) }}</dd></div>
+          <div><dt>发射辐射功率（dBW）</dt><dd>{{ metricText(row.runtimeQuality?.measurement.quality.inputTrace.eirpDbw, 2) }}</dd></div>
           <div><dt>距离（m）</dt><dd>{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.distanceMeters : row.detailed?.distance, 2) }}</dd></div>
         </dl>
-        <details class="quality-card-details">
-          <summary>详细参数</summary>
-          <dl class="quality-card-fields">
-            <div><dt>链路编号</dt><dd>{{ row.linkId }}</dd></div>
-            <div><dt>链路类型</dt><dd>{{ row.type ? LINK_TYPE_LABELS[row.type] : '暂无数据' }}</dd></div>
-            <div><dt>源时刻</dt><dd>{{ row.runtimeQuality ? reportTime(row.runtimeQuality.simulationTime) : Number.isFinite(row.updatedAt) ? reportTime(row.updatedAt) : '暂无数据' }}</dd></div>
-            <div><dt>SNR（dB）</dt><dd>{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.snrDb : row.snrDb, 2) }}</dd></div>
-            <div><dt>路径损耗（dB）</dt><dd>{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.losses.totalLossDb : row.detailed?.pathLoss, 2) }}</dd></div>
-            <div v-for="column in OPTIONAL_METRIC_COLUMNS.filter(column => column.key !== 'jsrDb')" :key="column.key"><dt>{{ column.label }}</dt><dd :data-metric="column.key">{{ metricText(row.runtimeQuality ? null : row.detailed?.[column.key], column.digits) }}</dd></div>
-            <div v-if="row.runtimeQuality?.assessment"><dt>状态原因</dt><dd>{{ runtimeDecisionReason(row.runtimeQuality.assessment.reason) }}</dd></div>
-          </dl>
-        </details>
       </article>
     </div>
     <p v-else>暂无数据</p>

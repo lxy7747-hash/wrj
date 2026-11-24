@@ -17,12 +17,18 @@ import { INFORMATION_NODE_LIMIT, INFORMATION_NODE_TYPE_LIMITS } from '../../src/
 
 const emptyValidation: ValidationResult = { valid: true, errors: [], warnings: [] }
 
+async function confirmNewMapWaypoint(wrapper: VueWrapper): Promise<void> {
+  wrapper.getComponent({ name: 'WaypointMapPicker' }).vm.$emit('confirm-route', [{ longitude: 119, latitude: 24, altitude: 0, speed: 1 }])
+  await flushPromises()
+}
+
 function mountValidationPanel(overrides: Partial<{
   pending: boolean
   panelState: CapabilityState
   resultMessage: string
   validation: ValidationResult
   completed: boolean
+  config: ScenarioConfig
 }> = {}) {
   return mount(ValidationPanel, {
     props: {
@@ -107,10 +113,12 @@ describe('场景拆分面板', () => {
     expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
     const satelliteSelect = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-relay-satellite')!
     expect(satelliteSelect.props('modelValue')).toBe('TIANTONG')
-    // 不恢复旧的链路类型开关；保留一致性校验和三个质量门限开关。
+    await wrapper.get('[data-testid="link-strategy-advanced"] > summary').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="link-switch-consistency"]').exists()).toBe(true))
+    // 不恢复旧的链路类型开关；保留置顶的三个设备失效标定门限（紧急/告警/质量）开关和一致性校验开关。
     expect(wrapper.findAllComponents({ name: 'ElSwitch' }).map(item => item.attributes('data-testid'))).toEqual([
-      'link-switch-consistency', 'link-decision-enable-minimumReceivedPowerDbm',
-      'link-decision-enable-failureGxbDb', 'link-decision-enable-failureBer',
+      'link-calc-enable-emergencyThreshold', 'link-calc-enable-warningThreshold',
+      'link-calc-enable-valueThresholdBer', 'link-switch-consistency',
     ])
     satelliteSelect.vm.$emit('change', 'SHENTONG')
     let changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
@@ -127,6 +135,8 @@ describe('场景拆分面板', () => {
     expect(wrapper.find('[data-testid="link-priority-0"]').exists()).toBe(false)
     await wrapper.get('[data-testid="open-link-settings"]').trigger('click')
     await typedWrapper.setProps({ dialogVisible: true })
+    await wrapper.get('[data-testid="link-strategy-advanced"] > summary').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="link-switch-cooldown"]').exists()).toBe(true))
     const originalPriority = [...baseline.priority]
     const priorityItem = (index: number) => wrapper.get(`[data-testid="link-priority-${index}"]`)
     const priorityRow = (index: number) => wrapper.get('.link-settings__priority').findAll('li')[index]!
@@ -172,86 +182,58 @@ describe('场景拆分面板', () => {
     wrapper.unmount()
   })
 
-  it('阶段切换规则可新增、切换条件类型与删除，目标链路限定为同一对端点', async () => {
+  it('优先级支持置顶/上移/下移按钮、一键恢复默认，并展示各类参与链路条数', async () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-    const typeOptions = [{ value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
-      { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' }, { value: 'FIBER', label: '光纤链路' }] as const
+    const baseline = readLinkSettings(config)
     const wrapper = mount(LinkSettingsPanel, {
-      props: { modelValue: readLinkSettings(config), dialogVisible: true, platforms: config.platforms, links: config.links,
-        jammers: config.jammers, disabled: false, typeOptions },
+      props: {
+        modelValue: baseline,
+        dialogVisible: true,
+        platforms: config.platforms,
+        links: config.links,
+        disabled: false,
+        typeOptions: [
+          { value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
+          { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' }, { value: 'FIBER', label: '光纤链路' },
+        ],
+      },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
     })
-    const typedWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue?: ScenarioLinkSettings } }>
-    const latest = () => wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(wrapper.text()).toContain('未配置规则时，仿真全程使用优先级最高的链路。')
-    await wrapper.get('[data-testid="add-switch-rule"]').trigger('click')
-    const first = config.links[0]!
-    expect(latest().switchRules).toEqual([{ id: 'RULE-1', enabled: true, trigger: 'DISTANCE_ABOVE',
-      sourcePlatformId: first.sourcePlatformId, targetPlatformId: first.targetPlatformId, toLinkId: first.id, distanceThresholdM: 200_000 }])
-    await typedWrapper.setProps({ modelValue: latest() })
-    const select = (id: string) => wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === id)!
-    // 距离阈值按 km 展示、按 m 保存。
-    const distance = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(c => c.attributes('data-testid') === 'switch-rule-0-distanceThresholdM')!
-    expect(distance.props('modelValue')).toBe(200)
-    distance.vm.$emit('update:modelValue', 150)
-    expect(latest().switchRules![0]!.distanceThresholdM).toBe(150_000)
-    select('switch-rule-0-trigger').vm.$emit('update:modelValue', 'JAMMING_ACTIVE')
-    const jamming = latest().switchRules![0]!
-    expect(jamming).toMatchObject({ trigger: 'JAMMING_ACTIVE', jammerId: config.jammers[0]!.id })
-    expect(jamming).not.toHaveProperty('distanceThresholdM')
-    await typedWrapper.setProps({ modelValue: latest() })
-    const options = select('switch-rule-0-toLinkId').findAllComponents({ name: 'ElOption' })
-    expect(options.map(option => option.props('value'))).toEqual(config.links
-      .filter(link => link.sourcePlatformId === first.sourcePlatformId && link.targetPlatformId === first.targetPlatformId).map(link => link.id))
-    await wrapper.get('[data-testid="switch-rule-0-remove"]').trigger('click')
-    expect(latest()).not.toHaveProperty('switchRules')
-    wrapper.unmount()
-  })
-
-  it('阶段切换规则：编号避让、启停、干扰设备、端点变化重选目标链路，禁用时不写回', async () => {
-    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-    const first = config.links[0]!
-    const typeOptions = [{ value: 'SAT', label: '卫星' }] as const
-    const existing = { id: 'RULE-2', trigger: 'JAMMING_STOPPED' as const, jammerId: config.jammers[0]!.id,
-      sourcePlatformId: first.sourcePlatformId, targetPlatformId: first.targetPlatformId, toLinkId: first.id }
-    const wrapper = mount(LinkSettingsPanel, {
-      props: { modelValue: { ...readLinkSettings(config), switchRules: [existing] }, dialogVisible: true, platforms: config.platforms,
-        links: config.links, jammers: config.jammers, disabled: false, typeOptions },
-      global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
-    })
-    const typedWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue?: ScenarioLinkSettings; disabled?: boolean } }>
-    const latest = () => wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    const select = (id: string) => wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === id)!
-    // 未在类型选项中的链路类型以原值展示。
-    const labels = select('switch-rule-0-toLinkId').findAllComponents({ name: 'ElOption' }).map(option => option.props('label'))
-    expect(labels).toContain(first.type === 'SAT' ? `卫星（${first.id}）` : `${first.type}（${first.id}）`)
-    // 已有 RULE-2 时新增规则编号顺延，避免重复。
-    await wrapper.get('[data-testid="add-switch-rule"]').trigger('click')
-    expect(latest().switchRules!.map(rule => rule.id)).toEqual(['RULE-2', 'RULE-3'])
-    wrapper.findAllComponents({ name: 'ElSwitch' }).find(c => c.attributes('data-testid') === 'switch-rule-0-enabled')!.vm.$emit('update:modelValue', false)
-    expect(latest().switchRules![0]!.enabled).toBe(false)
-    select('switch-rule-0-jammerId').vm.$emit('update:modelValue', 'JAM-OTHER')
-    expect(latest().switchRules![0]!.jammerId).toBe('JAM-OTHER')
-    select('switch-rule-0-toLinkId').vm.$emit('update:modelValue', 'L-X')
-    expect(latest().switchRules![0]!.toLinkId).toBe('L-X')
-    // 干扰条件改回距离条件时恢复默认阈值并清除干扰设备。
-    select('switch-rule-0-trigger').vm.$emit('update:modelValue', 'DISTANCE_BELOW')
-    expect(latest().switchRules![0]).toMatchObject({ trigger: 'DISTANCE_BELOW', distanceThresholdM: 200_000 })
-    expect(latest().switchRules![0]).not.toHaveProperty('jammerId')
-    await typedWrapper.setProps({ modelValue: latest() })
-    const distance = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(c => c.attributes('data-testid') === 'switch-rule-0-distanceThresholdM')!
-    distance.vm.$emit('update:modelValue', null)
-    expect(latest().switchRules![0]!.distanceThresholdM).toBeNaN()
-    // 端点改为无链路的组合时清空目标；改回原端点且目标仍匹配时保留目标。
-    select('switch-rule-0-sourcePlatformId').vm.$emit('update:modelValue', first.targetPlatformId)
-    expect(latest().switchRules![0]!.toLinkId).toBe('')
-    select('switch-rule-0-targetPlatformId').vm.$emit('update:modelValue', first.targetPlatformId)
-    expect(latest().switchRules![0]!.toLinkId).toBe(first.id)
-    const count = wrapper.emitted('update:modelValue')!.length
+    const typedWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue?: ScenarioLinkSettings; disabled: boolean } }>
+    // 默认顺序下不显示“恢复默认”；首项禁用置顶与上移，末项禁用下移。
+    expect(wrapper.find('[data-testid="priority-reset-default"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="priority-move-top-0"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="priority-move-up-0"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="priority-move-down-4"]').attributes('disabled')).toBeDefined()
+    // 展示每类参与场景的链路条数以及首项最高优先标签。
+    expect(wrapper.get('[data-testid="link-priority-0"]').text()).toContain('最高优先')
+    expect(wrapper.get('[data-testid="link-priority-0"]').text()).toMatch(/\d+ 条参与/)
+    // 点击“置顶”将第 3 项（卫星）移至首位，并显示“恢复默认”。
+    await wrapper.get('[data-testid="priority-move-top-2"]').trigger('click')
+    let changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'])
+    await typedWrapper.setProps({ modelValue: changed })
+    expect(wrapper.find('[data-testid="priority-reset-default"]').exists()).toBe(true)
+    // 点击“下移”将首位（卫星）下移一位，再点击“上移”移回。
+    await wrapper.get('[data-testid="priority-move-down-0"]').trigger('click')
+    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.priority).toEqual(['DATALINK', 'SAT', 'MICROWAVE', 'LASER', 'FIBER'])
+    await typedWrapper.setProps({ modelValue: changed })
+    await wrapper.get('[data-testid="priority-move-up-1"]').trigger('click')
+    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'])
+    await typedWrapper.setProps({ modelValue: changed })
+    // 锁定状态下禁用所有排序及恢复默认按钮。
     await typedWrapper.setProps({ disabled: true })
-    select('switch-rule-0-trigger').vm.$emit('update:modelValue', 'JAMMING_ACTIVE')
-    await wrapper.get('[data-testid="switch-rule-0-remove"]').trigger('click')
-    expect(wrapper.emitted('update:modelValue')).toHaveLength(count)
+    expect(wrapper.get('[data-testid="priority-move-down-0"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="priority-reset-default"]').attributes('disabled')).toBeDefined()
+    // 解锁后点击“恢复默认”回到初始顺序并隐藏按钮。
+    await typedWrapper.setProps({ disabled: false })
+    await wrapper.get('[data-testid="priority-reset-default"]').trigger('click')
+    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'])
+    await typedWrapper.setProps({ modelValue: changed })
+    expect(wrapper.find('[data-testid="priority-reset-default"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -331,24 +313,16 @@ describe('场景拆分面板', () => {
     for (const [id, value] of [['link-gain-correction', -2], ['link-anti-jamming-gain', 10], ['link-spatial-isolation', 3]] as const) {
       wrapper.findAllComponents({ name: 'ElInputNumber' }).find(c => c.attributes('data-testid') === id)!.vm.$emit('update:modelValue', value)
     }
-    wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!.vm.$emit('update:modelValue', 'UNCODED')
+    expect(wrapper.find('[data-testid="link-coding"]').exists()).toBe(false)
     // 卫星 / 微波 / 数传链路可选中继；卫星中继改成微波后不再适用，提交时写 null。
     expect(wrapper.find('[data-testid="link-relay"]').exists()).toBe(true)
     await flushPromises()
     await wrapper.get('[data-testid="apply-link"]').trigger('click')
-    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ antennaGainCorrectionDb: -2, antiJammingGainDb: 10, spatialIsolationDb: 3, coding: 'UNCODED' })
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ antennaGainCorrectionDb: -2, antiJammingGainDb: 10, spatialIsolationDb: 3 })
     if (editing) expect(wrapper.emitted('apply')![0]![0]).toHaveProperty('relayPlatformId', 'SAT-01')
     else expect(wrapper.emitted('apply')![0]![0]).not.toHaveProperty('relayPlatformId')
     expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ enabled: false })
     expect(link).not.toHaveProperty('coding')
-    const coding = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!
-    for (const empty of [undefined, null]) {
-      coding.vm.$emit('update:modelValue', 'UNCODED')
-      coding.vm.$emit('update:modelValue', empty)
-      await flushPromises()
-      await wrapper.get('[data-testid="apply-link"]').trigger('click')
-      expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('coding', null)
-    }
     const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-type')!
     type.vm.$emit('update:modelValue', 'MICROWAVE')
     type.vm.$emit('change', 'MICROWAVE')
@@ -378,7 +352,7 @@ describe('场景拆分面板', () => {
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
     })
     await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
-    await flushPromises()
+    await confirmNewMapWaypoint(wrapper)
     const speed = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'waypoint-speed-0')!
     expect(speed.props('modelValue')).toBe(1)
     expect(speed.props('min')).toBe(1)
@@ -400,7 +374,7 @@ describe('场景拆分面板', () => {
     await dialogWrapper.setProps({ modelValue: false })
     await dialogWrapper.setProps({ modelValue: true })
     await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
-    await flushPromises()
+    await confirmNewMapWaypoint(wrapper)
     expect(wrapper.text()).not.toContain('航点速度必填且必须至少为 1')
     wrapper.unmount()
   })
@@ -511,7 +485,6 @@ describe('场景拆分面板', () => {
     type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
     type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
     await flushPromises()
-    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
     expect(wrapper.find('[data-testid="waypoint-speed-0"]').exists()).toBe(true)
     type.vm.$emit('update:modelValue', 'COMMUNICATION_SATELLITE')
     type.vm.$emit('change', 'COMMUNICATION_SATELLITE')
@@ -580,7 +553,7 @@ describe('场景拆分面板', () => {
     wrapper.unmount()
   })
 
-  it('后方指挥与干扰节点初始位置按类型限制范围，边界可确认', async () => {
+  it('后方指挥与地面干扰节点初始位置支持全球合法范围，切换为空中集群后仍按区域限位', async () => {
     const platform = structuredClone(fixtureSource.scenario.platforms[0]) as Platform
     const originalPosition = { ...platform.initialPosition }
     const wrapper = mount(PlatformEditorDialog, {
@@ -603,11 +576,10 @@ describe('场景拆分面板', () => {
     // 后方指挥节点初始位置支持地图选点（复用 WaypointMapPicker）。
     expect(wrapper.find('[data-testid="pick-initial-position"]').exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(true)
-    expect(longitude.attributes()).toMatchObject({ min: '118.5', max: '120' })
-    expect(latitude.attributes()).toMatchObject({ min: '24', max: '25' })
+    expect(longitude.attributes()).toMatchObject({ min: '-180', max: '180' })
+    expect(latitude.attributes()).toMatchObject({ min: '-90', max: '90' })
     for (const [lng, lat, expectedLng, expectedLat] of [
-      [118, 23.9, 118.5, 24], [120.1, 25.1, 120, 25],
-      [118.5, 24, 118.5, 24], [120, 25, 120, 25], [119.25, 24.5, 119.25, 24.5],
+      [118, 23.9, 118, 23.9], [-70, -30, -70, -30], [0, 0, 0, 0], [-181, 91, -180, 90],
     ]) {
       await longitude.setValue(String(lng))
       await latitude.setValue(String(lat))
@@ -635,6 +607,7 @@ describe('场景拆分面板', () => {
     expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).props('bounds')).toEqual({ minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 })
     expect(wrapper.find('#platform-waypoint-title').exists()).toBe(true)
     await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    await confirmNewMapWaypoint(wrapper)
     const waypointLongitude = wrapper.get('[data-testid="waypoint-longitude-0"] input')
     const waypointLatitude = wrapper.get('[data-testid="waypoint-latitude-0"] input')
     expect(waypointLongitude.attributes()).toMatchObject({ min: '117', max: '122' })
@@ -652,17 +625,17 @@ describe('场景拆分面板', () => {
     type.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
     type.vm.$emit('change', 'GROUND_JAMMER_DETECTION_STATION')
     await flushPromises()
-    expect(longitude.attributes()).toMatchObject({ min: '121.2', max: '121.8' })
-    expect(latitude.attributes()).toMatchObject({ min: '24.8', max: '25.4' })
-    // 地面干扰站位置固定：航点区隐藏，切换前填的航点不提交。
+    expect(longitude.attributes()).toMatchObject({ min: '-180', max: '180' })
+    expect(latitude.attributes()).toMatchObject({ min: '-90', max: '90' })
+    // 地面干扰站不使用普通航点：航点区隐藏，切换前填的航点不提交；位置支持全球范围灵活配置。
     expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
     expect(wrapper.find('[data-testid="pick-initial-position"]').exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(true)
     expect(longitude.attributes('disabled')).toBeUndefined()
     expect(latitude.attributes('disabled')).toBeUndefined()
     for (const [lng, lat, expectedLng, expectedLat] of [
-      [121.1, 24.7, 121.2, 24.8], [121.9, 25.5, 121.8, 25.4],
-      [121.2, 24.8, 121.2, 24.8], [121.8, 25.4, 121.8, 25.4], [121.5, 25.1, 121.5, 25.1],
+      [-181, -95, -180, -90], [181, 95, 180, 90],
+      [121.371465, 24.614799, 121.371465, 24.614799], [119.5, 24.3, 119.5, 24.3], [121.5, 25.1, 121.5, 25.1],
     ]) {
       await longitude.setValue(String(lng))
       await latitude.setValue(String(lat))
@@ -683,11 +656,15 @@ describe('场景拆分面板', () => {
   })
 
   it.each([
-    ['REAR_COMMAND_NODE', 0, { longitude: 119.25, latitude: 24.5 }, { minLongitude: 118.5, maxLongitude: 120, minLatitude: 24, maxLatitude: 25 }],
+    ['REAR_COMMAND_NODE', 0, { longitude: -70, latitude: -30 }, undefined],
+    ['FORWARD_RELAY_NODE', 1, { longitude: 121.3, latitude: 25.3 }, { minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 }],
     ['GROUND_CLUSTER_COMMAND_NODE', 2, { longitude: 119.2, latitude: 24.6 }, undefined],
-    ['GROUND_JAMMER_DETECTION_STATION', 7, { longitude: 121.5, latitude: 25.1 }, { minLongitude: 121.2, maxLongitude: 121.8, minLatitude: 24.8, maxLatitude: 25.4 }],
+    ['AIRBORNE_MISSION_CLUSTER', 3, { longitude: 119.85, latitude: 24.4 }, { minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 }],
+    ['GROUND_JAMMER_DETECTION_STATION', 7, { longitude: 121.371465, latitude: 24.614799 }, undefined],
+    ['AIRBORNE_JAMMER_PLATFORM', 7, { longitude: 119.8, latitude: 24.2 }, undefined],
   ] as const)('%s 初始位置可地图选点，只回填经纬度并按类型限位', async (type, index, picked, bounds) => {
     const platform = structuredClone(fixtureSource.scenario.platforms[index]) as Platform
+    if (type === 'AIRBORNE_JAMMER_PLATFORM') Object.assign(platform, { type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', initialPosition: { longitude: 121.56, latitude: 25.03, altitude: 3000 } })
     const original = structuredClone(platform)
     const wrapper = mount(PlatformEditorDialog, {
       props: {
@@ -701,13 +678,14 @@ describe('场景拆分面板', () => {
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
     })
     await flushPromises()
-    expect(wrapper.get('#platform-position-title').text()).toBe('初始位置')
+    const positionLabel = type === 'AIRBORNE_MISSION_CLUSTER' ? '编队原点' : '初始位置'
+    expect(wrapper.get('#platform-position-title').text()).toBe(positionLabel)
     // 输入框按类型限位，可能把越界旧值夹到边界；选点框以夹取后的当前值为起点。
     const initialLongitude = Number((wrapper.get('[data-testid="platform-longitude"] input').element as HTMLInputElement).value)
     const initialLatitude = Number((wrapper.get('[data-testid="platform-latitude"] input').element as HTMLInputElement).value)
     await wrapper.get('[data-testid="pick-initial-position"]').trigger('click')
     const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
-    expect(picker.props()).toMatchObject({ modelValue: true, longitude: initialLongitude, latitude: initialLatitude })
+    expect(picker.props()).toMatchObject({ modelValue: true, title: `地图选取${positionLabel}`, longitude: initialLongitude, latitude: initialLatitude })
     expect(picker.props('bounds')).toEqual(bounds)
     picker.vm.$emit('confirm', picked)
     await flushPromises()
@@ -769,7 +747,6 @@ describe('场景拆分面板', () => {
       expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: expectedLng, latitude: expectedLat, altitude: 3200 } })
     }
     await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
-    await wrapper.get('[data-testid="pick-waypoint-0"]').trigger('click')
     expect(wrapper.getComponent({ name: 'WaypointMapPicker' }).props('bounds')).toEqual({ minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 })
     const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'platform-type')!
     type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
@@ -780,6 +757,7 @@ describe('场景拆分面板', () => {
     }
     expect(wrapper.find('#platform-waypoint-title').exists()).toBe(true)
     await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    await confirmNewMapWaypoint(wrapper)
     expect(wrapper.find('[data-testid="waypoint-longitude-0"]').exists()).toBe(true)
     await wrapper.get('[data-testid="platform-altitude"] input').setValue('1000')
     type.vm.$emit('update:modelValue', 'FORWARD_RELAY_NODE')
@@ -827,6 +805,9 @@ describe('场景拆分面板', () => {
       validation: { valid: true, errors: [], warnings: [warning] },
     })
     expect(wrapper.text()).toContain('警告不阻断保存')
+    expect(wrapper.text()).toContain('基本信息 · 时间步长')
+    expect(wrapper.text()).not.toContain('scenario.timeStep')
+    expect(wrapper.get('[data-testid="locate-validation-issue-0"]').attributes('data-field-path')).toBe('scenario.timeStep')
     await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
     expect(wrapper.emitted('locate')).toEqual([[warning]])
     wrapper.unmount()
@@ -843,5 +824,59 @@ describe('场景拆分面板', () => {
     expect(error.text()).toContain('错误')
     expect(error.text()).not.toContain('警告不阻断保存')
     error.unmount()
+  })
+
+  it('将链路频率、端口参数和全局链路设置等英文字段路径展示为可读中文', () => {
+    const scenario = fixtureSource.scenario as unknown as ScenarioConfig
+    const wrapper = mountValidationPanel({
+      completed: true,
+      resultMessage: '发现 3 个警告。',
+      config: scenario,
+      validation: {
+        valid: true,
+        errors: [],
+        warnings: [
+          { severity: 'WARNING', code: 'LINK_FREQUENCY_CONFLICT', message: '频段重叠', fieldPath: 'links[0].frequency' },
+          { severity: 'WARNING', code: 'PORT_NOTICE', message: '端口频率需要确认', fieldPath: 'deviceParameters.ports.MISSION_UAV_PLATFORM.c_band_uplink.txFrequency' },
+          { severity: 'WARNING', code: 'COOLDOWN_NOTICE', message: '冷却时间偏大', fieldPath: 'linkSettings.switchCooldownS' },
+        ],
+      },
+    })
+    expect(wrapper.text()).toContain('第 1 条链路（')
+    expect(wrapper.text()).toContain('发射频率')
+    expect(wrapper.text()).toContain('端口参数（任务无人机（含中继） · C 波段上行） · 发射频率')
+    expect(wrapper.text()).toContain('全局链路设置 · 切换冷却时间')
+    expect(wrapper.text()).not.toContain('links[0].frequency')
+    expect(wrapper.text()).not.toContain('deviceParameters.ports')
+    expect(wrapper.text()).not.toContain('linkSettings.switchCooldownS')
+    wrapper.unmount()
+  })
+
+  it('即使后端仍返回包含链路与平台英文 ID 的同频互扰消息，也会在界面上转换为可读中文', () => {
+    const scenario = fixtureSource.scenario as unknown as ScenarioConfig
+    const targetLink = scenario.links[1]!
+    const targetPlatform = scenario.platforms.find(platform => platform.id === targetLink.targetPlatformId)!
+    const wrapper = mountValidationPanel({
+      completed: true,
+      resultMessage: '存在 1 个警告。',
+      config: scenario,
+      validation: {
+        valid: true,
+        errors: [],
+        warnings: [
+          {
+            severity: 'WARNING',
+            code: 'LINK_FREQUENCY_CONFLICT',
+            message: `与链路 ${targetLink.id} 在同一接收平台 ${targetLink.targetPlatformId} 的频段重叠（2295～2305 MHz 与 2290～2310 MHz），接收端存在同频互扰，请调整频率或带宽。`,
+            fieldPath: 'links[0].frequency',
+          },
+        ],
+      },
+    })
+    expect(wrapper.text()).toContain('第 2 条链路（')
+    expect(wrapper.text()).toContain(`在同一接收平台「${targetPlatform.name}」的频段重叠（2295～2305 MHz 与 2290～2310 MHz）`)
+    expect(wrapper.text()).not.toContain(targetLink.id)
+    expect(wrapper.text()).not.toContain(targetLink.targetPlatformId)
+    wrapper.unmount()
   })
 })

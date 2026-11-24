@@ -48,7 +48,12 @@ for (const format of ['HTML', 'CSV', 'PDF'] as const) it.skipIf(format === 'PDF'
   try {
     const result = await exportLocalReport(await directory(), LATEST_FRAME_REPORT, format, 'operator')
     const text: string = format === 'PDF' ? textCalls!.mock.calls.map(call => String(call[0])).join('\n') : await readFile(result.filePath, 'utf8')
-    for (const value of ['自由空间', '雨衰', '云衰', '44.092173718306995', '频率（GHz）', '数据率（Mbps）', 'G/T（dB/K）', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '口径待确认', '1.189035332459013e-243']) expect(text).toContain(value)
+    for (const value of ['自由空间', '雨衰', '云衰', '44.092173718306995', '频率（GHz）', '数据率（Mbps）', 'G/T（dB/K）', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '总复合损耗（dB）', '错误信息', '1.189035332459013e-243']) expect(text).toContain(value)
+    if (format === 'CSV') expect(text).toContain('"GXB（dB）","BER","接收功率（dBm）"')
+    else {
+      expect(text).toContain('引擎段误码率随时间变化')
+      expect(text).toContain('单位：比率')
+    }
     if (format === 'HTML') {
       const points = [...text.matchAll(/<polyline points="([^"]+)"/g)].map(match => match[1]!.trim().split(/\s+/).map(point => point.split(',')[1]))
       expect(points.some(ys => new Set(ys).size === 2)).toBe(true)

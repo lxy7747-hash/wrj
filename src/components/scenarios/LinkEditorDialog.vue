@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, toRaw, watch } from 'vue'
+import { APP_CONFIG } from '../../config/app.config'
 import type { CapabilityState, InformationDemand, LaserLinkParameters, Link, LinkParameterField, LinkType, Platform, ScenarioParameterCatalog, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_MODULATIONS, prepareLinkEquipment } from '../../features/scenarios/link-equipment-parameters'
 import { EQUIPMENT_LINK_TYPES, equipmentTypeIssue } from '../../features/admin/equipment-link-rules'
 import { prepareLinkMasterData } from '../../features/scenarios/link-master-parameters'
+import { isPlatformPortLinkField, type LinkPortEditorProjection } from '../../features/scenarios/link-port-parameters'
 import { LINK_PARAMETER_DEFAULTS } from '../../features/scenarios/link-settings'
 import {
   datalinkRateTiers, FIBER_DATA_RATE_MBPS, fixedLinkDataRate, formatDataRate, LASER_LINK_MODULATION, linkPowerMaxW, linkTypeDefaults,
@@ -32,6 +34,7 @@ const props = defineProps<{
   parameterCatalogState?: CapabilityState
   parameterCatalogMessage?: string
   referenceDisabled?: boolean
+  resolvePortParameters?: (link: Link) => LinkPortEditorProjection | null
   /** 由父级按当前场景上下文校验本弹框的临时副本。 */
   validate?: (link: Link, demand?: InformationDemand | null) => ValidationIssue[]
 }>()
@@ -56,12 +59,26 @@ type EditableLink = Omit<Link, 'frequency' | 'bandwidth' | 'txPower' | 'dataRate
 
 const editor = ref<EditableLink | null>(null)
 const business = ref<InformationDemand | null>(null)
+const laserSwitchFields = [...Object.keys(linkTypeDefaults('LASER')), 'txPolarization', 'rxPolarization', 'inheritPortParameters'] as (keyof EditableLink)[]
+let beforeLaser: EditableLink | null = null
+/** 用于区分“打开弹框回显方向”和“用户实际切换方向”，避免回显时误改业务信息类型。 */
+let lastDirection: Link['direction'] | undefined
 const validationTick = ref(0)
+const usePlatformPorts = computed(() => props.resolvePortParameters !== undefined && editor.value?.type !== 'LASER')
+const portParameters = computed(() => {
+  void validationTick.value
+  return editor.value && usePlatformPorts.value ? props.resolvePortParameters?.(editor.value as Link) ?? null : null
+})
+function includesPortField(fields: readonly LinkParameterField[]): boolean {
+  const type = editor.value?.type
+  return usePlatformPorts.value && type !== undefined && fields.some(field => isPlatformPortLinkField(type, field))
+}
+
 const selectedParameter = ref('')
 const selectedEntry = ref('')
 const sourceValues = ref('')
 const sourceFields: Record<LinkParameterField, string> = {
-  frequency: '发射频率', bandwidth: '发射带宽', txPower: '发射功率', dataRate: '数据速率', modulation: '调制方式', berThreshold: 'BER 阈值', coding: '信道编码',
+  frequency: '发射频率', bandwidth: '发射带宽', txPower: '发射功率', dataRate: '数据速率', modulation: '调制方式', berThreshold: '误码率阈值',
   rxFrequency: '接收频率', rxBandwidth: '接收带宽', 'antennaGain.tx': '发射天线增益', 'antennaGain.rx': '接收天线增益',
   antennaGainCorrectionDb: '增益修正', noiseFigureDb: '噪声系数', txPolarization: '发射极化', rxPolarization: '接收极化',
 }
@@ -73,6 +90,7 @@ function sourceValue(link: EditableLink, field: LinkParameterField): unknown {
 function appliedValues(link: EditableLink): string {
   return JSON.stringify(link.parameterSource?.fields.map(field => sourceValue(link, field)) ?? [])
 }
+const showMasterData = computed(() => APP_CONFIG.systemManagement.showMasterData)
 const parameterLoading = computed(() => ['LOADING', 'VALIDATING'].includes(props.parameterCatalogState ?? 'EMPTY'))
 const sourceOptions = computed(() => [
   ...(props.parameterCatalog?.equipment ?? []).filter(row => row.active !== false && !row.readOnly).map(row => ({
@@ -111,6 +129,7 @@ const parameterSelectionError = computed(() => {
   const preview = parameterPreview.value
   if (!preview) return '所选基础数据暂不可用，请重新选择或清空选择。'
   if (!preview.ok) return `${preview.fieldPath}：${preview.message}`
+  if (includesPortField(preview.fields)) return '所选基础数据包含共享端口参数，请在「端口参数设置」中引用。'
   return preview.fields.length ? '' : '所选基础数据没有可填入的链路参数，请重新选择或清空选择。'
 })
 const parameterMismatch = computed(() => {
@@ -128,7 +147,8 @@ const parameterMismatch = computed(() => {
 function applyParameters(): void {
   const preview = parameterPreview.value
   const source = selectedSource.value
-  if (!props.modelValue || props.referenceDisabled || !editor.value || !preview?.ok || preview.fields.length === 0 || !source || props.pending || props.locked) return
+  if (!props.modelValue || props.referenceDisabled || !editor.value || !preview?.ok || preview.fields.length === 0 || includesPortField(preview.fields)
+    || !source || props.pending || props.locked) return
   editor.value = { ...preview.link, parameterSource: {
     kind: source.equipment ? 'EQUIPMENT' : 'MASTER_DATA', sourceId: source.equipment?.equipmentId ?? source.master!.dataId,
     sourceVersion: source.equipment?.version ?? source.master!.version, fields: preview.fields as LinkParameterField[],
@@ -170,6 +190,7 @@ function validationLink(): Link | null {
   if (link.forwardDataRate === undefined) delete link.forwardDataRate
   if (link.reverseDataRate === undefined) delete link.reverseDataRate
   if (fixedDataRate.value !== null) link.dataRate = fixedDataRate.value
+  if (usePlatformPorts.value && portParameters.value) Object.assign(link, portParameters.value.values)
   return link
 }
 
@@ -179,7 +200,18 @@ const validationIssues = computed(() => {
   const link = validationLink()
   return link && props.validate ? props.validate(link, validationDemand(link)) : []
 })
-const fieldError = (fieldPath: string): string => fieldValidationMessage(validationIssues.value, fieldPath)
+/** 新增链路的默认端点只是占位。用户改过类型或端点之后，才显示端口组合错误。 */
+const revealEndpointConstraint = ref(false)
+const shownIssues = computed(() => revealEndpointConstraint.value
+  ? validationIssues.value
+  : validationIssues.value.filter(issue => issue.code !== 'TEMPLATE_PORT_MAPPING_INVALID' && issue.code !== 'TEMPLATE_PORT_MAPPING_WARNING'))
+const fieldError = (fieldPath: string): string => fieldValidationMessage(shownIssues.value, fieldPath)
+const PORT_MANAGED_LINK_FIELDS = ['dataRate', 'frequency', 'bandwidth', 'txPower', 'rxFrequency', 'rxBandwidth', 'noiseFigureDb'] as const
+const portValidationMessages = computed(() => {
+  if (!usePlatformPorts.value) return []
+  return Array.from(new Set(PORT_MANAGED_LINK_FIELDS.map(field => fieldError(field)).filter(Boolean)))
+})
+const receiveDetails = ref<HTMLDetailsElement | null>(null)
 
 /** 嵌入业务组件使用业务相对路径；父级链路校验结果中的业务路径统一以 business. 开头。 */
 function validateBusiness(demand: InformationDemand): ValidationIssue[] {
@@ -206,17 +238,29 @@ function setRelay(value: string | undefined): void {
 
 /** 改类型后清除不再适用的中继引用；数传默认 C 波段，其他类型不保留波段。按新类型套用文档端口默认值。 */
 function changeType(type: LinkType): void {
+  revealEndpointConstraint.value = true
   if (!editor.value) return
   if (editor.value.relayPlatformId && !relayCandidates(type).some(platform => platform.id === editor.value!.relayPlatformId)) editor.value.relayPlatformId = null
   if (type === 'DATALINK') editor.value.band ??= 'C'
   else delete editor.value.band
   if (type === 'LASER') {
+    if (props.resolvePortParameters) beforeLaser = structuredClone(toRaw(editor.value))
     // 采用 1112 lazer_link 缺省参数集（含 EIRP 20 / G-T 15 / 噪声 5）；光学口径、脉宽与 OOK 为可选扩展，切入时不强制填写。
     delete editor.value.laser
     delete editor.value.txPolarization
     delete editor.value.rxPolarization
+    delete editor.value.inheritPortParameters
     Object.assign(editor.value, linkTypeDefaults('LASER'))
     return
+  }
+  if (beforeLaser) {
+    const restored = structuredClone(toRaw(editor.value))
+    for (const key of laserSwitchFields) {
+      if (Object.hasOwn(beforeLaser, key)) Object.assign(restored, { [key]: beforeLaser[key] })
+      else Reflect.deleteProperty(restored, key)
+    }
+    editor.value = restored
+    beforeLaser = null
   }
   delete editor.value.laser
   applyTypeDefaults()
@@ -225,13 +269,18 @@ function changeType(type: LinkType): void {
 /** 套用当前类型、波段与方向对应的文档端口默认值；不改动端点、调制和业务参数。 */
 function applyTypeDefaults(): void {
   if (!editor.value) return
-  if (editor.value.type !== 'LASER') Object.assign(editor.value, linkTypeDefaults(editor.value.type, editor.value.band ?? 'C', editor.value.direction))
+  if (editor.value.type === 'LASER') return
+  const defaults = linkTypeDefaults(editor.value.type, editor.value.band ?? 'C', editor.value.direction)
+  if (usePlatformPorts.value) {
+    editor.value.txPolarization ??= defaults.txPolarization
+    editor.value.rxPolarization ??= defaults.rxPolarization
+  } else Object.assign(editor.value, defaults)
 }
 
 const fiber = computed(() => editor.value?.type === 'FIBER')
 const laser = computed(() => editor.value?.type === 'LASER')
 /** 卫星、微波速率固定只读；天通卫星为 16 kbit/s。 */
-const fixedDataRate = computed(() => editor.value ? fixedLinkDataRate(editor.value, props.platforms) : null)
+const fixedDataRate = computed(() => editor.value && !usePlatformPorts.value ? fixedLinkDataRate(editor.value, props.platforms) : null)
 const rateTiers = computed(() => editor.value?.type === 'DATALINK' ? datalinkRateTiers(editor.value.band ?? 'C', editor.value.direction) : [])
 const laserWavelengthNm = computed(() => {
   const frequencyMHz = editor.value?.frequency
@@ -290,16 +339,13 @@ function setLaserNumberField(key: 'eirpDbw' | 'gtDbk' | 'noiseFigureDb', value: 
   else delete editor.value[key]
 }
 
-/** 保存编码选择；空字符串转为“未指定”，value 为选项或用户录入的后端编码标识。 */
-function changeCoding(value: string | null | undefined): void {
-  if (editor.value) editor.value.coding = (value ?? '').trim() || null
-}
-
 /** 确认当前链路及其启停副本；取消或校验失败时不写入原场景。 */
 function apply(): void {
   if (editor.value === null || props.pending || props.locked || parameterMismatch.value || parameterSelectionError.value) return
   if (selectedSource.value) applyParameters()
   if (fixedDataRate.value !== null) editor.value.dataRate = fixedDataRate.value
+  const receiveFields = laser.value ? ['rxFrequency', 'rxBandwidth'] : ['rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb']
+  if (receiveDetails.value && receiveFields.some(fieldError)) receiveDetails.value.open = true
   const demand = business.value ? {
     ...structuredClone(toRaw(business.value)),
     linkId: editor.value.id.trim(),
@@ -312,14 +358,20 @@ function apply(): void {
 
 watch(() => props.modelValue, (visible) => {
   if (!visible) { emit('close-parameters'); return }
+  revealEndpointConstraint.value = props.editing
+  if (receiveDetails.value) receiveDetails.value.open = false
+  beforeLaser = null
   editor.value = props.link === null ? null : { ...LINK_PARAMETER_DEFAULTS, ...structuredClone(toRaw(props.link)) }
   // 旧数传链路缺省波段时按 C 波段展示，与生成器的缺省口径一致。
   if (editor.value?.type === 'DATALINK') editor.value.band ??= 'C'
+  lastDirection = editor.value?.direction
   // 旧链路没有单独的接收参数与极化时，按生成器缺省口径展示（接收同发射，微波水平、其余垂直）。
   if (editor.value && editor.value.type !== 'LASER') {
     const defaults = linkTypeDefaults(editor.value.type)
-    editor.value.rxFrequency ??= editor.value.frequency
-    editor.value.rxBandwidth ??= editor.value.bandwidth
+    if (!usePlatformPorts.value) {
+      editor.value.rxFrequency ??= editor.value.frequency
+      editor.value.rxBandwidth ??= editor.value.bandwidth
+    }
     editor.value.txPolarization ??= defaults.txPolarization
     editor.value.rxPolarization ??= defaults.rxPolarization
   }
@@ -332,7 +384,11 @@ watch(() => props.modelValue, (visible) => {
 }, { immediate: true })
 
 watch(() => editor.value?.direction, direction => {
-  if (direction && business.value) changeBusinessDirection(business.value, direction, Boolean(props.demand?.linkId))
+  if (!direction) return
+  // 打开弹框时的回显不算用户切换（lastDirection 已在赋值时同步为新方向）。
+  if (lastDirection === undefined || lastDirection === direction) { lastDirection = direction; return }
+  lastDirection = direction
+  if (business.value) changeBusinessDirection(business.value, direction, Boolean(props.demand?.linkId))
 })
 
 /** 数传上下行的频率、功率与速率档位不同，用户切换方向时套用对应默认值。 */
@@ -374,8 +430,14 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
               <el-option v-for="option in linkTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="当前链路" :error="fieldError('enabled')">
+          <!-- 链路启停改在“链路配置”列表行内操作；此处保留隐藏节点，兼容旧场景回显与校验定位。 -->
+          <el-form-item v-show="false" label="当前链路" :error="fieldError('enabled')">
             <el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="link-enabled" />
+          </el-form-item>
+          <el-form-item required label="通信方向" :error="fieldError('direction')">
+            <el-select v-model="editor.direction" style="width: 100%" data-testid="link-direction" @change="changeDirection">
+              <el-option v-for="(label, value) in linkDirectionLabels" :key="value" :label="label" :value="value" />
+            </el-select>
           </el-form-item>
           <el-form-item v-if="editor.type === 'DATALINK'" required label="数传波段" :error="fieldError('band')">
             <el-select v-model="editor.band" style="width: 100%" data-testid="link-band" @change="applyTypeDefaults">
@@ -389,17 +451,17 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
       <section class="link-editor-section" aria-labelledby="link-endpoint-title">
         <h4 id="link-endpoint-title" class="link-editor-section__title">端点配置</h4>
         <div class="link-editor-grid">
-          <el-form-item required label="源平台" :error="fieldError('sourcePlatformId')">
-            <el-select v-model="editor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source">
+          <el-form-item required label="源节点" :error="fieldError('sourcePlatformId')">
+            <el-select v-model="editor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source" @change="revealEndpointConstraint = true">
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
           </el-form-item>
-          <el-form-item required label="目标平台" :error="fieldError('targetPlatformId')">
-            <el-select v-model="editor.targetPlatformId" filterable style="width: 100%" data-testid="link-target">
+          <el-form-item required label="目标节点" :error="fieldError('targetPlatformId')">
+            <el-select v-model="editor.targetPlatformId" filterable style="width: 100%" data-testid="link-target" @change="revealEndpointConstraint = true">
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
           </el-form-item>
-          <el-form-item v-if="editor.type === 'SAT' || editor.type === 'MICROWAVE' || editor.type === 'DATALINK'" label="中继平台（可选）" :error="fieldError('relayPlatformId')">
+          <el-form-item v-if="editor.type === 'SAT' || editor.type === 'MICROWAVE' || editor.type === 'DATALINK'" label="中继节点（可选）" :error="fieldError('relayPlatformId')">
             <el-select :model-value="editor.relayPlatformId ?? ''" clearable placeholder="不经中继" style="width: 100%" data-testid="link-relay" @update:model-value="setRelay">
               <el-option v-for="platform in relayOptions" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
@@ -410,45 +472,56 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 
       <section class="link-editor-section" aria-labelledby="link-communication-title">
         <h4 id="link-communication-title" class="link-editor-section__title">通信参数</h4>
-        <div class="link-parameter-source" data-testid="link-parameter-source">
-          <div class="link-parameter-source__controls">
-            <el-select v-model="selectedParameter" placeholder="选择设备参数或通用基础数据" aria-label="链路基础数据" filterable clearable :loading="parameterLoading" :disabled="referenceDisabled"
-              data-testid="link-parameter-select" @change="changeParameterSource" @visible-change="visible => { if (visible && !parameterCatalog && !parameterLoading) emit('load-parameters') }">
-              <el-option v-if="savedParameter && selectedParameter === savedParameter.key" :value="savedParameter.key" :label="savedParameter.label" disabled />
-              <el-option-group label="设备参数">
-                <el-option v-for="option in sourceOptions.filter(row => row.equipment)" :key="option.key" :value="option.key" :label="option.label" :disabled="Boolean(option.disabledReason)" :title="option.disabledReason" />
-                <el-option v-if="parameterCatalog && !sourceOptions.some(row => row.equipment)" label="暂无可用设备参数" value="EMPTY:EQUIPMENT" disabled />
-              </el-option-group>
-              <el-option-group label="通用基础数据">
-                <el-option v-for="option in sourceOptions.filter(row => row.master)" :key="option.key" :value="option.key" :label="option.label" />
-                <el-option v-if="parameterCatalog && !sourceOptions.some(row => row.master)" label="暂无可用通用基础数据" value="EMPTY:MASTER_DATA" disabled />
-              </el-option-group>
+        <div v-if="usePlatformPorts || showMasterData || editor.parameterSource" class="link-parameter-source" data-testid="link-parameter-source">
+          <template v-if="usePlatformPorts">
+            <p>端口参数统一在「端口参数设置」中配置。</p>
+            <div v-if="portParameters" data-testid="link-port-parameters">
+              <p>源节点端口：{{ scenarioPlatformLabel(platforms, editor.sourcePlatformId, showIds) }} · {{ portParameters.source.portName }}</p>
+              <p>目标节点端口：{{ scenarioPlatformLabel(platforms, editor.targetPlatformId, showIds) }} · {{ portParameters.target.portName }}</p>
+            </div>
+            <p v-else>请选择可匹配端口的节点和链路类型。</p>
+            <p v-for="message in portValidationMessages" :key="message" class="link-port-conflict" role="alert" data-testid="link-port-validation">{{ message }}</p>
+          </template>
+          <template v-if="showMasterData">
+            <div class="link-parameter-source__controls">
+              <el-select v-model="selectedParameter" placeholder="选择设备参数或通用基础数据" aria-label="链路基础数据" filterable clearable :loading="parameterLoading" :disabled="referenceDisabled"
+                data-testid="link-parameter-select" @change="changeParameterSource" @visible-change="visible => { if (visible && !parameterCatalog && !parameterLoading) emit('load-parameters') }">
+                <el-option v-if="savedParameter && selectedParameter === savedParameter.key" :value="savedParameter.key" :label="savedParameter.label" disabled />
+                <el-option-group v-if="!usePlatformPorts" label="设备参数">
+                  <el-option v-for="option in sourceOptions.filter(row => row.equipment)" :key="option.key" :value="option.key" :label="option.label" :disabled="Boolean(option.disabledReason)" :title="option.disabledReason" />
+                  <el-option v-if="parameterCatalog && !sourceOptions.some(row => row.equipment)" label="暂无可用设备参数" value="EMPTY:EQUIPMENT" disabled />
+                </el-option-group>
+                <el-option-group label="通用基础数据">
+                  <el-option v-for="option in sourceOptions.filter(row => row.master)" :key="option.key" :value="option.key" :label="option.label" />
+                  <el-option v-if="parameterCatalog && !sourceOptions.some(row => row.master)" label="暂无可用通用基础数据" value="EMPTY:MASTER_DATA" disabled />
+                </el-option-group>
+              </el-select>
+              <el-button :disabled="referenceDisabled" :loading="parameterLoading" data-testid="link-parameter-refresh" @click="emit('load-parameters')">{{ parameterCatalogState === 'ERROR' ? '重试加载' : '刷新基础数据' }}</el-button>
+            </div>
+            <p v-if="referenceDisabled">请先保存场景，再引用基础数据。</p>
+            <p v-if="parameterCatalogState === 'ERROR'" role="alert">{{ parameterCatalogMessage }}</p>
+            <p v-else-if="parameterCatalog && sourceOptions.length === 0">暂无可用基础数据</p>
+            <el-select v-if="enumEntries.length" v-model="selectedEntry" placeholder="请选择具体枚举值" aria-label="基础数据枚举值" data-testid="link-parameter-entry" @change="applyParameters">
+              <el-option v-for="entry in enumEntries" :key="entry.key" :value="entry.key" :label="`${entry.key}：${entry.value}`" />
             </el-select>
-            <el-button :disabled="referenceDisabled" :loading="parameterLoading" data-testid="link-parameter-refresh" @click="emit('load-parameters')">{{ parameterCatalogState === 'ERROR' ? '重试加载' : '刷新基础数据' }}</el-button>
-          </div>
-          <p v-if="referenceDisabled">请先保存场景，再引用基础数据。</p>
-          <p v-if="parameterCatalogState === 'ERROR'" role="alert">{{ parameterCatalogMessage }}</p>
-          <p v-else-if="parameterCatalog && sourceOptions.length === 0">暂无可用基础数据</p>
-          <el-select v-if="enumEntries.length" v-model="selectedEntry" placeholder="请选择具体枚举值" aria-label="基础数据枚举值" data-testid="link-parameter-entry" @change="applyParameters">
-            <el-option v-for="entry in enumEntries" :key="entry.key" :value="entry.key" :label="`${entry.key}：${entry.value}`" />
-          </el-select>
-          <div v-if="parameterPreview" data-testid="link-parameter-preview">
-            <template v-if="parameterPreview.ok">
-              <p v-for="field in parameterPreview.fields" :key="field">{{ sourceFields[field as LinkParameterField] }}：{{ field === 'dataRate' ? formatDataRate(parameterPreview.link.dataRate) : sourceValue(parameterPreview.link, field as LinkParameterField) }}</p>
-            </template>
-            <template v-if="'skipped' in parameterPreview">
-              <p v-for="item in parameterPreview.skipped" :key="item.key">{{ item.key }}：{{ item.reason }}</p>
-            </template>
-          </div>
-          <p v-if="parameterSelectionError" role="alert" data-testid="link-parameter-selection-error">{{ parameterSelectionError }}</p>
+            <div v-if="parameterPreview" data-testid="link-parameter-preview">
+              <template v-if="parameterPreview.ok">
+                <p v-for="field in parameterPreview.fields" :key="field">{{ sourceFields[field as LinkParameterField] }}：{{ field === 'dataRate' ? formatDataRate(parameterPreview.link.dataRate) : sourceValue(parameterPreview.link, field as LinkParameterField) }}</p>
+              </template>
+              <template v-if="'skipped' in parameterPreview">
+                <p v-for="item in parameterPreview.skipped" :key="item.key">{{ item.key }}：{{ item.reason }}</p>
+              </template>
+            </div>
+            <p v-if="parameterSelectionError" role="alert" data-testid="link-parameter-selection-error">{{ parameterSelectionError }}</p>
+          </template>
           <div v-if="editor.parameterSource" data-testid="link-parameter-applied">
             已引用 {{ editor.parameterSource.sourceId }} · v{{ editor.parameterSource.sourceVersion }}
             <el-button link data-testid="link-parameter-clear" @click="clearParameterSource">取消引用，保留参数</el-button>
           </div>
           <p v-if="parameterMismatch" role="alert" data-testid="link-parameter-mismatch">{{ parameterMismatch }}</p>
         </div>
-        <div class="link-editor-grid">
-          <el-form-item required :label="laser ? '介质传输速率（Mbps）' : '数据速率'" :error="fieldError('dataRate')">
+        <div v-if="!usePlatformPorts || !fiber" class="link-editor-grid">
+          <el-form-item v-if="!usePlatformPorts" required :label="laser ? '介质传输速率（Mbps）' : '数据速率'" :error="fieldError('dataRate')">
             <el-input v-if="fixedDataRate !== null" :model-value="formatDataRate(fixedDataRate)" disabled data-testid="link-data-rate" />
             <el-select v-else-if="editor.type === 'DATALINK'" v-model="editor.dataRate" style="width: 100%" data-testid="link-data-rate">
               <el-option v-for="tier in rateTiers" :key="tier" :label="formatDataRate(tier)" :value="tier" />
@@ -456,55 +529,91 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             </el-select>
             <el-input-number v-else v-model="editor.dataRate" :min="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.min : 0" :max="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.max : Infinity"
               controls-position="right" data-testid="link-data-rate" />
-            <small v-if="fixedDataRate === null && !laser" class="link-editor-hint">{{ editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : '单位 Mbps' }}</small>
+            <small v-if="fixedDataRate === null && !laser" :class="{ 'link-editor-hint--hidden': !!fieldError('dataRate') }" class="link-editor-hint">{{ editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : '单位 Mbps' }}</small>
           </el-form-item>
           <template v-if="editor.type === 'SAT'">
             <el-form-item label="前向速率（Mbps）" :error="fieldError('forwardDataRate')">
               <el-input-number :model-value="editor.forwardDataRate" :min="0.128" :max="8" :step="0.001" placeholder="兼容旧速率" controls-position="right"
                 data-testid="link-forward-data-rate" @update:model-value="setDirectionalRate('forwardDataRate', $event)" />
-              <small class="link-editor-hint">0.128～8 Mbps；清空后兼容历史速率。</small>
+              <small :class="{ 'link-editor-hint--hidden': !!fieldError('forwardDataRate') }" class="link-editor-hint">0.128～8 Mbps；清空后兼容历史速率。</small>
             </el-form-item>
             <el-form-item label="返向速率（Mbps）" :error="fieldError('reverseDataRate')">
               <el-input-number :model-value="editor.reverseDataRate" :min="0.064" :max="2" :step="0.001" placeholder="兼容旧速率" controls-position="right"
                 data-testid="link-reverse-data-rate" @update:model-value="setDirectionalRate('reverseDataRate', $event)" />
-              <small class="link-editor-hint">0.064～2 Mbps；清空后兼容历史速率。</small>
+              <small :class="{ 'link-editor-hint--hidden': !!fieldError('reverseDataRate') }" class="link-editor-hint">0.064～2 Mbps；清空后兼容历史速率。</small>
             </el-form-item>
           </template>
-          <el-form-item required :label="fiber ? '发送频率（MHz）' : laser ? '激光频率（MHz）' : '发射频率（MHz）'" :error="fieldError('frequency')">
+          <el-form-item v-if="!usePlatformPorts" required :label="fiber ? '发送频率（MHz）' : laser ? '激光频率（MHz）' : '发射频率（MHz）'" :error="fieldError('frequency')">
             <el-input-number v-model="editor.frequency" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-frequency" @input="emit('frequency-input', $event)" />
-            <small v-if="laser" class="link-editor-hint" data-testid="laser-wavelength">
+            <small v-if="laser" :class="{ 'link-editor-hint--hidden': !!fieldError('frequency') }" class="link-editor-hint" data-testid="laser-wavelength">
               {{ laserWavelengthNm === null ? '填写激光频率后显示波长' : `波长约 ${Number(laserWavelengthNm.toPrecision(8))} nm（只读）` }}
             </small>
           </el-form-item>
-          <template v-if="!fiber">
-            <el-form-item required :label="laser ? '激光带宽（MHz）' : '发射带宽（MHz）'" :error="fieldError('bandwidth')"><el-input-number v-model="editor.bandwidth" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
-            <el-form-item required :label="laser ? '激光光功率（W）' : '发射功率（W）'" :error="fieldError('txPower')"><el-input-number v-model="editor.txPower" :min="validate ? undefined : 0" :max="validate ? undefined : linkPowerMaxW(editor.type)" controls-position="right" data-testid="link-power" /></el-form-item>
-            <el-form-item :required="!laser" :label="laser ? '接收激光频率（MHz）' : '接收频率（MHz）'" :error="fieldError('rxFrequency')"><el-input-number :model-value="editor.rxFrequency" :placeholder="laser ? '留空时与发射相同' : undefined" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-rx-frequency" @update:model-value="setReceiveCarrierNumber('rxFrequency', $event)" /></el-form-item>
-            <el-form-item :required="!laser" :label="laser ? '接收激光带宽（MHz）' : '接收带宽（MHz）'" :error="fieldError('rxBandwidth')"><el-input-number :model-value="editor.rxBandwidth" :placeholder="laser ? '留空时与发射相同' : undefined" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-rx-bandwidth" @update:model-value="setReceiveCarrierNumber('rxBandwidth', $event)" /></el-form-item>
+          <template v-if="!fiber && !usePlatformPorts">
+            <el-form-item required :label="laser ? '激光带宽（MHz）' : '发射带宽（MHz）'" :error="fieldError('bandwidth')">
+              <el-input-number v-model="editor.bandwidth" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-bandwidth" @input="emit('bandwidth-input', $event)" />
+            </el-form-item>
+            <el-form-item required :label="laser ? '激光光功率（W）' : '发射功率（W）'" :error="fieldError('txPower')">
+              <el-input-number v-model="editor.txPower" :min="validate ? undefined : 0" :max="validate ? undefined : linkPowerMaxW(editor.type)" controls-position="right" data-testid="link-power" />
+            </el-form-item>
           </template>
           <template v-if="!fiber && !laser">
-            <el-form-item required label="发射极化" :error="fieldError('txPolarization')">
-              <el-select v-model="editor.txPolarization" style="width: 100%" data-testid="link-tx-polarization">
-                <el-option label="垂直极化" value="vertical" /><el-option label="水平极化" value="horizontal" />
-              </el-select>
-            </el-form-item>
             <el-form-item required label="发射天线增益（dBi）" :error="fieldError('antennaGain.tx')"><el-input-number v-model="editor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
-            <el-form-item required label="接收极化" :error="fieldError('rxPolarization')">
-              <el-select v-model="editor.rxPolarization" style="width: 100%" data-testid="link-rx-polarization">
-                <el-option label="垂直极化" value="vertical" /><el-option label="水平极化" value="horizontal" />
-              </el-select>
-            </el-form-item>
             <el-form-item required label="接收天线增益（dBi）" :error="fieldError('antennaGain.rx')"><el-input-number v-model="editor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
-            <el-form-item label="接收机噪声系数（dB）" :error="fieldError('noiseFigureDb')">
-              <el-input-number :model-value="editor.noiseFigureDb" :min="validate ? undefined : 0" :max="validate ? undefined : 100" placeholder="缺省 3（天通 2）" controls-position="right"
-                data-testid="link-noise-figure" @update:model-value="setNoiseFigure" />
-            </el-form-item>
           </template>
         </div>
+        <section class="link-editor-section" aria-labelledby="link-quality-title" data-testid="link-quality-advanced">
+          <h5 id="link-quality-title" class="link-editor-section__title">质量参数</h5>
+          <div class="link-editor-grid">
+            <el-form-item v-if="!laser" required label="调制方式" :error="fieldError('modulation')">
+              <el-select v-model="editor.modulation" clearable value-on-clear="" style="width: 100%" data-testid="link-modulation">
+                <el-option v-for="value in LINK_MODULATIONS" :key="value" :label="value" :value="value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-else label="调制方式" :error="fieldError('laser.modulation')">
+              <el-select :model-value="editor.laser?.modulation" clearable value-on-clear="" placeholder="可选：OOK" style="width: 100%" data-testid="laser-modulation" @update:model-value="setLaserModulation">
+                <el-option :label="LASER_LINK_MODULATION" :value="LASER_LINK_MODULATION" />
+              </el-select>
+            </el-form-item>
+            <el-form-item required label="误码率阈值" :error="fieldError('berThreshold')">
+              <div class="link-editor-threshold">
+                <el-input-number v-model="editor.berThreshold" :min="validate ? undefined : 0" :max="validate ? undefined : 1" :step="0.000001" controls-position="right" data-testid="link-ber-threshold" />
+                <span :class="{ 'link-editor-hint--hidden': !!fieldError('berThreshold') }">取值范围 0–1</span>
+              </div>
+            </el-form-item>
+          </div>
+        </section>
+        <details v-if="!fiber && !usePlatformPorts" ref="receiveDetails" class="scenario-advanced" data-testid="link-receive-advanced">
+          <summary>接收与极化</summary>
+          <div class="link-editor-grid">
+            <el-form-item v-if="!usePlatformPorts" :required="!laser" :label="laser ? '接收激光频率（MHz）' : '接收频率（MHz）'" :error="fieldError('rxFrequency')">
+              <el-input-number :model-value="editor.rxFrequency" :placeholder="laser ? '留空时与发射相同' : undefined" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-rx-frequency" @update:model-value="setReceiveCarrierNumber('rxFrequency', $event)" />
+            </el-form-item>
+            <el-form-item v-if="!usePlatformPorts" :required="!laser" :label="laser ? '接收激光带宽（MHz）' : '接收带宽（MHz）'" :error="fieldError('rxBandwidth')">
+              <el-input-number :model-value="editor.rxBandwidth" :placeholder="laser ? '留空时与发射相同' : undefined" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-rx-bandwidth" @update:model-value="setReceiveCarrierNumber('rxBandwidth', $event)" />
+            </el-form-item>
+            <template v-if="!laser">
+              <el-form-item v-if="!usePlatformPorts" required label="发射极化" :error="fieldError('txPolarization')">
+                <el-select v-model="editor.txPolarization" style="width: 100%" data-testid="link-tx-polarization">
+                  <el-option label="垂直极化" value="vertical" /><el-option label="水平极化" value="horizontal" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="!usePlatformPorts" required label="接收极化" :error="fieldError('rxPolarization')">
+                <el-select v-model="editor.rxPolarization" style="width: 100%" data-testid="link-rx-polarization">
+                  <el-option label="垂直极化" value="vertical" /><el-option label="水平极化" value="horizontal" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="!usePlatformPorts" label="接收机噪声系数（dB）" :error="fieldError('noiseFigureDb')">
+                <el-input-number :model-value="editor.noiseFigureDb" :min="validate ? undefined : 0" :max="validate ? undefined : 100" placeholder="缺省 3（天通 2）" controls-position="right"
+                  data-testid="link-noise-figure" @update:model-value="setNoiseFigure" />
+              </el-form-item>
+            </template>
+          </div>
+        </details>
         <details class="scenario-advanced" data-testid="link-gain-advanced" :open="['antennaGainCorrectionDb', 'antiJammingGainDb', 'spatialIsolationDb'].some(key => fieldError(key))">
           <summary>增益修正与抗干扰参数</summary>
           <div class="link-editor-grid">
-          <el-form-item label="天线增益修正值（dB）" :error="fieldError('antennaGainCorrectionDb')"><el-input-number v-model="editor.antennaGainCorrectionDb" controls-position="right" data-testid="link-gain-correction" /></el-form-item>
+          <el-form-item v-if="!usePlatformPorts" label="天线增益修正值（dB）" :error="fieldError('antennaGainCorrectionDb')"><el-input-number v-model="editor.antennaGainCorrectionDb" controls-position="right" data-testid="link-gain-correction" /></el-form-item>
           <el-form-item label="波形抗干扰增益（dB）" :error="fieldError('antiJammingGainDb')"><el-input-number v-model="editor.antiJammingGainDb" :min="validate ? undefined : 0" controls-position="right" data-testid="link-anti-jamming-gain" /></el-form-item>
           <el-form-item label="空域隔离量（dB）" :error="fieldError('spatialIsolationDb')"><el-input-number v-model="editor.spatialIsolationDb" :min="validate ? undefined : 0" controls-position="right" data-testid="link-spatial-isolation" /></el-form-item>
           </div>
@@ -515,10 +624,10 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
         :open="validationIssues.some(issue => issue.fieldPath.startsWith('laser.') || ['eirpDbw', 'gtDbk', 'noiseFigureDb'].includes(issue.fieldPath))">
         <summary>激光专业参数与可选扩展</summary>
         <div class="link-editor-grid">
-          <el-form-item v-if="fieldError('eirpDbw')" label="历史 EIRP（dBW，待修正）" :error="fieldError('eirpDbw')">
+          <el-form-item label="EIRP（dBW）" :error="fieldError('eirpDbw')">
             <el-input-number :model-value="editor.eirpDbw" :step="0.1" controls-position="right" data-testid="laser-eirp" @update:model-value="setLaserNumberField('eirpDbw', $event)" />
           </el-form-item>
-          <el-form-item v-if="fieldError('gtDbk')" label="历史 G/T（dB/K，待修正）" :error="fieldError('gtDbk')">
+          <el-form-item label="G/T（dB/K）" :error="fieldError('gtDbk')">
             <el-input-number :model-value="editor.gtDbk" :step="0.1" controls-position="right" data-testid="laser-gt" @update:model-value="setLaserNumberField('gtDbk', $event)" />
           </el-form-item>
           <el-form-item label="噪声系数（dB）" :error="fieldError('noiseFigureDb')">
@@ -536,42 +645,9 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             <el-input-number :model-value="editor.laser?.pulseWidthS === undefined ? undefined : editor.laser.pulseWidthS * 1e9" :min="validate ? undefined : Number.MIN_VALUE" controls-position="right"
               data-testid="laser-pulse-width" @update:model-value="setLaserPulseWidthNs" />
           </el-form-item>
-          <el-form-item label="光调制方式" :error="fieldError('laser.modulation')">
-            <el-select :model-value="editor.laser?.modulation" placeholder="可选：OOK" style="width: 100%" data-testid="laser-modulation" @update:model-value="setLaserModulation">
-              <el-option :label="LASER_LINK_MODULATION" :value="LASER_LINK_MODULATION" />
-            </el-select>
-          </el-form-item>
         </div>
       </details>
 
-      <section class="link-editor-section" aria-labelledby="link-quality-title">
-        <h4 id="link-quality-title" class="link-editor-section__title">质量与方向</h4>
-        <div class="link-editor-grid">
-          <el-form-item v-if="!laser" required label="调制方式" :error="fieldError('modulation')">
-            <el-select v-model="editor.modulation" style="width: 100%" data-testid="link-modulation">
-              <el-option v-for="value in LINK_MODULATIONS" :key="value" :label="value" :value="value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required label="通信方向" :error="fieldError('direction')">
-            <el-select v-model="editor.direction" style="width: 100%" data-testid="link-direction" @change="changeDirection">
-              <el-option v-for="(label, value) in linkDirectionLabels" :key="value" :label="label" :value="value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item class="link-editor-field--wide" label="信道编码类型" :error="fieldError('coding')">
-            <el-select :model-value="editor.coding ?? ''" filterable allow-create clearable default-first-option
-              placeholder="选择无编码，或输入后端约定编码标识" data-testid="link-coding" @update:model-value="changeCoding">
-              <el-option label="无编码" value="UNCODED" />
-              <el-option v-if="editor.coding && editor.coding !== 'UNCODED'" :label="editor.coding" :value="editor.coding" />
-            </el-select>
-          </el-form-item>
-          <el-form-item required class="link-editor-field--wide" label="BER 阈值" :error="fieldError('berThreshold')">
-            <div class="link-editor-threshold">
-              <el-input-number v-model="editor.berThreshold" :min="validate ? undefined : 0" :max="validate ? undefined : 1" :step="0.000001" controls-position="right" data-testid="link-ber-threshold" />
-              <span>取值范围 0–1</span>
-            </div>
-          </el-form-item>
-        </div>
-      </section>
       <section v-if="business" class="link-editor-section" aria-labelledby="link-business-title">
         <h4 id="link-business-title" class="link-editor-section__title">业务参数</h4>
         <BusinessEditorDialog :key="business.id" embedded :model-value="true" :demand="business"
@@ -615,6 +691,10 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 
 .link-parameter-source p { margin: 0.25rem 0; }
 
+.link-port-conflict {
+  color: var(--el-color-warning);
+}
+
 .link-editor-section {
   min-width: 0;
 }
@@ -642,7 +722,8 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 }
 
 .link-editor-grid :deep(.el-form-item) {
-  margin-bottom: 0.375rem;
+  /* 为绝对定位的校验红字预留一行。 */
+  margin-bottom: 1.25rem;
 }
 
 .link-editor-grid :deep(.el-form-item__label) {
@@ -654,18 +735,16 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
   width: 100%;
 }
 
-.link-editor-field--wide {
-  grid-column: 1 / -1;
-}
-
 .link-editor-threshold {
   display: grid;
   align-items: center;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 1rem;
   width: 100%;
 }
 
+.link-editor-hint--hidden { visibility: hidden; }
+:deep(.el-form-item.is-error:has(.link-editor-hint--hidden) .el-form-item__error) { transform: translateY(-1.5em); }
 .link-editor-hint {
   color: var(--console-text-muted);
   font-size: 0.75rem;
@@ -681,10 +760,6 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
   .link-editor-grid,
   .link-editor-threshold {
     grid-template-columns: 1fr;
-  }
-
-  .link-editor-field--wide {
-    grid-column: auto;
   }
 }
 </style>

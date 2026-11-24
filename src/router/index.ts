@@ -35,6 +35,10 @@ function authFor(pinia?: Pinia) {
   return useAuthStore(pinia)
 }
 
+function isOperatorAllowedAdminRoute(to?: RouteLocationNormalized): boolean {
+  return to?.path === '/admin' && to.query?.section === 'scenario-templates'
+}
+
 /**
  * 允许已登录主体进入受保护路由，并将匿名用户重定向到登录页。
  * @returns 已登录时返回 `true`，否则返回指向 `/login` 的重定向。
@@ -45,15 +49,15 @@ export const requirePrincipal: RouteGuard = () => {
 }
 
 /**
- * 允许管理员进入管理路由，并安全重定向其他身份。
- * @returns 管理员返回 `true`，匿名用户重定向到 `/login`，非管理员重定向到 `/blueprint`。
+ * 允许管理员进入管理路由，允许操作员进入场景模板维护子页，并安全重定向其他身份。
+ * @returns 允许进入时返回 `true`，匿名用户重定向到 `/login`，非管理员访问其他管理页重定向到 `/blueprint`。
  * @remarks 已登录但被拒绝时，会先在身份验证 Store 中记录 `USER_ROLE_MAINTAIN` 授权决策，
  * 然后改变本次导航目标。
  */
-export const requireAdmin: RouteGuard = () => {
+export const requireAdmin: RouteGuard = (to) => {
   const auth = authFor()
   if (auth.principal === null) return { path: '/login' }
-  if (auth.role === 'ADMIN') return true
+  if (auth.role === 'ADMIN' || isOperatorAllowedAdminRoute(to)) return true
 
   auth.authorize('USER_ROLE_MAINTAIN')
   return { path: '/blueprint' }
@@ -173,7 +177,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory(), pin
       if (to.meta.guard === 'principal' && auth.principal === null) return { path: '/login' }
       if (to.meta.guard === 'admin') {
         if (auth.principal === null) return { path: '/login' }
-        if (auth.role !== 'ADMIN') {
+        if (auth.role !== 'ADMIN' && !isOperatorAllowedAdminRoute(to)) {
           auth.authorize('USER_ROLE_MAINTAIN')
           return { path: '/blueprint' }
         }

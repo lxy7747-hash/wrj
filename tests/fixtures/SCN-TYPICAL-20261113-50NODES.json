@@ -12569,8 +12569,7 @@
       "c_return_mission_uav_48",
       "fiber_return"
      ]
-    ],
-    "endPlatformType": "REAR_COMMAND_NODE"
+    ]
    }
   },
   "jammingEnabled": true

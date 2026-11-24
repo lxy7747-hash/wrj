@@ -1,19 +1,45 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import * as echarts from 'echarts/core'
+import { BarChart, LineChart, RadarChart } from 'echarts/charts'
+import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
+import { SVGRenderer } from 'echarts/renderers'
+import type { ECharts } from 'echarts/core'
 import { formatDateTime } from '../../features/shared/date-time'
+import { reportTime } from '../../features/reports/local-report'
 
-const props = defineProps<{
+echarts.use([LineChart, BarChart, RadarChart, GridComponent, TooltipComponent, LegendComponent, SVGRenderer])
+
+const props = withDefaults(defineProps<{
   title: string
   unit: string
-  rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>
+  rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean; displayValue?: string }>
   radar?: boolean
   line?: boolean
+  stepEnd?: boolean
   sourceRange?: string
   generatedTime?: string
-}>()
+  /** 质量曲线使用 ECharts；历史 SVG 实现保留给其他图表和兼容测试。 */
+  useEcharts?: boolean
+  showPointList?: boolean
+  invalidValue?: number
+  hideSource?: boolean
+  /** 折线图横轴使用报表已应用的时间范围。 */
+  xMin?: number
+  xMax?: number
+  scopeSummary?: string
+}>(), { useEcharts: false, showPointList: true, hideSource: false })
 
 const MAX_RENDER_POINTS = 5000
-const rawRows = computed(() => props.rows.filter(row => Number.isFinite(row.value)))
+const rawRows = computed(() => {
+  let gap = false
+  return props.rows.flatMap(row => {
+    if (!Number.isFinite(row.value) || row.value === props.invalidValue) { gap = true; return [] }
+    const point = props.line && gap ? { ...row, breakBefore: true } : row
+    gap = false
+    return [point]
+  })
+})
 
 /** 强制点：首/末、极值、断点及其前一点。 */
 function forcedIndices(all: Array<{ value: number; breakBefore?: boolean }>): Set<number> {
@@ -45,9 +71,10 @@ function metrics(rows: Array<{ label: string; value: number; time?: number; brea
   const values = rows.map(row => row.value)
   const minimum = Math.min(...values), maximum = Math.max(...values), span = (maximum - minimum) || 1
   const times = rows.map((row, index) => row.time ?? index)
-  const startTime = Math.min(...times), endTime = Math.max(...times), timeSpan = Math.max(1e-12, endTime - startTime)
+  const startTime = props.xMin ?? Math.min(...times), endTime = props.xMax ?? Math.max(...times)
+  const timeSpan = Math.max(1e-12, endTime - startTime)
   const points = rows.map((row, index) => {
-    const x = rows.length === 1 ? 160 : 40 + ((row.time ?? index) - startTime) / timeSpan * 230
+    const x = rows.length === 1 && startTime === endTime ? 160 : 40 + ((row.time ?? index) - startTime) / timeSpan * 230
     const y = 190 - (row.value - minimum) / span * 150
     return { x, y, label: row.label, value: row.value }
   })
@@ -68,13 +95,95 @@ function point(index: number, ratio: number): string {
   return `${150 + 90 * ratio * Math.cos(angle)},${120 + 90 * ratio * Math.sin(angle)}`
 }
 const polygon = computed(() => rows.value.map((row, index) => point(index, row.value / maximum.value)).join(' '))
+
+const echartsEnabled = computed(() => props.useEcharts && import.meta.env.MODE !== 'test')
+const chartHeight = computed(() => props.radar ? 330 : 230)
+const chartEl = ref<HTMLElement | null>(null)
+let refreshOptions: (() => void) | undefined
+function echartsOption(): Record<string, unknown> {
+  const data = rows.value
+  if (props.radar) return {
+    animation: false,
+    tooltip: { trigger: 'item' },
+    radar: { indicator: data.map(row => ({ name: row.label, max: 100 })), radius: '62%', center: ['50%', '50%'], axisName: { color: '#9eb4cb', fontSize: 12 } },
+    series: [{ type: 'radar', data: [{ value: data.map(row => row.value), name: props.title }],
+      areaStyle: { color: 'rgba(111, 195, 255, 0.2)' }, lineStyle: { color: '#6fc3ff' }, itemStyle: { color: '#6fc3ff' } }],
+  }
+  if (props.line) {
+    const points: Array<[number, number | null] | { value: [number, number]; symbol: 'circle'; symbolSize: number }> = []
+    data.forEach((row, index) => {
+      const time = row.time ?? index
+      if (index > 0 && row.breakBefore) points.push([time, null])
+      const isolated = (index === 0 || row.breakBefore) && (index === data.length - 1 || data[index + 1]?.breakBefore)
+      points.push(isolated ? { value: [time, row.value], symbol: 'circle', symbolSize: 6 } : [time, row.value])
+    })
+    const xMin = props.xMin ?? 0
+    const xMax = props.xMax ?? (data.length ? (data.at(-1)!.time ?? data.length - 1) : xMin)
+    return {
+      animation: false,
+      grid: { left: 12, right: 18, top: 30, bottom: 28, containLabel: true },
+      tooltip: { trigger: 'axis', valueFormatter: (value: unknown) => `${String(value)} ${props.unit}` },
+      xAxis: { type: 'value', min: xMin, max: xMax, splitLine: { show: false }, axisLabel: { color: '#9eb4cb', fontSize: 10, formatter: (value: number) => reportTime(value) }, axisLine: { lineStyle: { color: '#526a82' } } },
+      yAxis: { type: 'value', minInterval: props.stepEnd ? 1 : undefined, name: props.unit, nameLocation: 'end', nameGap: 8, nameTextStyle: { color: '#9eb4cb', fontSize: 10 }, axisLabel: { color: '#9eb4cb', fontSize: 10, margin: 6 }, splitLine: { lineStyle: { color: 'rgba(158, 180, 203, 0.18)' } } },
+      series: [{ type: 'line', data: points, step: props.stepEnd ? 'end' : false, symbol: 'none', connectNulls: false, lineStyle: { color: '#6fc3ff', width: 2 }, itemStyle: { color: '#6fc3ff' } }],
+    }
+  }
+  return {
+    animation: false,
+    grid: { left: 12, right: 18, top: 30, bottom: 28, containLabel: true },
+    tooltip: { trigger: 'axis', valueFormatter: (value: unknown, index: number) => data[index]?.displayValue ?? `${String(value)} ${props.unit}` },
+    xAxis: { type: 'category', data: data.map(row => row.label), splitLine: { show: false }, axisLabel: { color: '#9eb4cb', fontSize: 10 }, axisLine: { lineStyle: { color: '#526a82' } } },
+    yAxis: { type: 'value', name: props.unit, nameLocation: 'end', nameGap: 8, nameTextStyle: { color: '#9eb4cb', fontSize: 10 }, axisLabel: { color: '#9eb4cb', fontSize: 10, margin: 6 }, splitLine: { lineStyle: { color: 'rgba(158, 180, 203, 0.18)' } } },
+    series: [{ type: 'bar', barMaxWidth: '60%', itemStyle: { color: '#6fc3ff' },
+      data: data.map(row => row.displayValue === undefined ? row.value : { value: row.value,
+        label: { show: true, position: row.value < 0 ? 'bottom' : 'top', color: '#9eb4cb', formatter: () => row.displayValue } }),
+    }],
+  }
+}
+watch(chartEl, (host, _previous, onCleanup) => {
+  if (!host) return
+  let instance: ECharts | undefined
+  let renderedWidth = 0, renderedHeight = 0
+  let updateOptions = true
+  const syncChart = (): void => {
+    if (chartEl.value !== host) return
+    const width = host.clientWidth, height = chartHeight.value
+    if (width <= 0) return
+    if (!instance) {
+      instance = echarts.init(host, undefined, { renderer: 'svg', width, height })
+      updateOptions = true
+    } else if (width !== renderedWidth || height !== renderedHeight) instance.resize({ width, height })
+    renderedWidth = width
+    renderedHeight = height
+    if (updateOptions) {
+      instance.setOption(echartsOption(), true)
+      updateOptions = false
+    }
+  }
+  refreshOptions = () => { updateOptions = true; syncChart() }
+  const onResize = () => syncChart()
+  const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(onResize)
+  if (observer) observer.observe(host)
+  else window.addEventListener('resize', onResize)
+  syncChart()
+  onCleanup(() => {
+    observer?.disconnect()
+    if (!observer) window.removeEventListener('resize', onResize)
+    instance?.dispose()
+    refreshOptions = undefined
+  })
+}, { flush: 'post' })
+watch(() => [props.rows, props.radar, props.line, props.stepEnd, props.invalidValue, props.xMin, props.xMax, props.unit, props.title],
+  () => refreshOptions?.(), { deep: true, flush: 'post' })
 </script>
 
 <template>
-  <section class="report-chart" :aria-label="title">
-    <h4>{{ title }}<small>（{{ unit }}）</small></h4>
-    <p v-if="sourceRange || generatedTime">{{ sourceRange }}<span v-if="generatedTime"> · 生成时刻 {{ formatDateTime(generatedTime) }}</span></p>
+  <section class="report-chart" :class="{ 'report-chart--radar': radar }" :aria-label="title">
+    <h4>{{ title }}<small v-if="unit">（{{ unit }}）</small></h4>
+    <p v-if="!hideSource && (sourceRange || generatedTime)">{{ sourceRange }}<span v-if="generatedTime"> · 生成时刻 {{ formatDateTime(generatedTime) }}</span></p>
+    <p v-if="line && scopeSummary !== undefined" class="report-chart__summary">当前范围统计 <strong>{{ scopeSummary }}</strong></p>
     <el-empty v-if="!rows.length" description="暂无数据" :image-size="60" />
+    <div v-else-if="echartsEnabled" ref="chartEl" class="report-chart__canvas" role="img" :aria-label="title" :style="{ height: `${chartHeight}px` }" />
     <template v-else-if="radar">
       <!-- 仅比较同量纲的连通率，不把缺失值当零，也不构造综合评分。 -->
       <p v-if="rows.length < 3">有效链路不足三条，按数值展示连通率。</p>
@@ -97,7 +206,7 @@ const polygon = computed(() => rows.value.map((row, index) => point(index, row.v
             <title>{{ pt.label }}：{{ pt.value }} {{ unit }}</title>
           </circle>
         </svg>
-        <ol><li v-for="(pt, index) in view.points" :key="`${viewIndex}-l-${index}`">{{ pt.label }}：{{ pt.value }} {{ unit }}</li></ol>
+        <ol v-if="showPointList"><li v-for="(pt, index) in view.points" :key="`${viewIndex}-l-${index}`">{{ pt.label }}：{{ pt.value }} {{ unit }}</li></ol>
       </div>
     </template>
     <div v-else class="bars">
@@ -107,14 +216,17 @@ const polygon = computed(() => rows.value.map((row, index) => point(index, row.v
           <div :style="{ left: `${(Math.min(0, row.value) - barMinimum) / barRange * 100}%`, width: `${Math.abs(row.value) / barRange * 100}%` }" />
           <i v-if="barMinimum < 0" class="bar-zero" :style="{ left: `${barZero}%` }" aria-hidden="true" />
         </div>
-        <strong>{{ row.value }} {{ unit }}</strong>
+        <strong>{{ row.displayValue ?? `${row.value} ${unit}` }}</strong>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.report-chart { min-width: 0; max-width: 100%; overflow-wrap: anywhere; padding: 12px; border: 1px solid var(--el-border-color); border-radius: 6px; }
+.report-chart { min-width: 0; width: 100%; max-width: 100%; overflow-wrap: anywhere; padding: 12px; border: 1px solid var(--el-border-color); border-radius: 6px; }
+.report-chart--radar { display: flex; flex-direction: column; align-items: center; text-align: center; }
+.report-chart__canvas { min-width: 0; width: 100%; }
+.report-chart__summary { margin: 0 0 8px; color: var(--el-text-color-secondary); }
 h4 { margin: 0 0 12px; } small { font-weight: normal; }
 svg { display: block; max-width: 360px; width: 100%; }
 .line-chart-segment { margin-bottom: 8px; }

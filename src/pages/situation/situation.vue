@@ -32,6 +32,7 @@ import {
 } from '../../features/situation/situation-model'
 import { useSimulationStore } from '../../stores/simulation'
 import { useScenarioStore } from '../../stores/scenario'
+import { wattsToDbm } from '../../features/scenarios/jammer-settings'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { useRuntimeQualityStore, type RuntimeQualityScope } from '../../stores/runtime-quality'
 import { RUNTIME_STATUS_LABELS, runtimeDecisionReason, selectRuntimeQualityViews } from '../../features/situation/runtime-quality-view'
@@ -43,10 +44,14 @@ import { selectReplayNodes } from '../../features/replays/local-replay'
 import { useReplayStore } from '../../stores/replay'
 import { isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { createMissionPositionTimeline, isMissionPositionSnapshot, type MissionPositionSnapshot } from '../../features/situation/mission-positions'
+import { createLiveMessageTracker, type LiveMessageState } from '../../features/situation/live-message-flows'
+import { isMissionMessageSnapshot } from '../../features/situation/mission-messages'
 import { unwrapSuccessData } from '../../stores/api-envelope'
 import { isQualityDataset } from '../../features/data-exchange/quality-records'
 import { saveDownload } from '../../features/shared/download'
 import { resolveEngineSwitchHighlights } from '../../features/situation/engine-route-highlights'
+import { resolveEngineFrameConfiguredLinks } from '../../features/situation/engine-link-statuses'
+import { createEngineLinkHoverLookup } from '../../features/situation/engine-link-hover'
 import { fileReceptionLinks, fileReceptionScenarioId, playbackFileSource } from '../../features/situation/file-reception'
 import { canSendEngineControl } from '../../features/situation/engine-control'
 import { FramePlaybackClock, FRAME_PLAYBACK_RENDER_MS, FRAME_PLAYBACK_TIMEOUT_MS } from '../../features/situation/frame-playback-clock'
@@ -85,7 +90,6 @@ const {
   run: simulationRun,
   uiStatus: simulationStatus,
   currentTime: simulationTime,
-  speedMultiplier: simulationSpeed,
   capabilityState: simulationCapabilityState,
   resultMessage: simulationFeedback,
   pending: simulationPending,
@@ -105,6 +109,7 @@ const telemetryTab = ref('status')
 const qualityLoadMessage = ref('')
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
+const mapFullscreen = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
 const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'EMPTY' | 'ERROR'>('LOADING')
@@ -154,6 +159,11 @@ const displayConnected = computed(() => {
     && (diagnostic ? diagnostic.state === 'CONNECTED' : simulationRun.value?.engineControl?.connected === true)
 })
 const realMissionMode = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'LOCAL' && !remoteEngineMode.value)
+const showInitialSceneMap = computed(() => {
+  const run = simulationRun.value
+  return realMissionMode.value && run?.uiStatus === 'STOPPED' && !run.configLocked
+    && run.scenarioId === selectedScene.value?.config.scenario.id
+})
 const runtimeUnknown = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'UNKNOWN')
 let sourceEpoch = 0
 let sourceRequest: AbortController | null = null
@@ -175,6 +185,12 @@ const missionPositionSource = computed(() => {
     && run.scenarioId === scene.config.scenario.id
     ? `${auth.principal.userId}:${run.runId}:${scene.config.scenario.id}:${scene.revision}:${run.startedAt}` : null
 })
+const liveMessageTracker = createLiveMessageTracker()
+const liveMessageState = ref<LiveMessageState | null>(null)
+const preExistingRunKey = ref('')
+const missionMessageSource = computed(() => (
+  sourceState.value === 'SCENE' ? missionPositionSource.value : null
+))
 const runtimeQualityScope = computed<RuntimeQualityScope | null>(() => {
   const run = simulationRun.value
   const scene = selectedScene.value
@@ -244,7 +260,7 @@ const engineSourceLabel = computed(() => {
   if (!run) return '历史引擎数据（运行已结束）'
   if (!displayConnected.value) return '最后收到的引擎数据（连接中断）'
   if (runtimeQualityStore.presentationPaused || combinedPaused.value || simulationStatus.value === 'PAUSED'
-    || run.engineControl?.action === 'pause') return '暂停展示的引擎数据'
+    || (!realMissionMode.value && run.engineControl?.action === 'pause')) return '暂停展示的引擎数据'
   if (frame === disconnectedEngineFrame.value || displayTimedOut.value) return '最后收到的引擎数据（等待新帧）'
   return '引擎实时数据'
 })
@@ -365,19 +381,36 @@ const mapNodes = computed(() => selectedScene.value
   ? selectedScene.value.config.platforms.map(platform => ({
     platformId: platform.id, name: platform.name, type: platform.type, satelliteType: platform.satelliteType,
     side: platformMapSide(platform), ...platform.initialPosition, speed: 0,
-    ...displayedMissionPositions.value.find(node => node.platformId === platform.id),
+    ...(showInitialSceneMap.value ? undefined : displayedMissionPositions.value.find(node => node.platformId === platform.id)),
   }))
   : hasMapData.value && sourceState.value === 'FILE' ? fileNodes.value : [])
+const mapFocusLinks = computed(() => {
+  const scene = selectedScene.value
+  if (!scene) return []
+  const platformIds = new Set(scene.config.platforms.map(platform => platform.id))
+  return scene.config.links.filter(link => platformIds.has(link.sourcePlatformId) && platformIds.has(link.targetPlatformId))
+})
 const mapConfiguredLinks = computed(() => {
   const scene = selectedScene.value
   if (!scene) return undefined
+  if (showInitialSceneMap.value) return []
   const platformIds = new Set(scene.config.platforms.map(platform => platform.id))
   const settings = readLinkSettings(scene.config)
-  return scene.config.links.filter(link => {
+  const hoverFor = createEngineLinkHoverLookup(
+    runtimeQualityStore.engineFrame, runtimeQualityStore.engineSwitches.map(item => item.route),
+  )
+  return scene.config.links.flatMap(link => {
     const status = runtimeMapStatuses.value.get(link.id)
-    return platformIds.has(link.sourcePlatformId) && platformIds.has(link.targetPlatformId)
-      && isConfiguredLinkEnabled(link, settings, scene.config.platforms)
-      && (status === 'UP' || status === 'DEGRADED')
+    if (!platformIds.has(link.sourcePlatformId) || !platformIds.has(link.targetPlatformId)
+      || !isConfiguredLinkEnabled(link, settings, scene.config.platforms)
+      || (status !== 'UP' && status !== 'DEGRADED' && status !== 'DOWN')) return []
+    const engineStatus = runtimeStatusMap.value.has(link.id) ? undefined : engineSegmentStatusMap.value.get(link.id)
+    const displayed = engineStatus?.relayBypassed ? { ...link, relayPlatformId: null } : link
+    if (!engineStatus) return [displayed]
+    const relayId = displayed.relayPlatformId
+    const route = relayId ? [displayed.sourcePlatformId, relayId, displayed.targetPlatformId]
+      : [displayed.sourcePlatformId, displayed.targetPlatformId]
+    return [{ ...displayed, distanceM: engineStatus.distanceM ?? undefined, hover: hoverFor(link.id, route) }]
   })
 })
 const missionPositionTime = computed(() => displayedMissionPositions.value.length
@@ -462,6 +495,88 @@ watch(missionPositionSource, (source, _, onCleanup) => {
   void read()
 }, { immediate: true, flush: 'sync' })
 
+// 增量读取当前运行的真实报文配对证据；切换运行、暂停或停止时严格保持隔离与冻结语义。
+watch(missionMessageSource, (source, _, onCleanup) => {
+  liveMessageTracker.clearAll()
+  liveMessageState.value = null
+  if (!source) return
+  const run = simulationRun.value!
+  const runId = run.runId
+  const scenarioId = selectedScene.value!.config.scenario.id
+  const revision = selectedScene.value!.revision
+  const runIdentity = `${run.runId}:${run.startedAt ?? ''}`
+  const attachedMidRun = runIdentity === preExistingRunKey.value || !run.configLocked
+  liveMessageTracker.reset(source, { baselineFirstLoad: attachedMidRun })
+
+  let cursor = 0
+  let endpointUnavailable = false
+  let cancelled = false
+  let reading = false
+  let finalRead = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let request: AbortController | undefined
+
+  const read = async () => {
+    if (cancelled || endpointUnavailable) return
+    if (reading) { finalRead = true; return }
+    clearTimeout(timer)
+    reading = true
+    request = new AbortController()
+    const timeout = setTimeout(() => request?.abort(), 5_000)
+    let hasMore = false
+    let nextDelay = 1_000
+    try {
+      const response = await apiFetch(
+        `${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/messages?cursor=${cursor}`,
+        { signal: request.signal, cache: 'no-store' },
+      )
+      if (cancelled) return
+      if (response.status === 404 || response.status === 409) {
+        endpointUnavailable = true
+        return
+      }
+      const data: unknown = unwrapSuccessData(await response.json())
+      if (cancelled) return
+      if (!response.ok || !isMissionMessageSnapshot(data) || data.runId !== runId
+        || data.scenarioId !== scenarioId || data.revision !== revision) return
+      cursor = data.cursor
+      hasMore = data.hasMore
+      const activeRun = simulationRun.value
+      const allowNewPulses = activeRun?.runId === runId && activeRun.configLocked && activeRun.uiStatus === 'RUNNING' && !stopPending.value
+      liveMessageState.value = liveMessageTracker.ingest(data, { allowNewPulses })
+    } catch {
+      nextDelay = 1_500
+    } finally {
+      clearTimeout(timeout)
+      reading = false
+      const activeRun = simulationRun.value
+      const running = activeRun?.runId === runId && activeRun.configLocked && activeRun.uiStatus === 'RUNNING' && !stopPending.value
+      if (!cancelled && !endpointUnavailable && (running || hasMore || finalRead)) {
+        const delay = hasMore || finalRead ? 50 : nextDelay
+        finalRead = false
+        timer = setTimeout(() => { void read() }, delay)
+      }
+    }
+  }
+
+  const stopStateWatch = watch(
+    () => [simulationRun.value?.configLocked, simulationRun.value?.uiStatus] as const,
+    ([locked, status], [wasLocked, prevStatus]) => {
+      if ((wasLocked && !locked) || (prevStatus === 'PAUSED' && status === 'RUNNING')) {
+        void read()
+      }
+    },
+    { flush: 'sync' },
+  )
+  onCleanup(() => {
+    cancelled = true
+    clearTimeout(timer)
+    request?.abort()
+    stopStateWatch()
+  })
+  void read()
+}, { immediate: true, flush: 'sync' })
+
 /** 真实位置独立接收，展示时按链路帧时间选择，不改写位置源记录。 */
 watch(() => telemetryStore.missionPositionUpdate, update => {
   const run = simulationRun.value
@@ -506,6 +621,11 @@ async function initializeSituation(): Promise<void> {
       return
     }
     if (!simulationRun.value?.configLocked || !simulationRun.value.fileSource) clearPausedPlayback()
+    preExistingRunKey.value = simulationRun.value?.startedAt
+      ? `${simulationRun.value.runId}:${simulationRun.value.startedAt}`
+      : ''
+  } else {
+    preExistingRunKey.value = ''
   }
   const savedSceneId = simulationStore.selectedScene?.config.scenario.id ?? simulationStore.readSelectedSceneId()
   const preferFile = remoteEngineMode.value && (!simulationRun.value?.configLocked || Boolean(simulationRun.value.fileSource))
@@ -612,12 +732,12 @@ async function initializeSituation(): Promise<void> {
 
 onMounted(initializeSituation)
 
-// 暂停时停止定时轮询，恢复播放后重新计时；控制请求及其失败后的单次状态核实仍保留。
+// 本机暂停请求仅表示发送，继续轮询以同步连接与进程状态。
 watch(() => [
   combinedPlayback.value ? simulationRun.value?.scenarioId : selectedScene.value?.config.scenario.id,
   simulationRun.value?.configLocked,
   combinedPlayback.value ? combinedPaused.value
-    : simulationStatus.value === 'PAUSED' || simulationRun.value?.engineControl?.action === 'pause',
+    : simulationStatus.value === 'PAUSED' || (!realMissionMode.value && simulationRun.value?.engineControl?.action === 'pause'),
 ] as const, ([sceneId, locked, paused], _, onCleanup) => {
   if (!sceneId || !locked || paused) return
   let cancelled = false
@@ -731,21 +851,14 @@ const displayedLinks = computed(() => {
   }))
 })
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
-// 引擎按设备段给出状态；不得把多段的结论冒充整条场景链路的本机判定。
+// 引擎按设备段给出状态；按明确单段、中继两跳聚合或中继绕过直连段分别投影，不冒充本机单段射频数值。
 const runtimeStatusMap = computed(() => new Map(runtimeQualityStore.linkStatuses.filter(value => !('source' in value)).map(value => [value.linkId, value])))
-/** 仅一个明确设备段关联到一个场景链路时，才将引擎状态投影到地图；多段不合成整链路结论。 */
-const engineSingleSegmentStatusMap = computed(() => {
-  const frame = runtimeQualityStore.engineFrame
-  if (!frame) return new Map<string, { source: 'ENGINE_FRAME'; linkId: string; frameId: number; simulationTime: number; status: UiLinkStatus; gxbDb: number | null; ber: number | null; receivedPowerDbm: number | null }>()
-  const counts = new Map<string, number>()
-  for (const segment of frame.links) for (const linkId of new Set(segment.linkIds)) counts.set(linkId, (counts.get(linkId) ?? 0) + 1)
-  return new Map(frame.links.flatMap(segment => !segment.error && segment.status !== 'UNKNOWN' && segment.linkIds.length === 1 && counts.get(segment.linkIds[0]!) === 1
-    ? [[segment.linkIds[0]!, { source: 'ENGINE_FRAME' as const, linkId: segment.linkIds[0]!, frameId: frame.frameId, simulationTime: frame.simulationTime,
-      status: segment.status, gxbDb: segment.quality.gxbDb, ber: segment.quality.ber, receivedPowerDbm: segment.quality.rxPowerDbm }] as const] : []))
-})
+const engineSegmentStatusMap = computed(() =>
+  resolveEngineFrameConfiguredLinks(runtimeQualityStore.engineFrame, selectedScene.value?.config.links ?? []),
+)
 const runtimeQualityViews = computed(() => selectRuntimeQualityViews(runtimeQualityStore.snapshot, runtimeQualityStore.bindings, displayedLinks.value, simulationTime.value, runtimeStatusMap.value))
-const displayedStatusLinks = computed(() => displayedLinks.value.map(link => ({ ...link, runtimeStatus: runtimeStatusMap.value.get(link.linkId) ?? engineSingleSegmentStatusMap.value.get(link.linkId) })))
-const runtimeMapStatuses = computed(() => new Map<string, UiLinkStatus>([...runtimeStatusMap.value.entries(), ...engineSingleSegmentStatusMap.value.entries()]
+const displayedStatusLinks = computed(() => displayedLinks.value.map(link => ({ ...link, runtimeStatus: runtimeStatusMap.value.get(link.linkId) ?? engineSegmentStatusMap.value.get(link.linkId) })))
+const runtimeMapStatuses = computed(() => new Map<string, UiLinkStatus>([...runtimeStatusMap.value.entries(), ...engineSegmentStatusMap.value.entries()]
   .flatMap(([id, value]) => value.status === 'UNKNOWN' ? [] : [[id, value.status] as const])))
 /** 只高亮最近一次切换；历史证据保留供查看，不累计到地图上。 */
 const engineSwitchMap = computed(() => {
@@ -765,6 +878,12 @@ const qualityLinks = computed(() => displayedLinks.value.map(link => ({
 })))
 const selectedRuntimeQuality = computed(() => runtimeQualityViews.value.get(selectedLinkId.value) ?? null)
 const selectedEngineSegments = computed(() => runtimeQualityStore.engineFrame?.links.filter(segment => segment.linkIds.includes(selectedLinkId.value)) ?? [])
+const linkFramePositions = computed(() => {
+  const runId = runtimeQualityStore.engineFrame?.runId
+  if (sourceState.value !== 'SCENE' || showInitialSceneMap.value || !runId
+    || missionPositions.value?.runId !== runId || simulationRun.value?.runId !== runId) return []
+  return displayedMissionPositions.value
+})
 const qualitySourceKey = computed(() => `${sourceState.value}:${selectedScene.value?.config.scenario.id ?? frame.value?.runId ?? ''}:${runtimeQualityScope.value?.runId ?? ''}:${runtimeQualityScope.value?.startedAt ?? ''}:${selectedScene.value?.revision ?? ''}`)
 const qualitySourceLabel = computed(() => {
   if (runtimeQualityStore.engineFrame) return engineSourceLabel.value
@@ -1109,21 +1228,6 @@ async function requestStop(): Promise<void> {
 }
 
 /**
- * 更新仿真倍速选择并在运行期间同步到 Mock 服务。
- * @param speed 用户选择的倍速。
- * @returns 操作完成后兑现且不返回值的 Promise。
- * @sideeffect 调用 simulationStore 更新本地选择或发送 SET_SPEED 命令。
- */
-async function updateSpeed(speed: number): Promise<void> {
-  if (combinedPlayback.value) return
-  if (sourceState.value === 'FILE') {
-    await filePlayback.setSpeed(speed)
-    return
-  }
-  await simulationStore.setSpeed(speed)
-}
-
-/**
  * 打开所选链路的质量详情。
  * @param link 来自固定帧的链路视图。
  * @returns 无返回值。
@@ -1140,17 +1244,17 @@ function openConfiguredLinkDetails(link: Link): void {
 }
 
 /**
- * 点击全链路状态表格行时，打开详情或在地图中定位。
+ * 点击全链路状态表格行时，在地图中定位，并打开已有详情。
  * @param link 链路表格行数据。
  * @returns 无返回值。
  */
 function handleLinkRowClick(link: typeof displayedLinks.value[number]): void {
+  focusLinkOnMap(link.linkId)
   if (link.live) {
     openLinkDetails(link.live)
   } else if (link.configured) {
     openConfiguredLinkDetails(link.configured)
   } else if (link.file) {
-    focusLinkOnMap(link.linkId)
     selectedLinkId.value = link.linkId
     linkDialogVisible.value = true
   }
@@ -1212,6 +1316,13 @@ function focusInterferenceOnMap(jammerId: string, platformId: string): void {
  * @returns 包含机载或地面部署位置的干扰设备名称。
  * @sideeffect 无副作用。
  */
+function formatSituationJammerPower(watts: number): string {
+  if (!Number.isFinite(watts) || watts <= 0) return `${watts} W`
+  const dbm = Number(wattsToDbm(watts).toFixed(1))
+  const sign = dbm > 0 ? '+' : ''
+  return `${sign}${dbm} dBm（${Number(watts.toPrecision(6))} W）`
+}
+
 function jammerTypeLabel(jammerId: string, platformId: string): string {
   if (selectedScene.value) {
     const jammer = selectedScene.value.config.jammers.find(item => item.id === jammerId)!
@@ -1245,12 +1356,13 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 </script>
 
 <template>
-  <section id="page-situation" class="situation-page" aria-labelledby="situation-title">
+  <section id="page-situation" class="situation-page" :class="{ 'situation-page--map-fullscreen': mapFullscreen }" aria-labelledby="situation-title">
     <h2 id="situation-title" class="situation-page__semantic-title">态势主界面</h2>
 
     <div class="situation-page__toolbar">
     <SimulationToolbar
       @recovered="simulationStore.resetProjection()"
+      :scene-name="sourceState === 'FILE' ? simulationStore.selectedScene?.config.scenario.name : selectedScene?.config.scenario.name"
       :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE' && sourceState !== 'FILE'"
       :file-playback="sourceState === 'FILE'"
       :real-mission="realMissionMode"
@@ -1259,14 +1371,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :engine-control="!otherSceneRun ? simulationRun?.engineControl : undefined"
       :runtime-unknown="runtimeUnknown"
       :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
-      :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
+      :speed="ownsFilePlayback ? filePlayback.speed : 1"
       :capability-state="simulationCapabilityState"
       :pending="fileLoading || stopPending || simulationPending || simulationStore.selectingScene"
       :feedback="combinedPlayback ? combinedFeedback : sourceState === 'FILE' ? `仅回放文件 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
       @stop="requestStop"
-      @update:speed="updateSpeed"
+      @update:speed="filePlayback.setSpeed"
     >
       <template #timeline>
         <div v-if="sourceState === 'FILE' && filePlayback.replay" class="toolbar-timeline">
@@ -1522,14 +1634,19 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :data-testid="selectedScene ? 'saved-scene-preview' : undefined"
           :source-key="!hasMapData ? 'empty' : selectedScene ? `${selectedScene.config.scenario.id}:${selectedScene.revision}` : initialSnapshot?.sha256 ?? frame?.runId"
           :frame="hasMapData ? frame : null"
-          :engine-frame="hasMapData ? runtimeQualityStore.engineFrame : null"
-          :trail-source-key="`${simulationRun?.runId ?? ''}:${simulationRun?.startedAt ?? ''}:${missionPositions?.positions?.generation ?? ''}`"
+          :engine-frame="hasMapData && !showInitialSceneMap ? runtimeQualityStore.engineFrame : null"
+          :trail-source-key="showInitialSceneMap ? '' : `${simulationRun?.runId ?? ''}:${simulationRun?.startedAt ?? ''}:${missionPositions?.positions?.generation ?? ''}`"
           :position-replay="sourceState === 'FILE' && ownsFilePlayback && !fileSourceMismatch ? filePlayback.localSnapshot : null"
           :initial-nodes="mapNodes"
           :configured-links="mapConfiguredLinks"
+          :focus-links="mapFocusLinks"
           :configured-link-statuses="runtimeMapStatuses"
           :configured-link-switches="engineSwitchMap"
           :configured-jammers="selectedScene?.config.jammers"
+          :configured-environment="selectedScene?.config.scenario.environment"
+          :live-message-flows="hasMapData && sourceState === 'SCENE' && !showInitialSceneMap ? (liveMessageState?.lanes ?? []) : []"
+          :live-flow-playing="sourceState === 'SCENE' && simulationRun?.uiStatus === 'RUNNING' && !stopPending"
+          :live-flow-key="missionMessageSource ?? ''"
           :file-links="hasMapData && sourceState === 'FILE' ? fileLinks : []"
           :file-message-links="hasMapData && sourceState === 'FILE' ? fileMessageLinks : []"
           :file-device-events="hasMapData && sourceState === 'FILE' ? initialSnapshot?.deviceEvents : []"
@@ -1543,6 +1660,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           @select-node="selectedNodeId = $event"
           @select-link="openLinkDetails"
           @select-configured-link="openConfiguredLinkDetails"
+          @fullscreen-change="mapFullscreen = $event"
         >
           <template #topbar>
             <MetricPanel v-if="hasMapData && situationMetrics" :metrics="situationMetrics" />
@@ -1576,7 +1694,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </div>
           <div class="link-table-wrap">
             <table class="link-table" :class="{ 'link-table--quality': MAP_CONFIG.showLinkQualityColumns }">
-              <thead><tr><th>链路</th><th>体制</th><th v-if="MAP_CONFIG.showLinkQualityColumns">SNR</th><th v-if="MAP_CONFIG.showLinkQualityColumns">BER</th><th :title="sourceState === 'FILE' ? '展示约定：开启→正常，关闭→切换，未知→干扰；不代表实际质量、切换或干扰判定' : undefined">状态</th></tr></thead>
+              <thead><tr><th>链路</th><th>体制</th><th v-if="MAP_CONFIG.showLinkQualityColumns">SNR</th><th v-if="MAP_CONFIG.showLinkQualityColumns">误码率</th><th :title="sourceState === 'FILE' ? '展示约定：开启→正常，关闭→切换，未知→干扰；不代表实际质量、切换或干扰判定' : undefined">状态</th></tr></thead>
               <tbody>
                 <tr
                   v-for="link in displayedStatusLinks"
@@ -1600,41 +1718,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                     </el-tag>
                     <LinkStateBadge v-else-if="link.live" :link="link.live" />
                     <span v-else-if="link.file" class="link-device-status" :data-status="link.file.status" :title="`设备启停证据：${link.file.status}；名称为展示约定，不代表实际质量、切换或干扰判定`">{{ FILE_LINK_STATUS_LABELS[link.file.status] }}</span>
-                    <span v-else>暂无数据</span>
+                    <el-tag v-else type="danger">{{ RUNTIME_STATUS_LABELS.DOWN }}</el-tag>
                   </td>
                 </tr>
               </tbody>
             </table>
             <el-empty v-if="displayedLinks.length === 0" :description="sourceState === 'FILE' ? '当前时刻暂无通信关联' : '暂无链路数据'" :image-size="48" />
-          </div>
-        </section>
-
-        <section class="telemetry-section telemetry-section--jammer">
-          <div class="panel-heading">
-            <div><strong>干扰 / 侦测设备</strong></div>
-            <span class="panel-heading__more">{{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineFrame.jammers.length} 台` : sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
-          </div>
-          <div class="telemetry-section__body">
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" :source-label="engineSourceLabel" />
-            <div v-else-if="displayedJammers.length" class="jammer-list">
-              <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
-              <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
-              <article v-for="jammer in displayedJammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
-                <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }}</span></div>
-                <small>搭载平台：{{ jammer.platformName }} · {{ jammer.platformId }}</small>
-                <dl>
-                  <div><dt>功率</dt><dd>{{ jammer.power }} W</dd></div>
-                  <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
-                  <div><dt>带宽</dt><dd>{{ jammer.bandwidth }} MHz</dd></div>
-                </dl>
-                <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
-              </article>
-            </div>
-            <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
-            <p v-if="latestEngineJammerTopic" class="panel-caption" data-testid="engine-jammer-topic-status">干扰数据更新：帧 {{ latestEngineJammerTopic.sourceFrameId }} · {{ latestEngineJammerTopic.jammers.length }} 台设备 · {{ latestEngineJammerTopic.events.length }} 条事件</p>
-            <p v-if="detectionEvent && !runtimeQualityStore.engineFrame" class="detection-state">
-              {{ detectionEvent.sensorId }} {{ detectionEvent.detected === false ? '未发现' : '已发现' }} {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
-            </p>
           </div>
         </section>
 
@@ -1656,6 +1745,38 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </div>
         </section>
           </el-tab-pane>
+          <el-tab-pane label="干扰侦测" name="jammers" class="telemetry-jammers-pane">
+        <section class="telemetry-section telemetry-section--jammer">
+          <div class="panel-heading">
+            <div><strong>干扰 / 侦测设备</strong></div>
+            <div class="panel-heading__actions">
+              <span class="panel-heading__more">{{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineFrame.jammers.length} 台` : sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
+            </div>
+          </div>
+          <div class="telemetry-section__body">
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" :source-label="engineSourceLabel" />
+            <div v-else-if="displayedJammers.length" class="jammer-list">
+              <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
+              <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
+              <article v-for="jammer in displayedJammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
+                <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }}</span></div>
+                <small>搭载平台：{{ jammer.platformName }} · {{ jammer.platformId }}</small>
+                <dl>
+                  <div><dt>功率</dt><dd>{{ formatSituationJammerPower(jammer.power) }}</dd></div>
+                  <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
+                  <div><dt>带宽</dt><dd>{{ jammer.bandwidth }} MHz</dd></div>
+                </dl>
+                <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
+              </article>
+            </div>
+            <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
+            <p v-if="latestEngineJammerTopic" class="panel-caption" data-testid="engine-jammer-topic-status">干扰数据更新：帧 {{ latestEngineJammerTopic.sourceFrameId }} · {{ latestEngineJammerTopic.jammers.length }} 台设备 · {{ latestEngineJammerTopic.events.length }} 条事件</p>
+            <p v-if="detectionEvent && !runtimeQualityStore.engineFrame" class="detection-state">
+              {{ detectionEvent.sensorId }} {{ detectionEvent.detected === false ? '未发现' : '已发现' }} {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
+            </p>
+          </div>
+        </section>
+          </el-tab-pane>
           <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
             <div v-if="qualityDownloadFiles.length || !runtimeQualityStore.engineFrame" class="quality-import-bar">
               <el-dropdown v-if="qualityDownloadFiles.length" trigger="click">
@@ -1668,10 +1789,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div v-if="runtimeQualityStore.state === 'ERROR'" class="runtime-quality-feedback" role="alert" data-testid="runtime-quality-error">
               <p v-for="(issue, index) in runtimeQualityStore.errors" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</p>
             </div>
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :source-label="engineSourceLabel" :selected-link-id="selectedLinkId" :links="combinedPlayback ? fileLinks : undefined" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :source-label="engineSourceLabel" :selected-link-id="selectedLinkId" :links="combinedPlayback ? fileLinks : undefined" :node-platforms="mapNodes" />
             <QualityMetricPanel v-else
               :links="qualityLinks"
               :nodes="[...new Set(displayedLinks.flatMap(link => [link.sourceName, link.destinationName]))]"
+              :node-platforms="frame?.platforms ?? mapNodes"
               :source-key="qualitySourceKey"
               :selected-link-id="selectedLinkId"
             />
@@ -1700,7 +1822,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span><i class="footer-dot"></i>{{ connectionLabel }}</span>
       <span class="situation-footer__sequence">帧序号 {{ frame.sequence }}</span>
       <span data-testid="frame-freshness">最大数据年龄 {{ maximumLinkAgeMs }} ms · {{ frameFreshnessLabel }}</span>
-      <strong>4 类业务信息节点 · 4 类链路 · 2 种干扰设备</strong>
     </footer>
     <footer v-else-if="!selectedScene && sourceState === 'FILE' && initialSnapshot" class="situation-footer">
       <span>来源：{{ initialSnapshot.fileName }}</span>
@@ -1715,7 +1836,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span>{{ missionPositionMessage || '正在读取本次位置数据。' }}</span>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" :engine-source-label="engineSourceLabel" />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" :engine-source-label="engineSourceLabel" :node-positions="linkFramePositions" :platforms="selectedScene?.config.platforms ?? []" />
   </section>
 </template>
 
@@ -1781,6 +1902,24 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   background: var(--console-bg-elevated);
   box-shadow: var(--console-shadow);
 }
+.situation-page--map-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  width: 100vw;
+  height: 100dvh;
+  border: 0;
+  border-radius: 0;
+}
+/* 全屏时让地图占满工作区，只保留顶部控制栏；播放/暂停/停止仍可见。 */
+.situation-page--map-fullscreen .scene-summary,
+.situation-page--map-fullscreen .telemetry-panel {
+  display: none;
+}
+.situation-page--map-fullscreen .situation-page__workspace {
+  --scene-panel-clearance: 0.75rem;
+  --telemetry-panel-clearance: 0.75rem;
+}
 .situation-page__semantic-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .engine-rejection-detail { min-width: 0; margin: 0 .7rem .5rem; padding: .5rem .65rem; border: 1px solid var(--console-border); border-radius: 4px; font-size: 12px; }
 .engine-rejection-detail summary { cursor: pointer; color: var(--console-danger); }
@@ -1802,9 +1941,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .scene-summary { left: .75rem; display: grid; width: 16rem; grid-template-rows: auto auto minmax(0, 1fr); }
 .telemetry-panel { right: .75rem; display: flex; flex-direction: column; width: 22.5rem; border-color: #1e3448; background: #0f1f30; }
 .telemetry-tabs { flex: 1; min-width: 0; min-height: 0; }
-.telemetry-tabs :deep(.el-tabs__header) { flex: 0 0 auto; margin: 0; padding: 0 .85rem 0 2.65rem; }
+.telemetry-tabs :deep(.el-tabs__header) { flex: 0 0 auto; margin: 0; padding: 0 .65rem 0 2.45rem; }
+.telemetry-tabs :deep(.el-tabs__item) { padding: 0 8px; font-size: 13px; }
+.telemetry-tabs :deep(.el-tabs__item.is-top:nth-child(2)) { padding-left: 0; }
+.telemetry-tabs :deep(.el-tabs__item.is-top:last-child) { padding-right: 0; }
 .telemetry-tabs :deep(.el-tabs__content) { min-height: 0; overflow: hidden; }
-.telemetry-status-pane { display: grid; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, .8fr); }
+.telemetry-status-pane { display: grid; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1.45fr) minmax(0, 1fr); }
+.telemetry-jammers-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+.telemetry-jammers-pane > .telemetry-section--jammer { flex: 1; min-height: 0; border-bottom: 0; }
 .telemetry-quality-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: .65rem; box-sizing: border-box; overflow: hidden; }
 .telemetry-quality-pane > .engine-evidence, .telemetry-quality-pane .quality-metric-panel { flex: 1; min-height: 0; height: auto; }
 .telemetry-decisions-pane { height: 100%; min-height: 0; overflow: auto; }
@@ -1830,6 +1974,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-panel .panel-heading { min-height: 2.35rem; padding: .55rem .85rem; border-bottom-color: #1e3448; color: #e8f0f8; background: transparent; }
 .telemetry-panel .panel-heading strong { color: #e8f0f8; font-size: 13px; }
 .telemetry-panel .panel-heading__more { color: #4fd6ff; font-size: 12px; font-weight: 400; }
+.telemetry-panel .panel-heading__actions { display: flex; align-items: center; gap: .6rem; flex-shrink: 0; }
 .telemetry-panel .panel-heading .el-button { height: auto; padding: 0; font-size: 12px; }
 .scene-summary__tabs { display: grid; grid-template-columns: repeat(4,1fr); margin: .5rem .6rem 0; border: 1px solid var(--console-border); border-radius: 5px; overflow: hidden; }
 .scene-summary__tabs button { min-height: 1.75rem; border: 0; border-right: 1px solid var(--console-border); color: var(--console-text-muted); background: var(--console-bg-elevated); font-size: var(--console-font-size-min); cursor: pointer; }
@@ -1857,8 +2002,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-section { min-height: 0; overflow: hidden; border-bottom: 1px solid #1e3448; }
 .telemetry-section:last-child { border-bottom: 0; }
 .telemetry-section--links, .telemetry-section--jammer, .telemetry-section--events { display: grid; grid-template-rows: auto minmax(0,1fr); }
-.telemetry-section__body { min-width: 0; min-height: 0; overflow: auto; overflow-wrap: anywhere; }
-.telemetry-section__body > .engine-evidence { padding: .25rem .85rem; }
+.telemetry-section__body { min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; overflow-wrap: anywhere; }
+.telemetry-section__body > .engine-evidence { padding: .4rem .75rem; }
 .telemetry-section__body > .panel-caption { margin: 0; padding: .4rem .85rem; color: #829db3; font-size: 12px; }
 .telemetry-section__body > .event-list { margin: 0; }
 .telemetry-empty-state { min-height: 0; overflow-y: auto; padding: .5rem; }
@@ -1898,7 +2043,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .jammer-list article.active span { color: #ff7b7b; }
 .jammer-list dl { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .5rem; margin: .5rem 0; }
 .jammer-list dt { color: #6b8299; font-size: 12px; }
-.jammer-list dd { margin: .1rem 0 0; color: #a8bfd4; font-family: Consolas,monospace; font-size: 12px; }
+.jammer-list dd { margin: .1rem 0 0; color: #a8bfd4; font-family: Consolas,monospace; font-size: 12px; font-variant-numeric: tabular-nums; }
 .power-bar { height: .35rem; overflow: hidden; border-radius: 999px; background: #16283c; }
 .power-bar i { display: block; height: 100%; border-radius: inherit; background: #ff5b5b; }
 .detection-state { margin: 0; padding: .5rem .85rem; border-top: 1px solid #1e3448; color: #ff7b7b; font-size: 12px; }
@@ -1912,7 +2057,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .event-list p { margin: .2rem 0; color: #a8bfd4; font-size: 12px; line-height: 1.5; }
 .situation-footer { display: flex; min-height: 2rem; align-items: center; gap: 1rem; padding: .35rem .7rem; border-top: 1px solid var(--console-border); color: var(--console-text-muted); background: #06131f; font-family: Consolas,"Microsoft YaHei",monospace; font-size: var(--console-font-size-min); white-space: nowrap; }
 .situation-footer span:first-child { display: inline-flex; align-items: center; gap: .3rem; }
-.situation-footer strong { overflow: hidden; margin-left: auto; color: var(--console-teal); text-overflow: ellipsis; }
 .footer-dot { width: .42rem; height: .42rem; border-radius: 50%; background: var(--console-text-dim); }
 .scene-summary .node-jammer-count{ position: absolute;  top:9px; left:62px; color: var(--console-cyan); font-size: var(--console-font-size-min);}
 @media (max-width: 1500px) {

@@ -4,12 +4,12 @@ import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import ReportTabs from '../../components/reports/ReportTabs.vue'
 import LocalReportTabs from '../../components/reports/LocalReportTabs.vue'
-import ReportChart from '../../components/reports/ReportChart.vue'
 import MissionResults from '../../components/situation/MissionResults.vue'
 import { ElMessage } from 'element-plus'
 import type { LocalReportFilter, ReportExportRequest } from '../../contracts/domain-models'
 import { useReportStore } from '../../stores/report'
 import { useTelemetryStore } from '../../stores/telemetry'
+import { reportLinkLabel } from '../../features/reports/report-link-label'
 import { formatDateTime } from '../../features/shared/date-time'
 import { apiFetch } from '../../features/shared/api-fetch'
 import { saveDownload } from '../../features/shared/download'
@@ -24,26 +24,36 @@ const resultId = computed(() => typeof route.query.resultId === 'string' ? route
 const { reports, selectedReport, capabilityState, resultMessage, exportResult, resultComparisons, localFilterResult, resultSource } = storeToRefs(reportStore)
 const exportFormat = ref<ReportExportRequest['format']>('HTML')
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(capabilityState.value))
+const localFilterPending = computed(() => capabilityState.value === 'LOADING' && !!resultSource.value && !!localFilterResult.value)
 const filterNode = ref(''), filterLink = ref(''), filterStage = ref(''), filterFrom = ref<number | null>(null), filterTo = ref<number | null>(null)
-const evidenceKind = ref(''), evidenceSeriesId = ref('')
+const evidenceSeriesId = ref('')
 const filterRangeError = computed(() => filterFrom.value !== null && filterTo.value !== null && filterFrom.value > filterTo.value)
 const localEvidence = computed(() => localFilterResult.value?.report.localEvidence ?? selectedReport.value?.localEvidence)
 const engineArchive = computed(() => localEvidence.value?.engineFrameArchive)
 const engineCsv = computed(() => localEvidence.value?.engineCsv)
 const engineArchiveDownloading = ref(false)
 const engineCsvDownloading = ref<string | null>(null)
-const evidenceLabels: Record<string, string> = {
-  linkId: '链路', sourcePlatformId: '源节点', targetPlatformId: '目标节点', sourcePlatform: '源节点', destPlatform: '目标节点',
-  linkStatus: '状态', gxbDb: 'GXB（dB）', ber: 'BER', receivedPower: '接收功率（dBm）',
-  freeSpaceLossDb: '自由空间损耗（dB）', seaMultipathLossDb: '海面多径损耗（dB）', atmosphericLossDb: '大气损耗（dB）',
-  cloudRainLossDb: '云雨损耗（dB）', jammingLossDb: '干扰损耗（dB）', totalLossDb: '总损耗（dB）',
-  direction: '方向', oldLinkType: '切换前类型', newLinkType: '切换后类型', oldBer: '切换前 BER', newBer: '切换后 BER', reason: '切换原因',
+const hasQualityEvidence = computed(() => Boolean(
+  resultSource.value && reportStore.evidenceOverview?.selectedSourceSha256
+  && ((reportStore.evidenceOverview.series?.length ?? 0) > 0 || reportStore.evidenceSeries),
+))
+function handleDataExportCommand(command: string): void {
+  if (command === 'summary-csv') { void requestExport('CSV'); return }
+  if (command === 'engine-frames') { void downloadEngineFrames(); return }
+  if (command.startsWith('csv:')) void downloadEngineCsv(command.slice(4))
 }
-const evidenceColumns = computed(() => [...new Set((reportStore.evidenceRows?.rows ?? []).flatMap(row => Object.keys(row)))].filter(key => !['id', 'time', 'seq'].includes(key)))
-const evidenceCell = (value: unknown): string => value == null ? '暂无数据' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+const filterLinkOptions = computed(() => {
+  const currentLinks = resultComparisons.value.find(row => row.record.resultId === resultSource.value?.resultId)?.parameters.links
+  const types = new Map(currentLinks?.map(link => [link.id, link.type]))
+  const options = (localFilterResult.value?.links ?? []).map((value, index) => ({ value, label: reportLinkLabel(value, index, types.get(value)) }))
+  const counts = new Map<string, number>()
+  for (const { label } of options) counts.set(label, (counts.get(label) ?? 0) + 1)
+  return options.map((option, index) => (counts.get(option.label) ?? 0) > 1
+    ? { ...option, label: `${option.label}（第 ${index + 1} 条）` } : option)
+})
 const appliedFilterLabel = computed(() => {
   const filter = localFilterResult.value?.filter
-  return filter && Object.keys(filter).length ? [filter.nodeId && `节点 ${filter.nodeId}`, filter.linkId && `链路 ${filter.linkId}`,
+  return filter && Object.keys(filter).length ? [filter.nodeId && `节点 ${filter.nodeId}`, filter.linkId && (filterLinkOptions.value.find(link => link.value === filter.linkId)?.label ?? '指定链路'),
     filter.stage && `阶段 ${filter.stage}`,
     (filter.from !== undefined || filter.to !== undefined) && `${filter.from ?? selectedReport.value?.localEvidence?.startTimeS}～${filter.to ?? selectedReport.value?.localEvidence?.endTimeS} 秒`].filter(Boolean).join('；') : '全部数据'
 })
@@ -53,18 +63,34 @@ function clearFilterInputs(): void { filterNode.value = ''; filterLink.value = '
 const appliedEvidenceFilter = (): LocalReportFilter | undefined => localFilterResult.value?.filter
 /** D3 证据来源切换：清空旧分页/曲线并按新来源重新加载，旧响应由 store epoch 丢弃。 */
 async function selectEvidenceSource(sourceSha256: string): Promise<void> {
-  evidenceKind.value = ''; evidenceSeriesId.value = ''
+  evidenceSeriesId.value = ''
   if (!await reportStore.loadEvidenceOverview(sourceSha256)) return
-  const caps = reportStore.evidenceOverview?.capabilities ?? []
-  evidenceKind.value = caps[0] ?? ''
-  if (evidenceKind.value) void reportStore.loadEvidenceRows(evidenceKind.value, { filter: appliedEvidenceFilter() })
   const meta = reportStore.evidenceOverview?.series?.[0]
   evidenceSeriesId.value = meta?.seriesId ?? ''
   if (meta) void reportStore.loadEvidenceSeries(meta.seriesId, { filter: appliedEvidenceFilter() })
 }
-function selectEvidenceKind(kind: string): void { evidenceKind.value = kind; void reportStore.loadEvidenceRows(kind, { filter: appliedEvidenceFilter() }) }
-function selectEvidenceSeries(seriesId: string): void { evidenceSeriesId.value = seriesId; if (seriesId) void reportStore.loadEvidenceSeries(seriesId, { filter: appliedEvidenceFilter() }) }
-function nextEvidencePage(): void { const cursor = reportStore.evidenceRows?.nextCursor; if (cursor) void reportStore.loadEvidenceRows(evidenceKind.value, { cursor, filter: appliedEvidenceFilter() }) }
+
+
+async function ensureEngineSegments(): Promise<void> {
+  if (!resultSource.value || !engineArchive.value?.detailDeferred) return
+  await reportStore.loadEngineSegments(appliedEvidenceFilter() ?? {})
+}
+
+async function ensureQualityEvidence(): Promise<void> {
+  if (!resultSource.value || reportStore.evidenceSeries || evidenceSeriesId.value) return
+  if (!reportStore.evidenceOverview && !await reportStore.loadEvidenceOverview()) return
+  const source = reportStore.evidenceOverview?.sources.find(item => item.label.startsWith('任务 CSV')) ?? reportStore.evidenceOverview?.sources[0]
+  if (source && source.sourceSha256 !== reportStore.evidenceOverview?.selectedSourceSha256) {
+    await selectEvidenceSource(source.sourceSha256)
+    return
+  }
+  // 简化后的页签只展示折线图：默认加载第一条可用曲线，不再显示曲线选择器。
+  const meta = reportStore.evidenceOverview?.series?.[0]
+  if (meta) {
+    evidenceSeriesId.value = meta.seriesId
+    void reportStore.loadEvidenceSeries(meta.seriesId, { filter: appliedEvidenceFilter() })
+  }
+}
 
 async function loadComparisons(): Promise<void> {
   const source = resultSource.value
@@ -72,13 +98,12 @@ async function loadComparisons(): Promise<void> {
     ElMessage.warning('历史运行参数加载失败，可重新打开对比页签重试。')
   }
 }
-
-/** 加载当前报告所引用的遥测证据。 */
 async function loadEvidence(): Promise<void> {
   const report = selectedReport.value
   if (report?.localEvidence) {
     telemetryStore.resetToSafeEmpty()
     exportFormat.value = 'HTML'
+    evidenceSeriesId.value = ''
     clearFilterInputs()
     if (resultSource.value) {
       await reportStore.applyLocalFilter({})
@@ -138,7 +163,6 @@ async function applyLocalFilter(reset = false): Promise<void> {
   const filter: LocalReportFilter = { ...(filterNode.value ? { nodeId: filterNode.value } : {}), ...(filterLink.value ? { linkId: filterLink.value } : {}), ...(filterStage.value ? { stage: filterStage.value } : {}), ...(filterFrom.value === null ? {} : { from: filterFrom.value }), ...(filterTo.value === null ? {} : { to: filterTo.value }) }
   if (await reportStore.applyLocalFilter(filter) && reportStore.evidenceOverview?.selectedSourceSha256) {
     // 已应用筛选变化：失效旧请求并清旧游标/段，按新筛选刷新当前来源/kind/曲线。
-    if (evidenceKind.value) void reportStore.loadEvidenceRows(evidenceKind.value, { filter: appliedEvidenceFilter() })
     if (evidenceSeriesId.value) void reportStore.loadEvidenceSeries(evidenceSeriesId.value, { filter: appliedEvidenceFilter() })
   }
 }
@@ -181,18 +205,67 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
     <header class="reports-page__header">
       <MissionResults view="report" :refreshing="pending" @refresh="reload" />
       <div class="reports-page__actions" :class="{ 'reports-page__actions--export': localEvidence }">
-        <el-select v-if="localEvidence" v-model="exportFormat" aria-label="导出格式" :disabled="pending || selectedReport === null">
-          <el-option value="HTML" label="HTML" />
-          <el-option value="PDF" label="PDF" />
-        </el-select>
-        <el-button
-          v-if="localEvidence"
-          type="primary"
-          data-testid="report-export"
-          :loading="capabilityState === 'EXECUTING'"
-          :disabled="pending || selectedReport === null"
-          @click="requestExport()"
-        >{{ appliedFilterLabel === '全部数据' ? '导出报告' : '导出筛选报告' }}</el-button>
+        <template v-if="localEvidence">
+          <el-select v-model="exportFormat" aria-label="导出格式" :disabled="pending || selectedReport === null">
+            <el-option value="HTML" label="HTML" />
+            <el-option value="PDF" label="PDF" />
+          </el-select>
+          <el-button
+            type="primary"
+            data-testid="report-export"
+            :loading="capabilityState === 'EXECUTING'"
+            :disabled="pending || selectedReport === null"
+            @click="requestExport()"
+          >{{ appliedFilterLabel === '全部数据' ? '导出报告' : '导出筛选报告' }}</el-button>
+          <el-dropdown trigger="click" :disabled="pending" @command="handleDataExportCommand">
+            <el-button data-testid="report-data-export" :disabled="pending">数据导出</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="summary-csv" data-testid="export-summary-csv" :disabled="pending">导出统计 CSV</el-dropdown-item>
+                <el-dropdown-item
+                  v-if="resultSource && engineArchive"
+                  command="engine-frames"
+                  data-testid="engine-frame-archive-download"
+                  :disabled="pending || engineArchiveDownloading"
+                >下载完整引擎帧 JSONL</el-dropdown-item>
+                <template v-if="resultSource && engineCsv">
+                  <el-dropdown-item
+                    v-for="file in engineCsv.files"
+                    :key="file.fileName"
+                    :command="`csv:${file.fileName}`"
+                    data-testid="engine-csv-download"
+                    :disabled="pending || engineCsvDownloading !== null"
+                  >下载 {{ file.fileName }}{{ file.status === 'PARTIAL' ? '（部分）' : '' }}</el-dropdown-item>
+                </template>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
+        <template v-else-if="auth.runtimeMode !== 'LOCAL'">
+          <el-select
+            v-if="!resultId && !archiveId"
+            :model-value="selectedReport?.reportId ?? ''"
+            aria-label="报告来源"
+            data-testid="report-source"
+            class="reports-page__source-select"
+            :disabled="pending || reports.length === 0"
+            placeholder="选择报告"
+            @update:model-value="changeReport"
+          >
+            <el-option
+              v-for="report in reports"
+              :key="report.reportId"
+              :value="report.reportId"
+              :label="`${report.reportId} · 单次仿真`"
+            />
+          </el-select>
+          <el-select v-model="exportFormat" aria-label="验证导出格式" :disabled="pending || !selectedReport">
+            <el-option value="HTML" label="HTML" />
+            <el-option value="PDF" label="PDF" />
+            <el-option value="CSV" label="CSV" />
+          </el-select>
+          <el-button data-testid="report-export" :loading="capabilityState === 'EXECUTING'" :disabled="pending || !selectedReport" @click="requestExport()">验证导出</el-button>
+        </template>
         <el-button v-if="auth.runtimeMode !== 'LOCAL'" :disabled="pending" @click="reload">重新加载</el-button>
       </div>
       <p v-if="!archiveId && !resultId">可选择已完成的仿真查看评估结果；当前显示配置文件报告。</p>
@@ -201,7 +274,7 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
     <main class="reports-page__content">
       <p v-if="archiveId" data-testid="report-archive-source">归档：{{ archiveId }} · 未绑定场景或运行</p>
       <p v-if="selectedReport?.localEvidence">报告编号：{{ selectedReport.reportId }} · 统计生成：{{ formatDateTime(selectedReport.generatedTime) }}</p>
-      <el-skeleton v-if="capabilityState === 'LOADING' || capabilityState === 'VALIDATING'" :rows="8" animated />
+      <el-skeleton v-if="!localFilterPending && (capabilityState === 'LOADING' || capabilityState === 'VALIDATING')" :rows="8" animated />
       <template v-else-if="selectedReport?.localEvidence">
         <p v-if="resultSource?.executionSource === 'REMOTE_WS'">数据接收已结束，未确认引擎已停止。指标来自归档，事件和轨迹来自回放文件。</p>
         <p v-if="resultComparisons.some(item => item.record.resultId === resultSource?.resultId && item.parameters.source === 'PROJECT_REFERENCE')" data-testid="report-reference-parameters">参数和阶段筛选以项目参考配置为准，未确认引擎实际执行版本。</p>
@@ -209,13 +282,29 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
         <p v-if="resultSource" data-testid="report-applied-filter">当前图表与导出范围：{{ appliedFilterLabel }}</p>
         <el-form v-if="resultSource" inline class="local-report-filter" aria-label="报告统一筛选">
           <el-form-item label="节点"><el-select v-model="filterNode" clearable style="width: 160px" placeholder="全部节点"><el-option v-for="node in selectedReport.localEvidence.nodes" :key="node.platformId" :value="node.platformId" :label="node.name" /></el-select></el-form-item>
-          <el-form-item label="链路"><el-select v-model="filterLink" clearable style="width: 180px" :disabled="!localFilterResult" placeholder="全部链路"><el-option v-for="link in localFilterResult?.links ?? []" :key="link" :value="link" :label="link" /></el-select></el-form-item>
+          <el-form-item label="链路"><el-select v-model="filterLink" clearable style="width: 180px" :disabled="!localFilterResult" placeholder="全部链路"><el-option v-for="link in filterLinkOptions" :key="link.value" :value="link.value" :label="link.label" /></el-select></el-form-item>
           <el-form-item label="任务阶段"><el-select v-model="filterStage" clearable :disabled="!localFilterResult?.stages.length" style="width: 220px" :placeholder="localFilterResult?.stages.length ? '全部阶段' : '本次运行未设置任务阶段'"><el-option v-for="stage in localFilterResult?.stages ?? []" :key="stage" :label="stage" :value="stage" /></el-select></el-form-item>
           <el-form-item label="开始时刻（秒）"><el-input-number v-model="filterFrom" :min="0" :max="selectedReport.localEvidence.endTimeS" /></el-form-item><el-form-item label="结束时刻（秒）"><el-input-number v-model="filterTo" :min="0" :max="selectedReport.localEvidence.endTimeS" /></el-form-item>
-          <el-form-item><el-button type="primary" :disabled="filterRangeError || !localFilterResult" @click="applyLocalFilter()">应用精确筛选</el-button><el-button :disabled="!localFilterResult" @click="applyLocalFilter(true)">重置</el-button></el-form-item>
+          <el-form-item><el-button type="primary" :loading="localFilterPending" :disabled="filterRangeError || !localFilterResult" @click="applyLocalFilter()">应用精确筛选</el-button><el-button :disabled="!localFilterResult || localFilterPending" @click="applyLocalFilter(true)">重置</el-button></el-form-item>
         </el-form>
         <el-alert v-if="filterRangeError" type="error" :closable="false" title="开始时刻不得晚于结束时刻。" />
-        <LocalReportTabs :evidence="localEvidence!" :generated-time="localFilterResult?.report.generatedTime ?? selectedReport.generatedTime" :filter="localFilterResult?.filter" :comparison="resultComparisons" :comparison-loading="reportStore.comparisonsLoading" @load-comparisons="loadComparisons" :precise-filter="!!resultSource" :timeline="localFilterResult?.timeline" :timeline-total="localFilterResult?.timelineTotal" />
+        <LocalReportTabs
+          v-loading="localFilterPending"
+          :filter-pending="localFilterPending"
+          :evidence="localEvidence!"
+          :generated-time="localFilterResult?.report.generatedTime ?? selectedReport.generatedTime"
+          :filter="localFilterResult?.filter"
+          :comparison="resultComparisons"
+          :current-result-id="resultSource?.resultId"
+          :comparison-loading="reportStore.comparisonsLoading"
+          :precise-filter="!!resultSource && !!localFilterResult"
+          :timeline="localFilterResult?.timeline"
+          :timeline-total="localFilterResult?.timelineTotal"
+          :has-quality-evidence="hasQualityEvidence"
+          @load-comparisons="loadComparisons"
+          @load-quality-evidence="ensureQualityEvidence"
+          @load-engine-segments="ensureEngineSegments"
+        />
       </template>
       <ReportTabs
         v-else-if="selectedReport"
@@ -225,89 +314,14 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
       />
       <el-result v-else-if="capabilityState === 'ERROR'" icon="error" title="报告加载失败" :sub-title="resultMessage" />
       <el-empty v-else description="暂无可用报告" />
-      <el-collapse class="report-tools" aria-label="报表排障工具" data-testid="report-tools">
-        <el-collapse-item title="排障工具与全量导出" name="tools">
-          <div class="report-tools__actions">
-            <el-select
-              v-if="!resultId && !archiveId"
-              :model-value="selectedReport?.reportId ?? ''"
-              aria-label="报告来源"
-              data-testid="report-source"
-              :disabled="pending || reports.length === 0"
-              placeholder="选择报告"
-              @update:model-value="changeReport"
-            >
-              <el-option
-                v-for="report in reports"
-                :key="report.reportId"
-                :value="report.reportId"
-                :label="report.localEvidence ? `本地文件报告 · ${report.reportId.slice(-12)}` : `${report.reportId} · 单次仿真`"
-              />
-            </el-select>
-            <el-button v-if="localEvidence" :disabled="pending" @click="requestExport('CSV')">导出统计 CSV</el-button>
-            <el-select v-if="!localEvidence" v-model="exportFormat" aria-label="验证导出格式" :disabled="pending || !selectedReport">
-              <el-option value="HTML" label="HTML" />
-              <el-option value="PDF" label="PDF" />
-              <el-option value="CSV" label="CSV" />
-            </el-select>
-            <el-button v-if="!localEvidence" data-testid="report-export" :loading="capabilityState === 'EXECUTING'" :disabled="pending || !selectedReport" @click="requestExport()">验证导出</el-button>
-            <el-button v-if="resultSource && engineArchive" data-testid="engine-frame-archive-download" :loading="engineArchiveDownloading" :disabled="pending" @click="downloadEngineFrames">下载完整引擎帧 JSONL</el-button>
-            <template v-if="resultSource && engineCsv">
-              <el-button v-for="file in engineCsv.files" :key="file.fileName" data-testid="engine-csv-download" :loading="engineCsvDownloading === file.fileName" :disabled="pending || engineCsvDownloading !== null" @click="downloadEngineCsv(file.fileName)">下载 {{ file.fileName }}{{ file.status === 'PARTIAL' ? '（部分）' : '' }}</el-button>
-            </template>
-          </div>
-          <section v-if="resultSource" class="report-evidence" data-testid="report-evidence">
-            <p>报告摘要可能省略部分记录。导出的证据按当前筛选范围生成，曲线可能简化，每类明细最多 200 条。需要完整引擎记录时，请下载引擎帧归档。</p>
-            <div class="report-evidence__bar">
-              <el-button size="small" :loading="reportStore.evidenceLoading" data-testid="report-evidence-load" @click="reportStore.loadEvidenceOverview()">加载报告证据</el-button>
-              <el-select v-if="reportStore.evidenceOverview?.sources.length" :model-value="reportStore.evidenceOverview.selectedSourceSha256 ?? ''" placeholder="选择来源" style="width: 260px" @change="selectEvidenceSource">
-                <el-option v-for="source in reportStore.evidenceOverview.sources" :key="source.sourceSha256" :value="source.sourceSha256" :label="`${source.label}（${source.capabilities.join('/')}）`" />
-              </el-select>
-              <template v-if="reportStore.evidenceOverview?.selectedSourceSha256">
-                <el-select :model-value="evidenceKind" data-testid="evidence-kind" style="width: 150px" @change="selectEvidenceKind"><el-option v-for="kind in reportStore.evidenceOverview.capabilities ?? []" :key="kind" :value="kind" :label="kind" /></el-select>
-                <el-select :model-value="evidenceSeriesId" data-testid="evidence-series" placeholder="选择曲线" style="width: 220px" @change="selectEvidenceSeries"><el-option v-for="meta in reportStore.evidenceOverview.series ?? []" :key="meta.seriesId" :value="meta.seriesId" :label="`${meta.seriesId}（${meta.unit}）`" /></el-select>
-                <el-button size="small" @click="reportStore.exportEvidence('HTML', localFilterResult?.filter)">导出证据 HTML</el-button>
-                <el-button size="small" @click="reportStore.exportEvidence('PDF', localFilterResult?.filter)">导出证据 PDF</el-button>
-                <el-button v-if="reportStore.evidenceSeries?.nextCursor" size="small" :loading="reportStore.evidenceLoading" @click="reportStore.loadNextEvidenceSeries()">曲线下一段</el-button>
-              </template>
-            </div>
-            <p v-if="reportStore.evidenceMessage" class="scope-note" data-testid="report-evidence-message">{{ reportStore.evidenceMessage }}</p>
-            <div v-if="reportStore.evidenceOverview?.selectedSourceSha256" class="report-evidence__totals" data-testid="report-evidence-totals">
-              <span>可用数据：{{ (reportStore.evidenceOverview.capabilities ?? []).join('、') || '无' }}</span>
-              <span>缺失：{{ (reportStore.evidenceOverview.missing ?? []).join('、') || '无' }}</span>
-              <span data-testid="report-evidence-source-totals">全源统计（不随筛选变化）：<template v-for="(count, kind) in reportStore.evidenceOverview.totals ?? {}" :key="kind">{{ kind }} {{ count }}；</template></span>
-              <span v-if="reportStore.evidenceRows" data-testid="report-evidence-filtered-total">当前筛选明细：{{ reportStore.evidenceRows.total }} 条</span>
-            </div>
-            <el-table v-if="reportStore.evidenceRows" :data="reportStore.evidenceRows.rows" size="small" stripe data-testid="report-evidence-rows">
-              <el-table-column prop="id" label="记录编号" min-width="160" />
-              <el-table-column prop="time" label="时刻（秒）" width="120" />
-              <el-table-column v-for="column in evidenceColumns" :key="column" :label="evidenceLabels[column] ?? column" min-width="140">
-                <template #default="{ row }">{{ evidenceCell(row[column]) }}</template>
-              </el-table-column>
-            </el-table>
-            <div v-if="reportStore.evidenceRows" class="report-evidence__pager">
-              <span>共 {{ reportStore.evidenceRows.total }} 条</span>
-              <el-button size="small" :disabled="!reportStore.evidenceRows.nextCursor" @click="nextEvidencePage">下一页</el-button>
-            </div>
-            <template v-if="reportStore.evidenceSeries">
-              <ReportChart v-for="(segment, index) in reportStore.evidenceSeriesSegments" :key="index" :title="`${reportStore.evidenceSeries.seriesId} · 第${index + 1}段`" :unit="reportStore.evidenceSeries.unit" line :rows="segment.map(point => ({ label: String(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore }))" :source-range="`本段 ${segment.length} 点${reportStore.evidenceSeries.sampling === 'DOWNSAMPLED' ? '（已简化）' : ''}`" :generated-time="selectedReport?.generatedTime" />
-            </template>
-          </section>
-          <el-alert
-            v-if="exportResult && !exportResult.generated"
-            class="reports-page__export-result"
-            type="success"
-            show-icon
-            :closable="false"
-            :title="`${exportResult.watermark} · 验证时刻 ${formatDateTime(exportResult.verifiedAt)}`"
-          />
-          <el-descriptions v-if="exportResult?.generated" :column="1" border data-testid="local-report-export-result">
-            <el-descriptions-item label="文件保存路径">{{ exportResult.filePath }}</el-descriptions-item>
-            <el-descriptions-item label="格式">{{ exportResult.format }}</el-descriptions-item>
-            <el-descriptions-item label="文件 SHA-256">{{ exportResult.sha256 }}</el-descriptions-item>
-          </el-descriptions>
-        </el-collapse-item>
-      </el-collapse>
+      <el-alert
+        v-if="!localEvidence && exportResult && !exportResult.generated"
+        class="reports-page__export-result"
+        type="success"
+        show-icon
+        :closable="false"
+        :title="`${exportResult.watermark} · 验证时刻 ${formatDateTime(exportResult.verifiedAt)}`"
+      />
     </main>
   </section>
 </template>
@@ -358,6 +372,11 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
 
 .reports-page__actions :deep(.el-select) {
   width: 7rem;
+}
+
+.reports-page__actions :deep(.reports-page__source-select.el-select) {
+  width: 14rem;
+  max-width: 100%;
 }
 
 .reports-page__content {
@@ -427,9 +446,7 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
   overflow: hidden;
 }
 
-.report-tools { flex: 0 0 auto; margin-top: 1rem; }
-.report-tools__actions, .report-evidence__bar, .report-evidence__totals { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0.75rem 0; }
-.report-tools__actions :deep(.el-select) { width: 20rem; max-width: 100%; }
+.report-evidence__bar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0.75rem 0; }
 
 .reports-page__export-result {
   flex: 0 0 auto;

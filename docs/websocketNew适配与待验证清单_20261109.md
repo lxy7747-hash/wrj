@@ -7,7 +7,7 @@
 | 内容 | 接入规则与结果 |
 | --- | --- |
 | 帧号与时间 | 2026-11-10 更新：取消 `sim_time_s`，缺失或遗留值均不参与校验。`frame_id` 正常按 5→10→15 递增，直接对应仿真秒数；例如 3770.0 对应 3770 秒。页面、筛选、WS 转发与新归档统一使用此秒值，已有归档保留已存时间。正常帧号差 5 不提示异常或打断曲线；非正常间隔记录诊断并保留曲线断点，不补造中间帧。 |
-| 探测与干扰频率 | 探测器 `jammer_sensor.events[].freq_band_hz` 按 GHz × 10⁹ 转 Hz；干扰机 `rf_jammer.active_params.freq_band_hz` 保持 Hz。按字段位置转换，不按数值大小猜单位。 |
+| 探测与干扰频率 | 2026-11-24 更新：探测器 `jammer_sensor.events[].freq_band_hz` 与干扰机 `rf_jammer.active_params.freq_band_hz` 均为 Hz，直接使用，不再换算（此前探测器按 GHz × 10⁹ 转换，插件已改为输出 Hz）。不按数值大小猜单位。 |
 | 链路频率 | 优先读取 `quality.input_trace.frequency_ghz`，兼容旧字段名 `frequency`。页面显示 GHz。 |
 | 损耗 | 雨衰、云衰分别接收、展示和归档。总复合损耗保留上游原值，不自行加上自由空间项；旧云雨合并字段仍可读。 |
 | 时延与路径参数 | 保存链路 `quality.delay`、路径 `path_params.delay/trans_freq/data_content`，按原值展示并标记单位待确认，不用于派生统计。 |

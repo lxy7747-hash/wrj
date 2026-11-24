@@ -59,6 +59,23 @@ function prepare(activeScope = scope()) {
 describe('运行质量 Store', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it('只有整条热链质量的帧也有数据，下一帧缺项时清空热链质量', () => {
+    const store = prepare()
+    const frame = adaptEngineFrameSnapshot({ frame_id: 5, link_calc: {
+      links: [],
+      path_quality: [{ path_id: 'PATH-1', rate_bps: 2356 }],
+    } }).data!
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, runId: scope().runId })).toBe(true)
+    expect(store.state).toBe('SUCCESS')
+    expect(store.engineFrame?.pathQuality).toEqual([
+      { pathId: 'PATH-1', gxbDb: null, ber: null, marginDb: null, delayMs: null, rateBps: 2356 },
+    ])
+    const oldFrame = adaptEngineFrameSnapshot({ frame_id: 10, link_calc: { links: [] } }).data!
+    expect(store.acceptEngineFrame(store.epoch, { ...oldFrame, runId: scope().runId })).toBe(true)
+    expect(store.state).toBe('EMPTY')
+    expect(store.engineFrame?.pathQuality).toBeUndefined()
+  })
+
   it('本机位置与链路按共同时间推进，保留缓存帧事件，解除限时后收齐末帧', () => {
     const store = prepare()
     const base = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId }

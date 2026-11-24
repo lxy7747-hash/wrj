@@ -24,7 +24,7 @@ describe('质量判定与选路依据展示', () => {
     expect(text).toContain('缺少接收干扰功率测量')
     expect(text).toContain('L-B → L-A')
     expect(text).toContain('帧 12')
-    expect(text).toContain('GXB 12 dB · BER 1.0e-6')
+    expect(text).toContain('GXB 12 dB · 误码率 1.0e-6')
     expect(wrapper.get('tbody tr').text()).toContain('暂无数据')
     await wrapper.setProps({ statuses: new Map(), candidates: [], decisions: [], events: [] } as never)
     expect(wrapper.find('tbody tr').exists()).toBe(false)

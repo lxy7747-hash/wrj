@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LocalReportEvidence } from '../../src/contracts/domain-models'
+import { MAX_LOCAL_REPORT_TREND_POINTS } from '../../src/contracts/domain-models'
 import { isLocalReport, localReportTables } from '../../src/features/reports/local-report'
 
 const BASE: LocalReportEvidence = {
@@ -32,7 +33,7 @@ describe('报表评估指标占位', () => {
     expect(rows.get('平均干信比')).toBe('-3.25 dB')
     expect(rows.get('平均误码率')).toBe('1.20e-5')
     expect(rows.get('干扰持续时长')).toBe('0分30秒')
-    expect(localReportTables(evidence).find(table => table.title === '链路切换事件')!.rows).toEqual([['SW-1', '0分12秒', 'DEM-1', 'RULE-JAM', 'L-A', 'L-B', '5']])
+    expect(localReportTables(evidence).find(table => table.title === '链路切换事件')!.rows).toEqual([['SW-1', '0分12秒', 'DEM-1', 'RULE-JAM', 'L-A', 'L-B']])
   })
 
   it('拒绝越界或结构错误的评估指标与切换事件', () => {
@@ -41,5 +42,43 @@ describe('报表评估指标占位', () => {
     expect(isLocalReport(report({ ...BASE, switchEvents: [{ eventId: 'SW', time: 999, demandId: 'D', ruleId: null, fromDeviceId: 'a', toDeviceId: 'b', fromLinkId: null, toLinkId: null, stableChecks: null }] }))).toBe(false)
     const badArchive = { sourceSha256: 'd'.repeat(64), frameCount: 1, firstSimulationTime: 1, lastSimulationTime: 1, missingFieldNames: [], segmentRows: [{ engineEpoch: 0, frameId: 1, simulationTime: 1, segment: { linkId: 'bad' } }], switchRows: [], eventRows: [] }
     expect(isLocalReport(report({ ...BASE, engineFrameArchive: badArchive } as never))).toBe(false)
+  })
+
+  it('历史引擎汇总可省略累计趋势，提供时校验范围、顺序和汇总终值', () => {
+    const archive = { sourceSha256: 'd'.repeat(64), frameCount: 3, firstSimulationTime: 0, lastSimulationTime: 3,
+      missingFieldNames: [], segmentRows: [], switchRows: [], eventRows: [] }
+    const aggregate = { uniqueSingleSegmentCount: 0, switchCount: 2, jammingDurationS: 0.3, missing: [] }
+    const isValid = (value: unknown) => isLocalReport({
+      ...report(BASE), localEvidence: { ...BASE, engineFrameArchive: { ...archive, aggregate: value } },
+    })
+    expect(isValid(aggregate)).toBe(true)
+    expect(isValid({ ...aggregate, switchCount: 0, jammingDurationS: 0,
+      switchCountTrend: [{ time: 0, value: 0 }], jammingDurationTrend: [{ time: 0, value: 0 }],
+    })).toBe(true)
+    expect(isValid({ ...aggregate,
+      switchCountTrend: [{ time: 0, value: 0 }, { time: 3, value: 2, breakBefore: true }],
+      jammingDurationTrend: [{ time: 1, value: 0.1 }, { time: 3, value: 0.1 + 0.2 }],
+    })).toBe(true)
+    const invalidTrends = [
+      { switchCountTrend: [] },
+      { switchCountTrend: [{ time: 3, value: 1 }] },
+      { switchCountTrend: [{ time: 1, value: 0.5 }, { time: 3, value: 2 }] },
+      { switchCountTrend: [{ time: 1, value: 3 }, { time: 3, value: 2 }] },
+      { switchCountTrend: [{ time: 2, value: 1 }, { time: 1, value: 2 }] },
+      { switchCountTrend: [{ time: 3, value: 2, breakBefore: 'true' }] },
+      { switchCountTrend: Array(MAX_LOCAL_REPORT_TREND_POINTS + 1).fill({ time: 3, value: 2 }) },
+      { jammingDurationTrend: [{ time: -1, value: 0.3 }] },
+      { jammingDurationTrend: [{ time: 3, value: Infinity }] },
+      { jammingDurationTrend: [{ time: 3, value: 0.4 }] },
+      { jammingDurationS: undefined, jammingDurationTrend: [{ time: 3, value: 0.3 }] },
+    ]
+    for (const invalid of invalidTrends) expect(isValid({ ...aggregate, ...invalid })).toBe(false)
+  })
+
+  it('质量累计干扰时长必须与同一质量汇总终值一致', () => {
+    const qualityJammingDurationTrend = [{ time: 0.25, value: 0 }, { time: 0.75, value: 0.5 }]
+    expect(isLocalReport(report({ ...BASE, qualityJammingDurationTrend }))).toBe(false)
+    expect(isLocalReport(report({ ...BASE, qualityKpis: { jammingDurationS: 0.75 }, qualityJammingDurationTrend }))).toBe(false)
+    expect(isLocalReport(report({ ...BASE, qualityKpis: { jammingDurationS: 0.5 }, qualityJammingDurationTrend }))).toBe(true)
   })
 })

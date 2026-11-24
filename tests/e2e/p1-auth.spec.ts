@@ -14,6 +14,7 @@ const SCENARIO_PATH = '/api/v1/scenarios/SCN-001'
 // 隔离 E2E：浏览器 UI 跑在独立端口，但后端 loopback 策略只接受 5173 Origin。
 // 仅在设置了 E2E_MOCK_ORIGIN 时，把 /api 请求转发到隔离 mock 并改写 Origin=5173（与 report-filter 用例一致）。
 const ISOLATED_E2E = E2E_ENV.E2E_MOCK_ORIGIN !== undefined
+const isMockBrowserOrigin = (url: URL): boolean => url.origin === MOCK_ORIGIN || (ISOLATED_E2E && url.origin === 'http://127.0.0.1:4173')
 test.beforeEach(async ({ page }) => {
   if (!ISOLATED_E2E) return
   await page.route('**/api/v1/**', async route => {
@@ -105,12 +106,15 @@ function auditConsole(page: Page): ConsoleAudit {
 async function saveAndCancelPreview(page: Page): Promise<void> {
   const writes: Response[] = []
   const onResponse = (response: Response) => {
-    if (response.request().method() === 'POST' && response.url().startsWith(`${MOCK_ORIGIN}/api/v1/scripts/`) && response.url().endsWith('/local-file')) writes.push(response)
+    const url = new URL(response.url())
+    if (response.request().method() === 'POST' && isMockBrowserOrigin(url) && /^\/api\/v1\/scripts\/[^/]+\/local-file$/.test(url.pathname)) writes.push(response)
   }
   page.on('response', onResponse)
   try {
-    const required = page.waitForResponse(response => response.request().method() === 'POST'
-      && response.url() === `${MOCK_ORIGIN}/api/v1/scripts/preview`)
+    const required = page.waitForResponse(response => {
+      const url = new URL(response.url())
+      return response.request().method() === 'POST' && isMockBrowserOrigin(url) && url.pathname === '/api/v1/scripts/preview'
+    })
     await page.getByTestId('save-scenario').click()
     const preview = await required
     expect([200, 428]).toContain(preview.status())
@@ -122,7 +126,7 @@ async function saveAndCancelPreview(page: Page): Promise<void> {
     } else {
       const script = (await preview.json()).data
       await expect.poll(() => writes.length).toBe(1)
-      expect(writes[0]!.url()).toBe(`${MOCK_ORIGIN}/api/v1/scripts/${encodeURIComponent(script.scriptId)}/local-file`)
+      expect(new URL(writes[0]!.url()).pathname).toBe(`/api/v1/scripts/${encodeURIComponent(script.scriptId)}/local-file`)
       expect(writes[0]!.status()).toBe(503)
       expect(await writes[0]!.json()).toMatchObject({ ok: false, error: { code: 'START_FAILED', message: '当前为纯 Mock 服务，未启用本机 TXT 写入。' } })
       await expect(page.getByRole('dialog', { name: '脚本预览警告', exact: true })).toBeHidden()
@@ -136,10 +140,12 @@ function expectMockSaveErrors(audit: ConsoleAudit, count: number): void {
   expect(audit.errors).toHaveLength(count)
   expect(audit.errorUrls).toHaveLength(count)
   audit.errors.forEach((error, index) => {
-    if (audit.errorUrls[index] === `${MOCK_ORIGIN}/api/v1/scripts/preview`) {
+    const url = new URL(audit.errorUrls[index]!)
+    expect(isMockBrowserOrigin(url)).toBe(true)
+    if (url.pathname === '/api/v1/scripts/preview') {
       expect(error).toBe('Failed to load resource: the server responded with a status of 428 (Precondition Required)')
     } else {
-      expect(audit.errorUrls[index]).toMatch(/^http:\/\/127\.0\.0\.1:4173\/api\/v1\/scripts\/[^/]+\/local-file$/)
+      expect(url.pathname).toMatch(/^\/api\/v1\/scripts\/[^/]+\/local-file$/)
       expect(error).toBe('Failed to load resource: the server responded with a status of 503 (Service Unavailable)')
     }
   })
@@ -170,7 +176,7 @@ async function loginAs(page: Page, username: 'admin' | 'operator'): Promise<void
   expect(storage.sessionKeys).toEqual([AUTH_SESSION_KEY])
   expect(storage.serializedPrincipal).not.toBeNull()
   const principal = JSON.parse(storage.serializedPrincipal ?? '{}') as Record<string, unknown>
-  expect(Object.keys(principal).sort()).toEqual(['permissions', 'role', 'userId', 'username'])
+  expect(Object.keys(principal).sort()).toEqual(['displayName', 'permissions', 'role', 'userId', 'username'])
   expect(principal).toMatchObject({
     username,
     role: username === 'admin' ? 'ADMIN' : 'OPERATOR',
@@ -447,14 +453,14 @@ test('P7 ADMIN restores backups and opens archives without the removed scenario 
     ['BACKUP-ROLLBACK-001', 'FAILURE', true, true],
   ] as const) {
     await panel.getByTestId('backup-table').locator('.el-table__row').filter({ hasText: backupId })
-      .getByRole('button', { name: '选择恢复' }).click()
-    await expect(panel.getByTestId('restore-result')).toHaveCount(0)
-    await expect(page.locator('.el-message').filter({ hasText: '恢复来源已切换，请确认后执行恢复。' }).last()).toBeVisible()
-    await expect(panel.getByTestId('backup-feedback')).toHaveCount(0)
-    await panel.getByTestId('backup-restore').click()
+      .getByRole('button', { name: '恢复', exact: true }).click()
+    const restoreDialog = page.getByRole('dialog', { name: '恢复备份', exact: true })
+    await expect(restoreDialog).toContainText('备份名称：历史备份')
+    await expect(restoreDialog).toContainText('创建时间：2026-08-06 18:08:00')
+    await expect(restoreDialog).toContainText('恢复范围：场景、模板、账号、角色权限、历史归档和运行配置')
     const restored = page.waitForResponse((response) => response.request().method() === 'POST'
       && new URL(response.url()).pathname === '/api/v1/admin/restore')
-    await page.getByRole('dialog', { name: '恢复备份', exact: true }).getByRole('button', { name: '确认执行' }).click()
+    await restoreDialog.getByRole('button', { name: '确认执行' }).click()
     const restoreResponse = await restored
     expect(restoreResponse.request().postDataJSON()).toMatchObject({ operation: 'RESTORE', backupId })
     expect(restoreResponse.status()).toBe(200)
@@ -1067,6 +1073,10 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByTestId('platform-latitude').locator('input').fill('24.35')
     await page.getByTestId('platform-altitude').locator('input').fill('1200')
     await page.getByTestId('add-waypoint').click()
+    const waypointMap = page.getByTestId('waypoint-map')
+    await expect(waypointMap).toHaveClass(/leaflet-container/)
+    await waypointMap.click()
+    await page.getByTestId('confirm-waypoint-batch').click()
     await page.getByTestId('waypoint-longitude-0').locator('input').fill('120.5')
     await page.getByTestId('waypoint-latitude-0').locator('input').fill('24.5')
     await page.getByTestId('waypoint-altitude-0').locator('input').fill('1500')
@@ -1074,6 +1084,8 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByTestId('waypoint-arrival-0').locator('input').fill('300')
     await page.getByTestId('waypoint-heading-0').locator('input').fill('90')
     await page.getByTestId('waypoint-acceleration-0').locator('input').fill('1.5')
+    const waypointScroll = page.getByTestId('waypoint-table').locator('.el-scrollbar__wrap')
+    await expect.poll(() => waypointScroll.evaluate(el => el.scrollWidth - el.clientWidth)).toBe(0)
     await page.getByTestId('apply-platform').click()
 
     const addedRow = page.getByTestId('platform-table').getByRole('row').filter({ hasText: 'E2E 新增业务节点' })
@@ -1186,8 +1198,19 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
   })
 })
 
-test('P2-3 OPERATOR edits a link across validation, associations, save, and reload', async ({ page, request }) => {
+test('P2-3 OPERATOR inherits platform ports and keeps link associations and business on reload', async ({ page, request }) => {
   const audit = auditConsole(page)
+  const baseline = await loadScenarioDraft(request)
+  Object.assign(baseline.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+  // Reserve the shared microwave ports for this inherited link without changing any historical values.
+  for (const link of baseline.config.links) {
+    if (link.type === 'MICROWAVE') link.enabled = false
+  }
+  const prepared = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
+    headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
+    data: { config: baseline.config, uiExtensions: baseline.uiExtensions, expectedRevision: baseline.revision },
+  })
+  expect(prepared.status()).toBe(200)
 
   await loginAs(page, 'operator')
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -1198,6 +1221,16 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await page.getByTestId('show-scenario-ids').click()
   await expect(page.getByRole('checkbox', { name: '显示编号', exact: true })).toBeChecked()
   await page.getByRole('tab', { name: '链路配置' }).click()
+  await page.getByTestId('open-port-parameters').click()
+  await expect(page.getByTestId('port-parameters-dialog')).toBeVisible()
+  await page.getByRole('tab', { name: '后方通信车', exact: true }).click()
+  for (const [field, value] of [['txFrequency', '915.125'], ['txBandwidth', '5.125'], ['txPower', '42']]) {
+    const input = page.getByTestId(`port-REAR_COMM_PLATFORM-microwave_link-${field}`).locator('input')
+    await input.fill(value)
+    await input.press('Tab')
+  }
+  await page.getByTestId('close-port-parameters').click()
+  await expect(page.getByTestId('port-parameters-dialog')).toBeHidden()
   await page.getByTestId('add-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
   await expect(page.getByTestId('link-business-fields')).toBeVisible()
@@ -1206,36 +1239,32 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await page.getByRole('option', { name: 'MB', exact: true }).click()
   await page.getByTestId('demand-volume').locator('input').fill('3')
 
-  const frequency = page.getByTestId('link-frequency').locator('input')
-  const bandwidth = page.getByTestId('link-bandwidth').locator('input')
   const addedRow = page.getByTestId('link-table').getByRole('row').filter({ hasText: 'L-CFG-001' })
-  await frequency.fill('0')
-  await page.getByTestId('apply-link').click()
-  await expect(page.getByTestId('link-dialog')).toBeVisible()
-  await expect(page.locator('.el-form-item').filter({ has: page.getByTestId('link-frequency') }).getByText('链路频率必须大于 0 MHz。', { exact: true })).toBeVisible()
-  await expect(addedRow).toHaveCount(0)
-  await frequency.fill('4500')
-  await bandwidth.fill('0')
-  await page.getByTestId('apply-link').click()
-  await expect(page.getByTestId('link-dialog')).toBeVisible()
-  await expect(page.locator('.el-form-item').filter({ has: page.getByTestId('link-bandwidth') }).getByText('链路带宽必须大于 0 MHz。', { exact: true })).toBeVisible()
-  await expect(addedRow).toHaveCount(0)
-  await bandwidth.fill('20')
+  await expect(page.getByTestId('link-port-parameters')).toContainText('后方指挥节点（CMD-01） · microwave_link')
+  await expect(page.getByTestId('link-frequency')).toHaveCount(0)
+  await expect(page.getByTestId('link-bandwidth')).toHaveCount(0)
+  await expect(page.getByTestId('link-power')).toHaveCount(0)
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toHaveCount(0)
   await expect(addedRow).toHaveCount(1)
   await addedRow.getByRole('button', { name: '编辑' }).click()
   await page.getByTestId('link-target').click()
   await page.getByRole('option', { name: '空中无人作业节点 U02（AIR-02）', exact: true }).click()
-  await frequency.fill('915.125')
-  await bandwidth.fill('5.125')
-  await page.getByTestId('link-power').locator('input').fill('42')
-  // 微波速率按文档固定 80 Mbps，只读展示，不允许手填。
-  // el-input 把 data-testid 透传到原生 input 上。
-  await expect(page.getByTestId('link-data-rate')).toBeDisabled()
-  await expect(page.getByTestId('link-data-rate')).toHaveValue('80 Mbps')
+  await expect(page.getByTestId('link-port-parameters')).toContainText('空中无人作业节点 U02（AIR-02） · microwave_link')
+  await expect(page.getByTestId('link-data-rate')).toHaveCount(0)
+  await expect(page.getByTestId('link-rx-frequency')).toHaveCount(0)
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toHaveCount(0)
+
+  await page.getByTestId('open-port-parameters').click()
+  await expect(page.getByTestId('port-parameters-dialog')).toBeVisible()
+  await page.getByRole('tab', { name: '后方通信车', exact: true }).click()
+  const power = page.getByTestId('port-REAR_COMM_PLATFORM-microwave_link-txPower').locator('input')
+  await power.fill('43')
+  await power.press('Tab')
+  await page.getByTestId('close-port-parameters').click()
+  await expect(page.getByTestId('port-parameters-dialog')).toBeHidden()
+  await expect(addedRow).toContainText('43')
 
   await page.getByRole('tab', { name: '节点配置' }).click()
   const platformTable = page.getByTestId('platform-table')
@@ -1260,12 +1289,14 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
   expect(savedDraft.config.links.at(-1)).toMatchObject({
     id: 'L-CFG-001',
+    inheritPortParameters: true,
     sourcePlatformId: 'CMD-01',
     targetPlatformId: 'AIR-02',
     frequency: 915.125,
     bandwidth: 5.125,
-    txPower: 42,
+    txPower: 43,
     dataRate: 80,
+    rxFrequency: 8200,
   })
   expect(savedDraft.config.platforms.find((platform) => platform.id === 'CMD-01')?.linkIds).toContain('L-CFG-001')
   expect(savedDraft.config.informationDemand.find(item => item.linkId === 'L-CFG-001')).toMatchObject({
@@ -1288,6 +1319,10 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await expect(reloadedRow).toContainText('AIR-02')
   await expect(reloadedRow).toContainText('915.125')
   await expect(reloadedRow).toContainText('5.125')
+  await reloadedRow.getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('link-port-parameters')).toContainText('空中无人作业节点 U02（AIR-02） · microwave_link')
+  await expect(page.getByTestId('link-power')).toHaveCount(0)
+  await page.getByTestId('cancel-link').click()
   await page.getByRole('tab', { name: '节点配置' }).click()
   await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '详情' }).click()
   await expect(page.getByTestId('platform-link-ids')).toContainText(/L-CFG-001/)
@@ -1338,7 +1373,6 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByRole('option', { name: '机载干扰平台（AJ-001）', exact: true }).click()
   // 一个干扰节点只放一台设备；输入为 dBm，保存合同仍为 W。
   await page.getByTestId('jammer-power').locator('input').fill('5')
-  await page.getByTestId('jammer-direction').locator('input').fill('90')
   await page.getByTestId('jammer-range').locator('input').fill('1')
   await page.getByTestId('jammer-jamming-range').locator('input').fill('1')
   await page.getByTestId('apply-jammer').click()
@@ -1353,8 +1387,8 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
   await page.getByTestId('toggle-jammer-JAM-CFG-001').click()
   await addedRow.getByRole('button', { name: '编辑' }).click()
-  await expect(page.getByTestId('jammer-direction').locator('input')).toHaveValue('90')
-  await page.getByTestId('jammer-direction').locator('input').fill('135')
+  // 干扰指向不参与仿真，编辑框已不再提供（2026-11-24）。
+  await expect(page.getByTestId('jammer-direction')).toHaveCount(0)
   await page.getByTestId('jammer-platform').click()
   await page.getByRole('option', { name: '机载干扰平台（AJ-001）', exact: true }).click()
   await page.getByTestId('apply-jammer').click()
@@ -1416,11 +1450,11 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByRole('tab', { name: '干扰设备' }).click()
   const reloadedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
   await expect(reloadedRow).toContainText('AJ-001')
-  await expect(page.getByTestId('jammer-table').getByRole('columnheader', { name: '方向（°）', exact: true })).toBeVisible()
+  await expect(page.getByTestId('jammer-table').getByRole('columnheader', { name: '干扰指向', exact: true })).toHaveCount(0)
   await expect(page.getByTestId('jammer-table').getByRole('columnheader', { name: '持续时间（s）', exact: true })).toHaveCount(0)
   await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).toHaveClass(/is-checked/)
   await reloadedRow.getByRole('button', { name: '编辑' }).click()
-  await expect(page.getByTestId('jammer-direction').locator('input')).toHaveValue('135')
+  await expect(page.getByTestId('jammer-direction')).toHaveCount(0)
 
   expectMockSaveErrors(audit, 1)
   expect(audit.http404s).toEqual([])
@@ -1478,35 +1512,56 @@ test('P2-6 maintains templates in system management and applies them in scenario
   const baseline = await loadScenarioDraft(request)
 
   await loginAs(page, 'admin')
-  await page.getByRole('link', { name: '场景配置', exact: true }).click()
-  await page.getByTestId('scene-edit-SCN-001').click()
-  await expect(page.getByTestId('scenario-name')).toHaveValue(baseline.config.scenario.name)
   await page.getByRole('link', { name: '系统管理', exact: true }).click()
   const templatesLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/templates')
   await page.getByRole('menuitem', { name: '场景模板维护', exact: true }).click()
   expect((await templatesLoaded).status()).toBe(200)
   await expect(page.getByLabel('场景模板维护', { exact: true })).toBeVisible()
-  await expect(page.getByTestId('template-library')).not.toContainText('应用到当前场景')
+  const library = page.getByTestId('template-library')
+  await expect(library).not.toContainText('应用到当前场景')
+  await expect(library).not.toContainText('场景模板维护')
+  await expect(library).not.toContainText('请在场景配置中打开场景后新建或更新模板。')
+  await expect(page.getByTestId('delete-template-TPL-SCN-001')).toBeDisabled()
 
   const messageBox = page.locator('.el-message-box')
+  const sourceDialog = page.getByTestId('template-source-dialog')
+  const submitTemplate = page.getByTestId('save-template-source')
+  async function chooseSavedScene(): Promise<void> {
+    await expect(sourceDialog).toBeVisible()
+    await page.getByTestId('template-source-select').click()
+    await page.getByRole('option').filter({ hasText: baseline.config.scenario.name }).click()
+  }
+
   const createdName = 'E2E 管理员模板'
   await page.getByTestId('create-template').click()
-  await messageBox.locator('input').fill(createdName)
+  await expect(submitTemplate).toBeDisabled()
+  await chooseSavedScene()
+  await sourceDialog.locator('input[data-testid="template-source-name"], [data-testid="template-source-name"] input').fill(createdName)
   const createdResponse = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/templates')
-  await messageBox.getByRole('button', { name: '新建', exact: true }).click()
+  await submitTemplate.click()
   expect((await createdResponse).status()).toBe(201)
+  await expect(sourceDialog).toBeHidden()
   await expect(page.getByTestId('template-table')).toContainText(createdName)
   await expect(page.locator('.el-message--success').filter({ hasText: createdName })).toBeVisible()
   await expect(page.getByTestId('template-feedback')).toHaveCount(0)
 
+  const { Buffer } = await import('node:' + 'buffer')
   const importedName = 'E2E 导入模板'
+  const choosingTemplate = page.waitForEvent('filechooser')
   await page.getByTestId('import-template').click()
-  await messageBox.locator('textarea').fill(JSON.stringify({ name: importedName, config: baseline.config }))
+  const chooser = await choosingTemplate
+  await chooser.setFiles({ name: '有语法错误的模板.json', mimeType: 'application/json', buffer: Buffer.from('{\n  "name": }') })
+  await expect(page.getByTestId('template-feedback')).toContainText(/第 \d+ 行.*第 \d+ 列/)
+
   const importedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/templates')
-  await messageBox.getByRole('button', { name: '导入', exact: true }).click()
+  await page.getByTestId('template-import-file').setInputFiles({
+    name: '待导入模板.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ name: importedName, config: baseline.config })),
+  })
   expect((await importedResponse).status()).toBe(201)
   await expect(page.getByTestId('template-table')).toContainText(importedName)
 
@@ -1514,23 +1569,46 @@ test('P2-6 maintains templates in system management and applies them in scenario
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002')
   await page.getByTestId('load-template-TPL-SCN-002').click()
   expect((await detailResponse).status()).toBe(200)
-  await expect(page.getByTestId('template-detail')).toContainText('TPL-SCN-002')
+  const details = page.getByTestId('template-detail')
+  await expect(details).toContainText('TPL-SCN-002')
+  await expect(details.getByRole('tab')).toHaveText(['概况', '节点', '链路', '设备'])
+  await details.getByRole('tab', { name: '节点', exact: true }).click()
+  await expect(details.getByRole('tabpanel', { name: '节点' })).toContainText(baseline.config.platforms[0]!.name)
+  await page.getByTestId('close-template-detail').click()
+  await expect(page.getByTestId('template-detail')).toBeHidden()
   await expect(page.getByTestId('template-feedback')).toHaveCount(0)
 
   await page.getByTestId('update-template-TPL-SCN-002').click()
+  await expect(submitTemplate).toBeDisabled()
+  await chooseSavedScene()
   const updatedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002')
-  await messageBox.getByRole('button', { name: '更新', exact: true }).click()
+  await submitTemplate.click()
   expect((await updatedResponse).status()).toBe(200)
+  await expect(sourceDialog).toBeHidden()
   await expect(page.getByTestId('template-table').getByRole('row').filter({ hasText: createdName })).toContainText('2')
 
   const exportedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002')
   await page.getByTestId('export-template-TPL-SCN-002').click()
   expect((await exportedResponse).status()).toBe(200)
-  await expect(messageBox).toContainText(`"name": "${createdName}"`)
-  await messageBox.getByRole('button', { name: '关闭', exact: true }).click()
-  await expect(messageBox).toHaveCount(0)
+  const exportPreview = page.getByTestId('template-export-preview')
+  await expect(exportPreview).toContainText(`"name": "${createdName}"`)
+  const downloading = page.waitForEvent('download')
+  await page.getByTestId('download-template-json').click()
+  const download = await downloading
+  expect(download.suggestedFilename()).toBe('TPL-SCN-002-v2.json')
+  expect(await download.failure()).toBeNull()
+  await page.getByTestId('close-template-export').click()
+  await expect(exportPreview).toBeHidden()
+
+  const reimportedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/templates')
+  await page.getByTestId('template-import-file').setInputFiles(await download.path())
+  expect((await reimportedResponse).status()).toBe(201)
+  const templateTable = page.getByTestId('template-table')
+  await expect(templateTable.getByText(createdName, { exact: true })).toBeVisible()
+  await expect(templateTable.getByText(createdName + ' 副本', { exact: true })).toBeVisible()
 
   await page.getByTestId('delete-template-TPL-SCN-003').click()
   const deleteConfirmation = page.locator('.el-popconfirm').filter({ hasText: '确认删除该场景模板？' })
@@ -1618,16 +1696,8 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
   await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
-  await page.getByRole('tab', { name: '传感器', exact: true }).click()
-
-  await page.getByTestId('sensor-frequency-min-0').locator('input').fill('2100')
-  await page.getByTestId('sensor-frequency-max-0').locator('input').fill('5200')
-  await page.getByTestId('sensor-range-0').locator('input').fill('160000')
-  await page.getByTestId('sensor-direction-mode-0').click()
-  await page.getByRole('option', { name: '定向', exact: true }).click()
-  await page.getByTestId('sensor-direction-0').locator('input').fill('90')
-  await page.getByTestId('sensor-probability-0').locator('input').fill('0.88')
-  await page.getByTestId('sensor-enabled-0').click()
+  // 传感器页已并入干扰设备（2026-11-24），不再提供传感器编辑入口；旧传感器数据随保存原样保留。
+  await expect(page.getByRole('tab', { name: '传感器', exact: true })).toHaveCount(0)
   await expect(page.getByTestId('output-directory')).toHaveCount(0)
   await expect(page.getByTestId('output-events')).toHaveCount(0)
   await page.getByRole('tab', { name: '链路配置' }).click()
@@ -1661,10 +1731,6 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
   await page.reload()
   await page.getByTestId('scene-edit-SCN-001').click()
   expect((await reloadedResponse).status()).toBe(200)
-  await page.getByRole('tab', { name: '传感器', exact: true }).click()
-  await expect(page.getByTestId('sensor-frequency-min-0').locator('input')).toHaveValue('2100')
-  await expect(page.getByTestId('sensor-direction-mode-0')).toContainText('定向')
-  await expect(page.getByTestId('sensor-direction-0').locator('input')).toHaveValue('90')
   await expect(page.getByTestId('output-directory')).toHaveCount(0)
   await expect(page.getByTestId('output-write-interval')).toHaveCount(0)
   await page.getByRole('tab', { name: '链路配置' }).click()
@@ -1675,8 +1741,8 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
   await page.getByTestId('cancel-link').click()
 
   const persisted = await loadScenarioDraft(request)
-  expect(persisted.config.sensors[0]).toMatchObject({ frequencyRange: { min: 2100, max: 5200 }, detectionRange: 160000 })
-  expect(persisted.uiExtensions.sensors[0]).toMatchObject({ direction: 90, probability: 0.88, enabled: false })
+  expect(persisted.config.sensors).toEqual(baseline.config.sensors)
+  expect(persisted.uiExtensions.sensors).toEqual(baseline.uiExtensions.sensors)
   expect(persisted.config.output).toEqual(APP_CONFIG.scenarioOutput)
   expect(persisted.config.informationDemand.find(item => item.linkId === baseline.config.links[0]!.id)).toMatchObject({
     informationType: '目标指令', direction: 'FORWARD', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
@@ -1707,9 +1773,9 @@ test('OPERATOR checks fields on save without a separate script preview or prefli
   await page.getByTestId('save-scenario').click()
   await expect(page.getByTestId('validation-panel')).toBeVisible()
   // 定位会切回基础配置并卸载校验面板，面板内容须在定位前断言。
-  await expect(page.getByTestId('validation-panel')).toContainText('scenario.name')
+  await expect(page.getByTestId('validation-panel')).toContainText('基本信息 · 场景名称')
   await expect(page.getByTestId('validation-panel')).not.toContainText('output.writeInterval')
-  await page.getByTestId('validation-panel').getByRole('button').filter({ hasText: 'scenario.name' }).click()
+  await page.getByTestId('validation-panel').locator('[data-field-path="scenario.name"]').click()
   await expect(page.getByRole('tab', { name: '场景基础', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByTestId('scenario-name')).toBeFocused()
   await expect(page.locator('[data-field-path="scenario.name"]')).toContainText('场景名称为必填项，且不能超过 128 个字符。')
@@ -1783,7 +1849,7 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await expect(telemetryPanel).toContainText('SW-003 · F-00042')
   const degradedLink = telemetryPanel.locator('tr[data-link-id="L-DL-03"]')
   await expect(telemetryPanel.getByRole('columnheader', { name: 'SNR', exact: true })).toHaveCount(0)
-  await expect(telemetryPanel.getByRole('columnheader', { name: 'BER', exact: true })).toHaveCount(0)
+  await expect(telemetryPanel.getByRole('columnheader', { name: '误码率', exact: true })).toHaveCount(0)
   await expect(degradedLink).not.toContainText('7.10')
   await expect(degradedLink).not.toContainText('2.4e-4')
   await expect(page.getByLabel('当前帧指标').locator('select')).toHaveCount(0)
@@ -1796,7 +1862,7 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   const linkDialog = page.locator('.link-quality-dialog')
   await expect(linkDialog.locator('[data-frame-id="F-00042"]')).toBeVisible()
   await expect(linkDialog).toContainText('信噪比 SNR7.10 dB')
-  await expect(linkDialog).toContainText('误码率 BER2.4e-4')
+  await expect(linkDialog).toContainText('误码率2.4e-4')
   await linkDialog.locator('.el-dialog__headerbtn').click()
   await expect(linkDialog).not.toBeVisible()
 

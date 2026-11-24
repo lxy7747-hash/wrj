@@ -80,6 +80,20 @@ describe('新模板通信参数', () => {
     expect(templateSchema('ScenarioConfigWrite')(draft.config)).toBe(true)
   })
 
+  it.each(['Link', 'LinkWrite'])('%s 兼容旧链路且只接受非激光的显式端口继承', schema => {
+    const validate = templateSchema(schema)
+    const links = config().links
+    const microwave = links.find(link => link.type === 'MICROWAVE')!
+    const laser = links.find(link => link.type === 'LASER')!
+    expect(validate(microwave)).toBe(true)
+    expect(validate({ ...microwave, inheritPortParameters: true })).toBe(true)
+    for (const invalid of [false, null, 'true']) {
+      expect(validate({ ...microwave, inheritPortParameters: invalid })).toBe(false)
+    }
+    expect(validate(laser)).toBe(true)
+    expect(validate({ ...laser, inheritPortParameters: true })).toBe(false)
+  })
+
   it('兼容不含新增字段的旧场景读取，并返回不共享的模板端口默认值', () => {
     const old = config()
     expect(inspectScenarioConfig(old, 'read').result.valid).toBe(true)
@@ -112,6 +126,22 @@ describe('新模板通信参数', () => {
     const rearSource = { ...satellite, sourcePlatformId: satellite.targetPlatformId, targetPlatformId: satellite.sourcePlatformId }
     expect(resolveTemplateLinkPorts(value, rearSource)).toMatchObject({ status: 'MAPPED', source: { portName: 'sat_link_a' } })
     expect(resolveTemplateLinkPorts(value, { ...rearSource, direction: 'REVERSE' })).toMatchObject({ status: 'MAPPED', source: { portName: 'sat_link_b' } })
+
+    const uavs = value.platforms.filter(platform => platform.type === 'FORWARD_RELAY_NODE' || platform.type === 'AIRBORNE_MISSION_CLUSTER')
+    const relayUav = uavs[0]!
+    const targetUav = uavs[1]!
+    const relayUavMicrowave = { ...satellite, id: 'L-MW-RELAY', type: 'MICROWAVE' as const, sourcePlatformId: relayUav.id, targetPlatformId: targetUav.id, relayPlatformId: null }
+    expect(resolveTemplateLinkPorts(value, relayUavMicrowave)).toMatchObject({
+      status: 'MAPPED',
+      source: { platformType: 'MISSION_UAV_PLATFORM', portName: 'microwave_link' },
+      target: { platformType: 'MISSION_UAV_PLATFORM', portName: 'microwave_link' },
+    })
+    const relayUavDatalink = { ...datalink, id: 'L-DL-RELAY', sourcePlatformId: targetUav.id, targetPlatformId: relayUav.id, relayPlatformId: null }
+    expect(resolveTemplateLinkPorts(value, relayUavDatalink)).toMatchObject({
+      status: 'MAPPED',
+      source: { platformType: 'MISSION_UAV_PLATFORM', portName: 'c_band_downlink' },
+      target: { platformType: 'MISSION_UAV_PLATFORM', portName: 'c_band_downlink' },
+    })
   })
 
   it('拒绝未知端口、来源的非端口字段和非有限天线增益', () => {
@@ -276,7 +306,7 @@ it('11-06 可选参数兼容旧场景，读取仅补副本且显式值优先', a
   expect(readLinkCalcSettings(old.linkSettings?.linkCalc).updateIntervalS).toBe(5)
   expect(readJammerParameters(old.jammers[0]!)).toMatchObject(JAMMER_CALC_DEFAULTS)
   const parameters = readDeviceParameters(old)
-  expect(parameters.ports.MISSION_UAV_PLATFORM!.microwave_link).toMatchObject({ txBandwidth: 20, rxBandwidth: 20, eirpDbw: 30, gtDbk: -3 })
+  expect(parameters.ports.MISSION_UAV_PLATFORM!.microwave_link).toMatchObject({ txBandwidth: 50, rxBandwidth: 50, eirpDbw: 30, gtDbk: -3 })
   expect(parameters.ports.MISSION_UAV_PLATFORM!.sat_link).toMatchObject({ eirpDbw: 5, gtDbk: -14 })
   expect(parameters.ports.COMMAND_VEHICLE_PLATFORM!.l_band_uplink).toMatchObject({ eirpDbw: 26, gtDbk: -6 })
   expect(parameters.ports.COMMAND_VEHICLE_PLATFORM!.fiber_link).not.toHaveProperty('eirpDbw')
@@ -319,12 +349,12 @@ it('11-06 新键保持闭合校验：有限数、正周期、正雷达功率/带
   expect(inspectScenarioConfig(candidate, 'write').result.valid).toBe(false)
 })
 
-it('11-06 扩展不放宽 V1.2 干扰写入档位，同类雷达差异不会静默采用首台', () => {
+it('11-06 扩展不放宽 V1.2 干扰功率档位和正带宽校验，同类雷达差异不会静默采用首台', () => {
   const draft = createTemplateScenario()
-  for (const patch of [{ defaultPower: 2 }, { bandwidth: 50 }]) {
+  for (const patch of [{ defaultPower: 2 }, { bandwidth: 0 }]) {
     const config = structuredClone(draft.config)
     Object.assign(config.jammers[0]!, patch)
-    expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'defaultPower' in patch ? 'JAMMER_POWER_OUT_OF_RANGE' : 'JAMMER_BANDWIDTH_OUT_OF_RANGE' }))
+    expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'defaultPower' in patch ? 'JAMMER_POWER_OUT_OF_RANGE' : 'JAMMER_BANDWIDTH_INVALID' }))
   }
   const platform = structuredClone(draft.config.platforms.find(p => p.id === draft.config.jammers[0]!.platformId)!)
   platform.id = 'second-ground'; platform.jammerIds = ['JAM-SECOND']

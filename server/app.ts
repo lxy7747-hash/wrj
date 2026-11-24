@@ -2,6 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http'
 import type { Duplex } from 'node:stream'
 import express, { type NextFunction, type Request, type Response, type RequestHandler } from 'express'
 import { portParameterTargets } from '../src/features/scenarios/port-parameter-source.js'
+import { isScriptPackageEngineLoadCheckRequest, type ScriptEngineLoadCheckResult, type ScriptPackageEngineLoadCheckRequest } from '../src/features/scenarios/script-engine-load-contract.js'
 import type {
   AuditRequest,
   AuditRecord,
@@ -72,8 +73,8 @@ import type { LocalMonitorSnapshot } from '../src/features/data-exchange/local-m
 import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
 import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
 import { fileReceptionMapping, isPlaybackFileSource } from '../src/features/situation/file-reception.js'
-import type { LocalReportExportResult } from '../src/contracts/domain-models.js'
-import { isLocalReport, isLocalReportExport, parseLocalReportFilter, reportTime, resolvePhaseRange } from '../src/features/reports/local-report.js'
+import type { LocalReportEvidence, LocalReportExportResult, LocalReportFilterResult } from '../src/contracts/domain-models.js'
+import { isLocalReport, isLocalReportExport, LOCAL_REPORT_TRENDS_ACCEPT, parseLocalReportFilter, reportTime, resolvePhaseRange } from '../src/features/reports/local-report.js'
 import type { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { buildAuditExport } from './auth/audit-export.js'
 import type { LocalArchiveStorage } from './local/archive-sqlite.js'
@@ -131,6 +132,8 @@ export interface MockServerOptions {
   runEvidenceStore?: RunEvidenceStore
   /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
   scenarioStorage?: ScenarioStorage
+  /** 本机注入场景创建时间，纯 Mock 使用固定时间。 */
+  scenarioNow?: () => string
   /** 可选运行期干扰计划持久化存储；纯 Mock 缺省使用有界内存实现，不触碰磁盘。 */
   jammerPlanStorage?: JammerPlanStorage
   templateStorage?: TemplateStorage
@@ -144,6 +147,8 @@ export interface MockServerOptions {
   loadExchangeMonitor?: () => LocalMonitorSnapshot
   /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
   writeScriptText?: (script: ScriptContract, revision: number, draft: ScenarioDraft) => Promise<string>
+  /** 本机 AFSIM 引擎加载检查（面向脚本包结构预检所选文件夹，独立于轻量 preflight）。 */
+  checkScriptEngineLoad?: (pkg: ScriptPackageEngineLoadCheckRequest) => Promise<ScriptEngineLoadCheckResult>
   /** 仅本机入口执行生成包；纯 Mock 继续使用确定性控制投影。 */
   missionExecution?: MissionExecution
   /** 本机执行器的墙钟和可取消计时，缺省不读取系统时钟或建立任务计时器。 */
@@ -543,6 +548,7 @@ function sendProjectionFailure<T>(
   res.status(result.status).json(failure(result.code, result.status, {
     requestId,
     generatedAt: P1_GENERATED_AT,
+    ...(result.message === undefined ? {} : { message: result.message }),
     ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
   }))
   return true
@@ -665,6 +671,8 @@ function requireConfirmationPermission(
       && auth.permissionSet(role).permissions.includes('SCENARIO_DRAFT_WRITE'))
     || (action === 'SIMULATION_STOP'
       && auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL'))
+    || (action === 'OFFICIAL_TEMPLATE_DELETE'
+      && auth.permissionSet(role).permissions.includes('OFFICIAL_TEMPLATE_MAINTAIN'))
   if (allowed) return true
 
   auth.recordDenied(actorForRequest(req, role), role, 'CONFIRMATION_CREATE', objectId)
@@ -710,7 +718,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const result = admin.addMasterDataReference(reference)
       if (!result.ok) throw new Error(result.message)
     },
-  }) : undefined)
+  }) : undefined, options.scenarioNow)
   const remoteEngine = Boolean(options.linkEngineWsUrl) && !options.missionExecution
   const remoteEngineNow = options.remoteEngineNow ?? (() => P1_GENERATED_AT)
   const missionClock = options.missionClock
@@ -749,6 +757,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     qualityDraft?: ScenarioDraft
     mission?: MissionProcess
     positions?: { runId: string; read: NonNullable<MissionProcess['readPositions']> }
+    messages?: { runId: string; read: NonNullable<MissionProcess['readMessages']>; ended?: boolean }
     /** 本次运行的控制台日志读取入口与超时设置；进程结束后仍保留，供排查查看。 */
     consoleLog?: { runId: string; read: NonNullable<MissionProcess['readConsoleLog']>; timeoutMs?: number }
     starting?: Promise<unknown>
@@ -784,6 +793,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     slot.receiving = false
     slot.logStreamer?.stop(); slot.logStreamer = undefined
     slot.positionStreamer?.stop(); slot.positionStreamer = undefined
+    if (slot.messages) slot.messages.ended = true
     try {
       await slot.mission!.stop()
       slot.mission = undefined
@@ -849,7 +859,26 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }])))
     slot.engineArchiveScope = context.scope
   }
-  const reportWithQuality = async (base: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string, reportEndTimeS?: number): Promise<Report> => {
+  const INLINE_ENGINE_SEGMENT_LIMIT = 500
+  const deferLargeEngineSegments = (report: Report): Report => {
+    const archive = report.localEvidence?.engineFrameArchive
+    if (!report.localEvidence || !archive || archive.segmentRows.length <= INLINE_ENGINE_SEGMENT_LIMIT) return report
+    return {
+      ...report,
+      localEvidence: {
+        ...report.localEvidence,
+        engineFrameArchive: { ...archive, segmentRows: [], detailDeferred: true },
+      },
+    }
+  }
+  const reportWithQuality = async (
+    base: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string, reportEndTimeS?: number,
+    { includeEngineSegments = false, sourceEvidence, includeMetricTrends = false }: {
+      includeEngineSegments?: boolean
+      sourceEvidence?: LocalReportEvidence
+      includeMetricTrends?: boolean
+    } = {},
+  ): Promise<Report> => {
     let report = base
     if (options.engineFrameArchive && record?.runId && record.taskId) {
       const evidence = report.localEvidence
@@ -857,16 +886,31 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const range = selection === undefined ? undefined : { start: selection.start, end: selection.end, includeEnd: selection.includeEnd,
         ...(filter?.nodeId ? { nodeId: filter.nodeId } : {}), ...(filter?.linkId ? { linkId: filter.linkId } : {}) }
       const scope = { taskId: record.taskId, runId: record.runId, scenarioId: record.scenarioId, revision: record.revision, startedAt: record.startedAt }
-      const archive = await options.engineFrameArchive.load(record.runId, scope, range)
+      const runId = record.runId
+      const combined = includeEngineSegments
+        ? await (async () => {
+          const summary = await options.engineFrameArchive!.loadComplete(runId, scope, range)
+          return summary ? { summary, aggregate: await options.engineFrameArchive!.aggregate(runId, scope, {}, range) } : null
+        })()
+        : options.engineFrameArchive.loadWithAggregate
+          ? await options.engineFrameArchive.loadWithAggregate(runId, scope, range)
+          : await (async () => {
+            const summary = await options.engineFrameArchive!.load(runId, scope, range)
+            return summary ? { summary, aggregate: await options.engineFrameArchive!.aggregate(runId, scope, {}, range) } : null
+          })()
       // Archive projection already applied the exact time/node/link predicates while streaming the complete JSONL.
       // Do not re-filter it against trimmed segment rows, which would lose a switch's source-segment mapping.
-      if (archive) {
+      if (combined) {
+        const archive = combined.summary
+        let aggregate = combined.aggregate
+        if (aggregate && !includeMetricTrends) {
+          // Older report clients reject unknown aggregate keys.
+          const { switchCountTrend: _switchTrend, jammingDurationTrend: _jammingTrend, ...legacy } = aggregate
+          aggregate = legacy
+        }
         // The archive manifest freezes bindings from begin().  Never recalculate these
         // values from a potentially revised live scenario when reopening a result.
-        const [aggregate, engineCsv] = await Promise.all([
-          options.engineFrameArchive.aggregate(record.runId, scope, {}, range),
-          options.engineFrameArchive.finalizeCsv(record.runId, scope, {}),
-        ])
+        const engineCsv = await options.engineFrameArchive.finalizeCsv(record.runId, scope, {})
         if (engineCsv && engineCsv.sourceSha256 !== archive.sourceSha256) throw new Error('引擎规范 CSV 与归档来源不一致。')
         report = attachEngineFrameArchive(report, { ...archive, ...(aggregate ? { aggregate } : {}) })
         if (engineCsv && report.localEvidence) report = { ...report, localEvidence: { ...report.localEvidence, engineCsv } }
@@ -881,7 +925,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     if (!sameQualityScope(dataset.scope, { taskId: record.taskId, runId: record.runId, scenarioId: record.scenarioId,
       revision: record.revision, startedAt: record.startedAt })) throw new Error('质量来源与运行结果版本不一致。')
-    return attachQualityReport(report, dataset, filter, phases, reportEndTimeS)
+    return attachQualityReport(report, dataset, filter, phases, reportEndTimeS, sourceEvidence, includeMetricTrends)
   }
   /** D3：从已发布文件集与原生帧归档分别构建证据来源；可按固定 sourceSha256 精确读取不可变批次。 */
   const buildEvidenceSources = async (snapshot: MissionResultSnapshot, sourceSha256?: string): Promise<EvidenceSource[]> => {
@@ -966,8 +1010,6 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   let realtime: RealtimeController
   let engineSnapshots: Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState'>> | undefined
   const syncEngineControl = (runId: string): void => {
-    // 本机 mission 运行时 WS 只用于接收展示，不成为控制通道；否则 STOP 会被引擎控制状态拦截。
-    if (options.missionExecution && missions.get(runId)?.mission) return
     const state = engineSnapshots?.controlState?.(runId), run = simulations.get(runId)
     if (state && run.ok && ['RUNNING', 'PAUSED'].includes(run.data.uiStatus)) {
       const previous = run.data.engineControl
@@ -1019,7 +1061,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (decision.origin) res.setHeader('Access-Control-Allow-Origin', decision.origin)
     res.setHeader('Access-Control-Allow-Credentials', 'true')
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-Role, X-Confirmation-Id')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-Role, X-Confirmation-Id, X-Mission-Result-View')
     res.setHeader('Vary', 'Origin')
     if (req.path === '/api/v1/auth/login') {
       res.setHeader('X-Auth-Mode', options.authStorage ? 'sqlite' : 'mock')
@@ -1070,14 +1112,17 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @remarks May append a denial audit and send 403; successful authorization continues routing.
    */
   app.use('/api/v1/admin/users', (req, res, next) => {
-    const action = req.method === 'GET'
-      ? 'USER_LIST'
-      : req.method === 'POST'
-        ? 'USER_CREATE'
-        : req.method === 'DELETE'
-          ? 'USER_DELETE'
-          : 'USER_UPDATE'
-    const objectId = req.path === '/' ? undefined : req.path.slice(1)
+    const resetMatch = req.method === 'POST' ? /^\/([^/]+)\/reset-password$/.exec(req.path) : null
+    const action = resetMatch
+      ? 'USER_PASSWORD_RESET'
+      : req.method === 'GET'
+        ? 'USER_LIST'
+        : req.method === 'POST'
+          ? 'USER_CREATE'
+          : req.method === 'DELETE'
+            ? 'USER_DELETE'
+            : 'USER_UPDATE'
+    const objectId = resetMatch ? decodeURIComponent(resetMatch[1]!) : req.path === '/' ? undefined : req.path.slice(1)
     if (requireAdmin(req, res, auth, action, objectId)) {
       next()
     }
@@ -1091,7 +1136,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       ? /^\/api\/v1\/(?:scenarios(?:\/import|\/[^/]+\/validate)?|templates)\/?$/i.test(req.path)
       : req.method === 'PUT' && /^\/api\/v1\/(?:scenarios|templates)\/[^/]+\/?$/i.test(req.path)
     const qualityJson = req.method === 'POST' && /^\/api\/v1\/simulations\/[^/]+\/(?:quality|evidence-import)$/.test(req.path)
-    ;(scenarioJson || qualityJson ? largeJson : normalJson)(req, res, next)
+    const scriptPackageJson = req.method === 'POST' && /^\/api\/v1\/scripts\/package\/engine-load-check$/i.test(req.path)
+    ;(scenarioJson || qualityJson || scriptPackageJson ? largeJson : normalJson)(req, res, next)
   })
 
   // 自定义角色只能收窄基础角色；服务端逐请求重新读取，不依赖前端隐藏按钮授权。
@@ -1661,6 +1707,49 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   })
 
+  /** 增量读取指定本地 mission 本次独占输出的真实收发消息配对结果；不接受浏览器提供文件路径。 */
+  app.get('/api/v1/simulations/:runId/messages', async (req, res) => {
+    const runId = req.params.runId
+    const requestId = 'REQ-MISSION-MESSAGES'
+    res.setHeader('Cache-Control', 'no-store')
+    if (requireDemoRole(req, res, auth, 'SIMULATION_READ', runId) === undefined) return
+    const queryKeys = Object.keys(req.query)
+    if (queryKeys.some(key => key !== 'cursor')) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '此接口不接受文件路径或多余查询参数。' }))
+      return
+    }
+    let cursor = 0
+    if (queryKeys.includes('cursor')) {
+      const raw = req.query.cursor
+      const parsed = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : NaN
+      if (!Number.isSafeInteger(parsed)) {
+        res.status(400).json(failure('INVALID_REQUEST', 400, { message: '消息读取游标无效。' }))
+        return
+      }
+      cursor = parsed
+    }
+    const run = simulations.get(runId)
+    if (sendSimulationFailure(res, run, requestId)) return
+    const binding = missions.get(runId)?.messages
+    if (!binding || binding.runId !== runId) {
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前运行未关联本地 mission 输出。' }))
+      return
+    }
+    try {
+      const ended = binding.ended === true || (run.ok && ['COMPLETED', 'FAILED', 'ERROR', 'STOPPED'].includes(run.data.uiStatus))
+      const snapshot = await binding.read(cursor, { simulationEnded: ended })
+      if (snapshot === null || missions.get(runId)?.messages !== binding) {
+        res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前运行未关联本地 mission 输出。' }))
+        return
+      }
+      res.status(200).json(success(snapshot, pageMeta(requestId)))
+    } catch {
+      res.status(503).json(failure('START_FAILED', 503, {
+        message: '本次仿真消息日志读取失败，请检查本次输出文件、声明格式及写入状态。', retryable: true,
+      }))
+    }
+  })
+
   /** 返回指定运行和帧编号对应的确定性遥测帧。 */
   /** 读取本次 mission 控制台日志（stdout/stderr）尾部；路径由服务端运行目录决定，不接受浏览器参数。 */
   app.get('/api/v1/simulations/:runId/console', async (req, res) => {
@@ -1762,8 +1851,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     const command = inspected.data
-    // 只有纯接收模式才把控制命令转发给外部 WS；本机 mission 运行时 STOP/暂停必须作用于本机进程。
-    const wsAction = !options.missionExecution && engineSnapshots?.sendControl && slot.receiving ? engineControlAction(command.command) : undefined
+    const action = engineControlAction(command.command)
+    // 本机只允许向已确认归属的连接发送暂停和继续；STOP 走进程收尾。
+    const localWsControl = slot.mission && (action === 'pause' || action === 'resume') && engineSnapshots?.controlState?.(runId)?.connected
+    const wsAction = slot.receiving && engineSnapshots?.sendControl && (!options.missionExecution || localWsControl) ? action : undefined
     if (remoteEngine && command.command === 'START') {
       if (command.mode !== 'INTERACTIVE_SINGLE') {
         res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '远端数据连接仅支持当前所选场景。' }))
@@ -1815,7 +1906,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (!remoteEngine && !wsAction && options.missionExecution && command.command !== 'START' && command.command !== 'STOP') {
       if (!slot.mission?.control) {
         auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
-        res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '本机 mission 尚未接入暂停、继续、单步和倍速控制，未执行此命令。' }))
+        res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前本机 mission 没有可用的运行控制连接，未执行此命令。' }))
         return
       }
       slot.controlling = true
@@ -1852,6 +1943,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         slot.starting = starting
         const process = await starting
         slot.positions = process.readPositions ? { runId, read: process.readPositions.bind(process) } : undefined
+        slot.messages = process.readMessages ? { runId, read: process.readMessages.bind(process), ended: false } : undefined
         slot.consoleLog = process.readConsoleLog ? { runId, read: process.readConsoleLog.bind(process), timeoutMs: process.timeoutMs } : undefined
         slot.mission = process
         slot.csvOutputDirectory = process.outputDirectory
@@ -1869,12 +1961,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           try { await streamer.start() } catch { streamer.stop(); slot.logStreamer = undefined }
         }
         await beginEngineArchive(runId, slot)
-        // useRealEngine=true 时同时接收外部 WS 数据；该连接仅用于展示/留存，失败不影响本机 mission 执行。
+        // 可以接收外部数据。只有对端 TCP 连接归属本机进程时才开放控制。
         if (options.linkEngineWsUrl && engineSnapshots) {
           try {
             const manifest = buildEngineFrameMapping(draft.data.config)
             slot.receiving = true
-            if (!engineSnapshots.start(started, manifest)) {
+            if (!engineSnapshots.start(started, manifest, process.pid)) {
               engineSnapshots.stop(runId)
               slot.receiving = false
             }
@@ -1902,6 +1994,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             return
           } finally { slot.engineArchive = undefined; slot.engineArchiveScope = undefined }
           if (slot.mission !== process || closing) return
+          if (slot.messages) slot.messages.ended = true
           if (slot.stopping) { slot.completedWhileStopping = outcome; return }
           slot.mission = undefined
           const safety = missionSafety(slot.taskId)
@@ -1910,9 +2003,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           if (finished.uiStatus === 'ERROR') auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         })
         auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
-        realtime.publishRuntimeState(started)
-        slot.positionStreamer?.start()
         const current = simulations.get(runId)
+        realtime.publishRuntimeState(current.ok ? current.data : started)
+        slot.positionStreamer?.start()
         res.status(200).json(success(current.ok ? current.data : started, pageMeta(requestId)))
       } catch (error) {
         slot.logStreamer?.stop(); slot.logStreamer = undefined
@@ -2342,10 +2435,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    */
   app.post('/api/v1/templates', (req, res) => {
     const requestId = 'REQ-P2-TEMPLATE-CREATE'
-    if (!requireAdmin(req, res, auth, 'TEMPLATE_CREATE')) return
+    const role = requireDemoRole(req, res, auth, 'TEMPLATE_CREATE')
+    if (role === undefined) return
+    const actor = actorForRequest(req, role)
     const preview = templates.previewCreate(req.body)
     if (!preview.ok) {
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE')
+      auth.recordError(actor, role, 'TEMPLATE_CREATE')
       res.status(preview.status).json(failure(preview.code, preview.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -2357,16 +2452,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     // 新建前先登记来源；登记失败时不创建模板，避免留下无来源的发布目标。
     let published: EquipmentPublishedReference[]
     try {
-      published = admin.capturePublishedParameterSources(preview.data.config, { targetType: 'TEMPLATE', targetId: preview.data.templateId, targetVersion: preview.data.version }, actorForRequest(req, 'ADMIN'))
+      published = admin.capturePublishedParameterSources(preview.data.config, { targetType: 'TEMPLATE', targetId: preview.data.templateId, targetVersion: preview.data.version }, actor)
     } catch {
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', preview.data.templateId)
+      auth.recordError(actor, role, 'TEMPLATE_CREATE', preview.data.templateId)
       res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板来源登记失败，已撤销本次新建。' }))
       return
     }
     const result = templates.create(req.body)
     if (!result.ok) {
       try { admin.discardPublishedReferences(published) } catch { /* 保留原始失败语义 */ }
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', preview.data.templateId)
+      auth.recordError(actor, role, 'TEMPLATE_CREATE', preview.data.templateId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -2379,11 +2474,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (result.data.templateId !== preview.data.templateId || result.data.version !== preview.data.version) {
       try { admin.discardPublishedReferences(published) } catch { /* 保留原始失败语义 */ }
       if (result.data.version === '1' && result.data.referenceCount === 0) templates.delete(result.data.templateId)
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', result.data.templateId)
+      auth.recordError(actor, role, 'TEMPLATE_CREATE', result.data.templateId)
       res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板来源登记失败，已撤销本次新建。' }))
       return
     }
-    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', result.data.templateId)
+    auth.recordSuccess(actor, role, 'TEMPLATE_CREATE', result.data.templateId)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -2418,10 +2513,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.put('/api/v1/templates/:templateId', (req, res) => {
     const templateId = req.params.templateId
     const requestId = 'REQ-P2-TEMPLATE-UPDATE'
-    if (!requireAdmin(req, res, auth, 'TEMPLATE_UPDATE', templateId)) return
+    const role = requireDemoRole(req, res, auth, 'TEMPLATE_UPDATE', templateId)
+    if (role === undefined) return
+    const actor = actorForRequest(req, role)
     const result = templates.update(templateId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+      auth.recordError(actor, role, 'TEMPLATE_UPDATE', templateId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -2432,13 +2529,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     // 先登记本次版本的来源；登记失败只记录错误，已写入的版本保持可重新加载核实。
     try {
-      admin.capturePublishedParameterSources(result.data.config, { targetType: 'TEMPLATE', targetId: result.data.templateId, targetVersion: String(result.data.version) }, actorForRequest(req, 'ADMIN'))
+      admin.capturePublishedParameterSources(result.data.config, { targetType: 'TEMPLATE', targetId: result.data.templateId, targetVersion: String(result.data.version) }, actor)
     } catch {
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+      auth.recordError(actor, role, 'TEMPLATE_UPDATE', templateId)
       res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板来源登记失败，请重新加载后核实。' }))
       return
     }
-    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+    auth.recordSuccess(actor, role, 'TEMPLATE_UPDATE', templateId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -2625,6 +2722,33 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   })
 
+  /** 本机扩展：在脚本包结构预检弹框中按需调用 AFSIM 引擎加载所选文件夹脚本，不影响毫秒级静态预检。 */
+  app.post('/api/v1/scripts/package/engine-load-check', async (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'SCRIPT_ENGINE_LOAD_CHECK', 'SCRIPT-PACKAGE')
+    if (role === undefined) return
+    if (!isScriptPackageEngineLoadCheckRequest(req.body) || Object.keys(req.query).length > 0) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '脚本包引擎加载检查参数无效，须提供合法文件夹、入口名与 TXT 内容。', fieldPath: 'files' }))
+      return
+    }
+    const targetId = req.body.scenarioId ?? req.body.folder
+    if (!options.checkScriptEngineLoad) {
+      res.status(503).json(failure('START_FAILED', 503, { message: '当前服务未启用本机仿真引擎加载检查（仅网页或纯 Mock 模式）。' }))
+      return
+    }
+    try {
+      const result = await options.checkScriptEngineLoad(req.body)
+      if (result.passed) auth.recordSuccess(actorForRequest(req, role), role, 'SCRIPT_ENGINE_LOAD_CHECK', targetId)
+      else auth.recordError(actorForRequest(req, role), role, 'SCRIPT_ENGINE_LOAD_CHECK', targetId)
+      res.status(200).json(success(result, pageMeta('REQ-SCRIPT-ENGINE-LOAD-CHECK')))
+    } catch (error) {
+      auth.recordError(actorForRequest(req, role), role, 'SCRIPT_ENGINE_LOAD_CHECK', targetId)
+      res.status(503).json(failure('START_FAILED', 503, {
+        message: error instanceof Error ? error.message : '本机仿真引擎加载检查执行失败，请检查 mission.exe 配置后重试。',
+        retryable: true,
+      }))
+    }
+  })
+
   /** 对已生成脚本执行校验和、结构、版本和路径预检。 */
   app.post('/api/v1/scripts/:scriptId/preflight', (req, res) => {
     const scriptId = req.params.scriptId
@@ -2678,8 +2802,44 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId) === undefined) return
     try {
       if (!isMissionResultId(req.params.resultId) || Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+      res.vary('Accept')
+      const includeMetricTrends = req.header('accept') === LOCAL_REPORT_TRENDS_ACCEPT
+      // 报告视图优先读取轻量快照（不含回放轨迹），避免打开报告时加载整份回放。
+      if (req.header('x-mission-result-view') === 'report' && options.missionResults?.getReportView) {
+        const view = await options.missionResults.getReportView(req.params.resultId)
+        if (!view) { res.status(404).json(failure('NOT_FOUND', 404, { message: '未找到指定运行结果，未切换到其他文件。' })); return }
+        const report = deferLargeEngineSegments(await reportWithQuality(view.report, view.record, view.parameters?.phases, undefined, view.report.reportId, view.report.localEvidence?.endTimeS, { includeMetricTrends }))
+        res.json(success({
+          record: view.record,
+          report,
+          ...(view.parameters === undefined ? {} : { parameters: view.parameters }),
+          ...(view.initialFilter === undefined ? {} : { initialFilter: view.initialFilter }),
+        }, pageMeta('REQ-MISSION-RESULT-GET')))
+        return
+      }
       const snapshot = await options.missionResults?.get(req.params.resultId)
       if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '未找到指定运行结果，未切换到其他文件。' })); return }
+      if (req.header('x-mission-result-view') === 'report') {
+        let initialFilter: Omit<LocalReportFilterResult, 'report'> | undefined
+        let baseReport = snapshot.report
+        if (options.missionResults?.filter) {
+          try {
+            const filtered = await options.missionResults.filter(snapshot.record.resultId, baseQualityReportId(snapshot.report.reportId), {})
+            baseReport = filtered.report
+            initialFilter = { filter: filtered.filter, timeline: filtered.timeline, timelineTotal: filtered.timelineTotal, stages: filtered.stages, links: filtered.links }
+          } catch {
+            // 历史结果缺少筛选索引时保留原始报告，由后续 /filter 明确提示降级原因。
+          }
+        }
+        const report = deferLargeEngineSegments(await reportWithQuality(baseReport, snapshot.record, snapshot.parameters?.phases, undefined, snapshot.report.reportId, snapshot.report.localEvidence?.endTimeS, { includeMetricTrends }))
+        res.json(success({
+          record: snapshot.record,
+          report,
+          ...(snapshot.parameters === undefined ? {} : { parameters: snapshot.parameters }),
+          ...(initialFilter === undefined ? {} : { initialFilter }),
+        }, pageMeta('REQ-MISSION-RESULT-GET')))
+        return
+      }
       const report = await reportWithQuality(snapshot.report, snapshot.record, snapshot.parameters?.phases)
       res.json(success({ ...snapshot, report }, pageMeta('REQ-MISSION-RESULT-GET')))
     } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行结果损坏或不可读，未切换到其他文件。' })) }
@@ -2834,12 +2994,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const reportId = req.params.reportId
     if (requireDemoRole(req, res, auth, 'REPORT_READ', reportId) === undefined) return
     const resultId = req.query.resultId
-    const filterKeys = ['resultId', 'nodeId', 'linkId', 'stage', 'from', 'to']
+    const filterKeys = ['resultId', 'nodeId', 'linkId', 'stage', 'from', 'to', 'includeEngineSegments']
     const raw: Record<string, unknown> = {}
     for (const key of ['nodeId', 'linkId', 'stage']) if (typeof req.query[key] === 'string') raw[key] = req.query[key]
     for (const key of ['from', 'to']) if (typeof req.query[key] === 'string') raw[key] = Number(req.query[key])
+    const includeSegmentsParam = req.query.includeEngineSegments
     if (typeof resultId !== 'string' || !isMissionResultId(resultId) || Object.entries(req.query).some(([key, item]) => !filterKeys.includes(key) || typeof item !== 'string')
-      || ['from', 'to'].some(key => key in req.query && typeof req.query[key] === 'string' && req.query[key].trim() === '')) {
+      || ['from', 'to'].some(key => key in req.query && typeof req.query[key] === 'string' && req.query[key].trim() === '')
+      || (includeSegmentsParam !== undefined && includeSegmentsParam !== '1')) {
       res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选来源或条件无效。' })); return
     }
     const filter = parseLocalReportFilter(raw as LocalReportFilter)
@@ -2849,7 +3011,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const result = await options.missionResults.filter(resultId, baseQualityReportId(reportId), filter)
       const snapshot = await options.missionResults.get(resultId)
       if (!snapshot) throw new Error('FILTER_NOT_FOUND')
-      const report = await reportWithQuality(result.report, snapshot.record, snapshot.parameters?.phases, filter, reportId, snapshot.report.localEvidence?.endTimeS)
+      res.vary('Accept')
+      const withQuality = await reportWithQuality(result.report, snapshot.record, snapshot.parameters?.phases, filter, reportId, snapshot.report.localEvidence?.endTimeS, {
+        includeEngineSegments: includeSegmentsParam === '1', sourceEvidence: snapshot.report.localEvidence,
+        includeMetricTrends: req.header('accept') === LOCAL_REPORT_TRENDS_ACCEPT,
+      })
+      const report = includeSegmentsParam === '1' ? withQuality : deferLargeEngineSegments(withQuality)
       res.status(200).json(success({ ...result, report }, pageMeta('REQ-REPORT-FILTER')))
     } catch (error) {
       const code = error instanceof Error ? error.message : ''
@@ -3155,7 +3322,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             comparisons = resolved.flatMap(candidate => candidate?.parameters === undefined ? [] : [{ record: candidate.record, parameters: candidate.parameters }])
           } catch { /* 其他历史结果不可读时，仍保留当前已校验快照及其参考配置标记。 */ }
         }
-        report = await reportWithQuality(report, snapshot?.record, snapshot?.parameters?.phases, req.body.filter, reportId, snapshot?.report.localEvidence?.endTimeS)
+        report = await reportWithQuality(report, snapshot?.record, snapshot?.parameters?.phases, req.body.filter, reportId, snapshot?.report.localEvidence?.endTimeS, { sourceEvidence: snapshot?.report.localEvidence })
         if (report.reportId !== reportId || report.localEvidence?.quality?.source.sha256 !== req.body.qualitySha256) {
           res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '质量来源已变化，请重新加载报告后导出。' }))
           return
@@ -3279,7 +3446,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.delete('/api/v1/templates/:templateId', (req, res) => {
     const templateId = req.params.templateId
     const requestId = 'REQ-P2-TEMPLATE-DELETE'
-    if (!requireAdmin(req, res, auth, 'TEMPLATE_DELETE', templateId)) return
+    const role = requireDemoRole(req, res, auth, 'TEMPLATE_DELETE', templateId)
+    if (role === undefined) return
+    const actor = actorForRequest(req, role)
     const template = templates.get(templateId)
     if (!template.ok) {
       res.status(template.status).json(failure(template.code, template.status, {
@@ -3298,7 +3467,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const confirmation = confirmations.consume(confirmationId, 'OFFICIAL_TEMPLATE_DELETE', templateId, 'ADMIN', confirmationOwner(req)?.id)
+    const confirmation = confirmations.consume(confirmationId, 'OFFICIAL_TEMPLATE_DELETE', templateId, role, confirmationOwner(req)?.id)
     if (!confirmation.ok) {
       res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, {
         requestId,
@@ -3309,7 +3478,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     const result = templates.delete(templateId)
     if (!result.ok) {
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_DELETE', templateId)
+      auth.recordError(actor, role, 'TEMPLATE_DELETE', templateId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -3318,7 +3487,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_DELETE', templateId)
+    auth.recordSuccess(actor, role, 'TEMPLATE_DELETE', templateId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -3612,6 +3781,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (!requireAdmin(req, res, auth, 'BACKUP_LIST')) return
     try { finishAdmin(res, 'BACKUP_LIST', { ok: true, data: admin.listBackups() }) }
     catch { finishAdmin(res, 'BACKUP_LIST', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '备份目录读取失败，未回退到演示记录。' }) }
+  })
+
+  /** 删除指定备份记录及其磁盘快照文件。 */
+  app.delete('/api/v1/admin/backups/:backupId', (req, res) => {
+    const backupId = req.params.backupId
+    if (!requireAdmin(req, res, auth, 'BACKUP_DELETE', backupId)) return
+    if (!isAdminText(backupId)) {
+      finishAdmin(res, 'BACKUP_DELETE', { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份编号不正确。', fieldPath: 'backupId' }, backupId)
+      return
+    }
+    try { finishAdmin(res, 'BACKUP_DELETE', admin.deleteBackup(backupId), backupId) }
+    catch { finishAdmin(res, 'BACKUP_DELETE', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '备份删除失败，请刷新核实。' }, backupId) }
   })
 
   /** 校验并执行备份；确认不能用于恢复操作。 */
@@ -3943,6 +4124,25 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const userId = req.params.userId
     const requestId = 'REQ-P1-USERS-DELETE'
     const result = mutateAccount(userId, () => auth.delete(userId, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id))
+    realtime?.revalidateSessions()
+    if (sendProjectionFailure(res, result, requestId)) {
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * Resets another account's password to the default password (123456) and revokes its sessions.
+   *
+   * @param req - Authorized administrator request containing the target userId.
+   * @param res - Response receiving the reset confirmation or typed failure.
+   * @returns Nothing.
+   * @remarks Blocks self-reset for the current administrator, revokes active sessions, and audits every outcome.
+   */
+  app.post('/api/v1/admin/users/:userId/reset-password', (req, res) => {
+    const userId = req.params.userId
+    const requestId = 'REQ-P1-USERS-RESET-PASSWORD'
+    const result = auth.resetPassword(userId, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id)
     realtime?.revalidateSessions()
     if (sendProjectionFailure(res, result, requestId)) {
       return

@@ -17,6 +17,10 @@ const loading = ref(false)
 const error = ref('')
 let epoch = 0
 const current = computed(() => records.value.find(r => r.resultId === selected.value))
+function syncSelected() {
+  selected.value = typeof route.query.resultId === 'string' ? route.query.resultId
+    : props.view ? '' : records.value.find(r => r.startedAt === props.startedAt)?.resultId ?? ''
+}
 async function load() {
   const request = ++epoch
   if (auth.runtimeMode !== 'LOCAL') return
@@ -28,8 +32,7 @@ async function load() {
     if (!response.ok || !Array.isArray(payload.data) || !payload.data.every(isMissionResultRecord)) throw new Error(payload.error?.message ?? '运行结果目录加载失败。')
     if (request !== epoch) return
     records.value = payload.data
-    selected.value = typeof route.query.resultId === 'string' ? route.query.resultId
-      : props.view ? '' : records.value.find(r => r.startedAt === props.startedAt)?.resultId ?? ''
+    syncSelected()
   } catch (e) { if (request === epoch) { records.value = []; selected.value = ''; error.value = e instanceof Error ? e.message : '运行结果目录加载失败。' } }
   finally { if (request === epoch) loading.value = false }
 }
@@ -38,7 +41,8 @@ function select(id: string) {
   if (props.view) void router.push({ path: route.path, query: { resultId: id } })
 }
 function refresh() { void load(); emit('refresh') }
-watch(() => [auth.runtimeMode, props.startedAt, props.status, route.query.resultId], () => { void load() }, { immediate: true })
+watch(() => [auth.runtimeMode, props.startedAt, props.status], () => { void load() }, { immediate: true })
+watch(() => route.query.resultId, () => { syncSelected() })
 onBeforeUnmount(() => { epoch++ })
 </script>
 

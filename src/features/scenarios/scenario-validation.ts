@@ -17,13 +17,15 @@ import type {
 } from '../../contracts/domain-models'
 
 import { metersBetween } from './position-distance'
-import { JAMMER_CALC_DEFAULTS, isJammerPlatformType, JAMMER_RANGE_METERS, isControlledPowerDbm, wattsToDbm, BARRAGE_BANDWIDTH_OPTIONS_MHZ, SPOT_BANDWIDTH_MHZ } from './jammer-settings'
+import { JAMMER_CALC_DEFAULTS, isJammerPlatformType, JAMMER_RANGE_METERS, isJammerEditorPowerDbm, wattsToDbm } from './jammer-settings'
 import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LASER_LINK_MODULATION, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
-import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError } from './hot-links'
+import { hotLinkChainError } from './hot-links'
 import { PLATFORM_POSITION_RULES, SATELLITE_GEO_POSITION } from './platform-position-rules'
 import { taskPhaseIssue } from './task-phases'
 import { isLinkParameterSource } from './link-parameter-source'
 import { isConfiguredLinkEnabled, readLinkSettings } from './link-settings'
+import { scenarioPlatformLabel } from './scenario-basic'
+import { formatSpectrumConflictLink } from './validation-field-labels'
 import { TEMPLATE_ANTENNA_NAMES, TEMPLATE_COMM_PORT_META, TEMPLATE_PLATFORM_TYPES, TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS, readPortParameters, resolveLinkRequiredCommPorts, resolveTemplateLinkPorts } from './template-defaults'
 
 const ROOT_KEYS = [
@@ -70,16 +72,19 @@ const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'way
 const RETIRED_PLATFORM_KEYS = ['heading'] as const
 const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'faction', 'communicationRangeM', 'loiterWaypoints', 'returnPlan', ...RETIRED_PLATFORM_KEYS] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
-const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band',
-  'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb', 'eirpDbw', 'gtDbk', 'laser', 'parameterSource', 'forwardDataRate', 'reverseDataRate'] as const
+/** 已删除的链路字段（链路级信道编码）：旧数据接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
+const RETIRED_LINK_KEYS = ['coding'] as const
+const OPTIONAL_LINK_KEYS = ['enabled', 'inheritPortParameters', 'antennaGainCorrectionDb', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band',
+  'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb', 'eirpDbw', 'gtDbk', 'laser', 'parameterSource', 'forwardDataRate', 'reverseDataRate', ...RETIRED_LINK_KEYS] as const
 const LASER_KEYS = ['txApertureDiameterM', 'rxApertureDiameterM', 'pulseWidthS', 'modulation'] as const
 export const DATALINK_BANDS = ['C', 'L'] as const
-export const LINK_SWITCH_TRIGGERS = ['DISTANCE_ABOVE', 'DISTANCE_BELOW', 'JAMMING_ACTIVE', 'JAMMING_STOPPED'] as const
-const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId', 'toLinkId'] as const
-const OPTIONAL_SWITCH_RULE_KEYS = ['enabled', 'distanceThresholdM', 'jammerId'] as const
+/** 已删除的阶段切换规则：旧数据接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
+const RETIRED_LINK_SETTINGS_KEYS = ['switchRules'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'detectionRange', 'jammingRange'] as const
+const JAMMER_BAND_KEYS = ['frequency', 'bandwidth'] as const
+const OPTIONAL_JAMMER_BAND_KEYS = ['mode', 'spotBandwidthMHz', 'sweepDutyCycle'] as const
 const RETIRED_JAMMER_KEYS = ['autoDetect'] as const
-const OPTIONAL_JAMMER_KEYS = ['radarFrequency', 'radarBandwidth', 'radarPower', 'noiseFigureDb', 'gtDbk', 'eirpDbw', 'antennaGainDbi', 'txLossDb', 'sweepDutyCycle', 'triggerTimeS', 'plannedStartFrame', 'plannedStopFrame', 'releaseRange', 'detectionMinimumRange', 'detectionDelayS', 'jammingDurationS', ...RETIRED_JAMMER_KEYS] as const
+const OPTIONAL_JAMMER_KEYS = ['weaponBands', 'radarFrequency', 'radarBandwidth', 'radarPower', 'noiseFigureDb', 'gtDbk', 'eirpDbw', 'antennaGainDbi', 'txLossDb', 'sweepDutyCycle', 'triggerTimeS', 'plannedStartFrame', 'plannedStopFrame', 'releaseRange', 'detectionMinimumRange', 'detectionDelayS', 'jammingDurationS', ...RETIRED_JAMMER_KEYS] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
 const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
 const OUTPUT_KEYS = ['directory', 'writeInterval', 'linkQualityEnabled', 'eventsEnabled', 'linkSwitchEnabled'] as const
@@ -186,7 +191,8 @@ function isClosedObject(value: unknown, keys: readonly string[], optionalKeys: r
 }
 
 /**
- * 原地删除场景中已下线的温湿度、雨衰、干扰自动检测和平台初始航向，
+ * 原地删除场景中已下线的温湿度、雨衰、干扰自动检测、平台初始航向和阶段切换规则，
+ * 以及热链已去掉的终点平台类型（endPlatformType），
  * 以及不可配置普通航点的平台上残留的航点（界面不显示这些航点），返回同一对象。
  * 通信卫星的初始位置同样不在界面显示，统一改为 GEO 定点。
  * 只处理结构正确的部分，结构错误留给 inspectScenarioConfig 报告。
@@ -204,6 +210,27 @@ export function dropRetiredScenarioFields<T>(config: T): T {
     if (typeof jammer !== 'object' || jammer === null || Array.isArray(jammer)) continue
     for (const key of RETIRED_JAMMER_KEYS) delete jammer[key]
   }
+  if (Array.isArray(root.links)) for (const link of root.links) {
+    if (typeof link !== 'object' || link === null || Array.isArray(link)) continue
+    const record = link as Record<string, unknown>
+    for (const key of RETIRED_LINK_KEYS) delete record[key]
+    const source = record.parameterSource
+    if (typeof source === 'object' && source !== null && !Array.isArray(source)) {
+      const fields = (source as { fields?: unknown }).fields
+      if (Array.isArray(fields) && fields.includes('coding')) {
+        const remaining = fields.filter(item => item !== 'coding')
+        if (remaining.length > 0) (source as { fields: unknown[] }).fields = remaining
+        else delete record.parameterSource
+      }
+    }
+  }
+  // 热链已去掉“终点平台类型”配置；旧数据里残留的 endPlatformType 在读入/校验/保存前统一丢弃。
+  const linkSettings = typeof root.linkSettings === 'object' && root.linkSettings !== null && !Array.isArray(root.linkSettings)
+    ? root.linkSettings as Record<string, unknown> : undefined
+  if (linkSettings !== undefined) delete linkSettings.switchRules
+  const hotLinks = linkSettings !== undefined && typeof linkSettings.hotLinks === 'object' && linkSettings.hotLinks !== null && !Array.isArray(linkSettings.hotLinks)
+    ? linkSettings.hotLinks as Record<string, unknown> : undefined
+  if (hotLinks !== undefined) delete hotLinks.endPlatformType
   const platforms = typeof config === 'object' && config !== null ? (config as { platforms?: unknown }).platforms : undefined
   if (!Array.isArray(platforms)) return config
   for (const platform of platforms) {
@@ -384,6 +411,16 @@ export function parseJsonText(text: string): JsonTextParseResult {
       return { valid: false, issue: jsonSyntaxIssueAt(location.line, location.column) }
     }
 
+    const unexpectedToken = /^Unexpected token '([^\r\n])',/u.exec(detail)?.[1]
+    if (unexpectedToken !== undefined) {
+      const offset = text.indexOf(unexpectedToken)
+      if (offset >= 0 && offset === text.lastIndexOf(unexpectedToken)) {
+        const location = jsonTextLocationAtOffset(text, offset)
+        return { valid: false, issue: jsonSyntaxIssueAt(location.line, location.column) }
+      }
+      return { valid: false, issue: { severity: 'ERROR', code: 'JSON_SYNTAX_ERROR',
+        message: `JSON 语法不正确，遇到意外字符 ${JSON.stringify(unexpectedToken)}。`, fieldPath: '$' } }
+    }
     return { valid: false, issue: { severity: 'ERROR', code: 'JSON_SYNTAX_ERROR', message: 'JSON 语法不正确，解析器未返回可定位的位置。', fieldPath: '$' } }
   }
 }
@@ -499,6 +536,9 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'LINK_ID_INVALID', '链路 ID 为必填项。', `${path}.id`)
   if (Object.hasOwn(value, 'enabled') && typeof value.enabled !== 'boolean') addError(errors, 'LINK_ENABLED_INVALID', '链路启用状态必须为布尔值。', `${path}.enabled`)
+  if (Object.hasOwn(value, 'inheritPortParameters') && (value.inheritPortParameters !== true || value.type === 'LASER')) {
+    addError(errors, 'LINK_PORT_INHERITANCE_INVALID', '仅非激光链路可启用平台端口参数继承。', `${path}.inheritPortParameters`)
+  }
   if (Object.hasOwn(value, 'parameterSource') && !isLinkParameterSource(value.parameterSource)) {
     addError(errors, 'LINK_PARAMETER_SOURCE_INVALID', '链路参数来源结构不正确。', `${path}.parameterSource`)
   }
@@ -518,9 +558,9 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
     if (!isPositiveFiniteNumber(value.txPower)) addError(errors, 'LASER_POWER_INVALID', '激光光功率必须大于 0 W。', `${path}.txPower`)
     if (!isPositiveFiniteNumber(value.dataRate)) addError(errors, 'LASER_RATE_INVALID', '激光链路介质传输速率必须大于 0 Mbps。', `${path}.dataRate`)
   }
-  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源平台必须引用当前节点。', `${path}.sourcePlatformId`)
-  if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标平台必须引用当前节点。', `${path}.targetPlatformId`)
-  if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路源平台和目标平台不能相同。', `${path}.targetPlatformId`)
+  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源节点必须引用当前节点。', `${path}.sourcePlatformId`)
+  if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标节点必须引用当前节点。', `${path}.targetPlatformId`)
+  if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路源节点和目标节点不能相同。', `${path}.targetPlatformId`)
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'LINK_FREQUENCY_INVALID', '链路频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'LINK_BANDWIDTH_INVALID', '链路带宽必须大于 0 MHz。', `${path}.bandwidth`)
   if (!isFiniteNumber(value.txPower, 0)) addError(errors, 'LINK_POWER_INVALID', '链路发射功率不能小于 0 W。', `${path}.txPower`)
@@ -531,7 +571,7 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
     if (!isFiniteNumber(value.antennaGain.rx)) addError(errors, 'RX_ANTENNA_GAIN_INVALID', '接收天线增益必须是有效数值。', `${path}.antennaGain.rx`)
   }
   if (typeof value.modulation !== 'string' || !(MODULATIONS as readonly string[]).includes(value.modulation)) addError(errors, 'MODULATION_INVALID', '调制方式不正确。', `${path}.modulation`)
-  if (!isFiniteNumber(value.berThreshold, 0, 1)) addError(errors, 'BER_THRESHOLD_INVALID', 'BER 阈值必须在 0 至 1 之间。', `${path}.berThreshold`)
+  if (!isFiniteNumber(value.berThreshold, 0, 1)) addError(errors, 'BER_THRESHOLD_INVALID', '误码率阈值必须在 0 至 1 之间。', `${path}.berThreshold`)
   if (!isFiniteNumber(value.dataRate, 0)) addError(errors, 'DATA_RATE_INVALID', '数据速率不能小于 0 Mbps。', `${path}.dataRate`)
   for (const [key, label] of [['forwardDataRate', '前向数据速率'], ['reverseDataRate', '返向数据速率']] as const) {
     if (Object.hasOwn(value, key) && !isPositiveFiniteNumber(value[key])) addError(errors, 'DIRECTIONAL_DATA_RATE_INVALID', `${label}必须大于 0 Mbps。`, `${path}.${key}`)
@@ -551,10 +591,6 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
     if (Object.hasOwn(value, key) && !isFiniteNumber(value[key], minimum)) {
       addError(errors, 'LINK_GAIN_INVALID', `${label}必须为${minimum === 0 ? '非负' : ''}有限数值。`, `${path}.${key}`)
     }
-  }
-  if (Object.hasOwn(value, 'coding') && value.coding !== null
-    && (typeof value.coding !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$/.test(value.coding))) {
-    addError(errors, 'LINK_CODING_INVALID', '编码标识须为 1～64 位字母、数字或 _ . ( ) + / = -，未指定请清空。', `${path}.coding`)
   }
   if (Object.hasOwn(value, 'relayPlatformId') && value.relayPlatformId !== null) {
     const relayAllowed = value.type === 'SAT' || value.type === 'MICROWAVE' || value.type === 'DATALINK'
@@ -583,8 +619,8 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
  * @param errors 接收错误的数组；错误路径用于页面定位。
  */
 function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write',
-  links: unknown = [], jammers: unknown = [], demands: unknown = []): void {
-  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['messageIntervalS', 'enabledTypes', 'switchRules', 'linkCalc', 'hotLinks', 'switchStableChecks', 'switchConsistencyCheck', 'minimumGxbDb', 'maximumBer', 'minimumGxbImprovementDb', 'minimumBerImprovementFactor', 'switchCooldownFrames', 'minimumSpatialIsolationDb', 'minimumReceivedPowerDbm', 'failureGxbDb', 'failureBer'])) {
+  links: unknown = []): void {
+  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['messageIntervalS', 'enabledTypes', ...RETIRED_LINK_SETTINGS_KEYS, 'linkCalc', 'hotLinks', 'switchStableChecks', 'switchConsistencyCheck', 'minimumGxbDb', 'maximumBer', 'minimumGxbImprovementDb', 'minimumBerImprovementFactor', 'switchCooldownFrames', 'minimumSpatialIsolationDb', 'minimumReceivedPowerDbm', 'failureGxbDb', 'failureBer'])) {
     addError(errors, 'LINK_SETTINGS_INVALID', '链路启停与切换策略结构不正确。', 'linkSettings')
     return
   }
@@ -615,14 +651,14 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
   }
   for (const [key, label, minimum, maximum, integer] of [
     ['minimumGxbDb', '最小 GXB', -Infinity, Infinity, false],
-    ['maximumBer', '最大 BER', 0, 1, false],
+    ['maximumBer', '可用性误码率上限', 0, 1, false],
     ['minimumGxbImprovementDb', '最小 GXB 改善值', 0, Infinity, false],
-    ['minimumBerImprovementFactor', '最小 BER 改善倍数', 1, Infinity, false],
+    ['minimumBerImprovementFactor', '最小误码率改善倍数', 1, Infinity, false],
     ['switchCooldownFrames', '切换冷却帧数', 0, Infinity, true],
     ['minimumSpatialIsolationDb', '最小空域隔离量', 0, Infinity, false],
     ['minimumReceivedPowerDbm', '最小接收功率', -Infinity, Infinity, false],
     ['failureGxbDb', '失效 GXB 门限', -Infinity, Infinity, false],
-    ['failureBer', '失效 BER 门限', 0, 1, false],
+    ['failureBer', '误码率失效上限', 0, 1, false],
   ] as const) {
     if (Object.hasOwn(value, key) && (!isFiniteNumber(value[key], minimum, maximum) || (integer && !Number.isSafeInteger(value[key])))) {
       addError(errors, 'LINK_DECISION_SETTING_INVALID', `${label}取值不正确。`, `linkSettings.${key}`)
@@ -636,7 +672,7 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
   }
   if (Object.hasOwn(value, 'failureBer') && isFiniteNumber(value.failureBer, 0, 1) && isFiniteNumber(effectiveMaximumBer, 0, 1)
     && value.failureBer < effectiveMaximumBer) {
-    addError(errors, 'FAILURE_BER_THRESHOLD_INVALID', '失效 BER 门限不能低于可用 BER 门限。', 'linkSettings.failureBer')
+    addError(errors, 'FAILURE_BER_THRESHOLD_INVALID', '误码率失效上限不能低于可用性误码率上限。', 'linkSettings.failureBer')
   }
   const priorityTypes = mode === 'read' && Array.isArray(value.priority) && value.priority.length === 4
     ? LINK_TYPES.filter(type => type !== 'FIBER') : LINK_TYPES
@@ -646,19 +682,15 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
     addError(errors, 'LINK_PRIORITY_INVALID', '链路优先级必须包含五类链路且不能重复；读取兼容历史四类。', 'linkSettings.priority')
   }
   if (Object.hasOwn(value, 'messageIntervalS') && !isPositiveFiniteNumber(value.messageIntervalS)) addError(errors, 'MESSAGE_INTERVAL_INVALID', '业务发送周期必须大于 0 秒。', 'linkSettings.messageIntervalS')
-  if (Object.hasOwn(value, 'switchRules')) inspectSwitchRules(value.switchRules, platforms, links, jammers, demands, errors)
   if (Object.hasOwn(value, 'linkCalc')) inspectLinkCalc(value.linkCalc, errors)
   if (Object.hasOwn(value, 'hotLinks')) inspectHotLinks(value.hotLinks, links, errors)
 }
 
-/** 校验热链配置：每条热链首尾相接、方向与所在列表一致，终点平台类型为可选枚举。 */
+/** 校验热链配置：每条热链首尾相接、方向与所在列表一致。 */
 function inspectHotLinks(value: unknown, links: unknown, errors: ValidationIssue[]): void {
-  if (!isClosedObject(value, ['forward', 'reverse', 'endPlatformType'])) {
+  if (!isClosedObject(value, ['forward', 'reverse'])) {
     addError(errors, 'HOT_LINKS_INVALID', '热链配置结构不正确。', 'linkSettings.hotLinks')
     return
-  }
-  if (!(HOT_LINK_END_PLATFORM_TYPES as readonly unknown[]).includes(value.endPlatformType)) {
-    addError(errors, 'HOT_LINK_END_TYPE_INVALID', '热链终点平台类型请选择后方指挥节点、地面集群指挥节点或空中任务集群。', 'linkSettings.hotLinks.endPlatformType')
   }
   const knownLinks = Array.isArray(links) ? links.filter((link): link is Link => typeof link === 'object' && link !== null) : []
   for (const [key, direction] of [['forward', 'FORWARD'], ['reverse', 'REVERSE']] as const) {
@@ -683,6 +715,16 @@ function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
   for (const [key, label] of [['emergencyThreshold', '紧急阈值'], ['warningThreshold', '告警阈值'], ['valueThresholdBer', '质量阈值']] as const) {
     if (!isFiniteNumber(value[key], 0, 1) || value[key] === 0) addError(errors, 'LINK_CALC_THRESHOLD_INVALID', `${label}必须是大于 0、不大于 1 的误码率。`, `linkSettings.linkCalc.${key}`)
   }
+  if (isFiniteNumber(value.emergencyThreshold, 0, 1) && value.emergencyThreshold > 0
+    && isFiniteNumber(value.warningThreshold, 0, 1) && value.warningThreshold > 0
+    && value.warningThreshold > value.emergencyThreshold) {
+    addError(errors, 'LINK_CALC_THRESHOLD_INVALID', '告警阈值不能高于紧急阈值。', 'linkSettings.linkCalc.warningThreshold')
+  }
+  if (isFiniteNumber(value.warningThreshold, 0, 1) && value.warningThreshold > 0
+    && isFiniteNumber(value.valueThresholdBer, 0, 1) && value.valueThresholdBer > 0
+    && value.valueThresholdBer > value.warningThreshold) {
+    addError(errors, 'LINK_CALC_THRESHOLD_INVALID', '质量阈值不能高于告警阈值。', 'linkSettings.linkCalc.valueThresholdBer')
+  }
   if (!isFiniteNumber(value.jammingRangeKm, JAMMING_RANGE_KM.min, JAMMING_RANGE_KM.max)) {
     addError(errors, 'LINK_CALC_JAMMING_RANGE_INVALID', `干扰圈半径必须在 ${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max} km 之间。`, 'linkSettings.linkCalc.jammingRangeKm')
   }
@@ -690,80 +732,6 @@ function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
   if (!CHANNEL_ENCODING_OPTIONS.some(option => option.value === value.channelEncodingScheme)) {
     addError(errors, 'LINK_CALC_ENCODING_INVALID', '信道编码请选择 -1、0、5.0、6.5、3.5 或 8.0。', 'linkSettings.linkCalc.channelEncodingScheme')
   }
-}
-
-/**
- * 校验阶段切换规则：端点、目标链路与干扰设备都须引用当前场景，且目标链路连接同一对端点。
- * @param value 未受信任的规则数组。
- * @param platforms 节点，用于核对端点。
- * @param links 场景链路，用于核对切换目标。
- * @param jammers 场景干扰设备，用于核对干扰条件。
- * @param demands 场景信息需求；生成器只把规则用于同方向业务，端点上有启用业务却无同方向业务时阻断，避免规则静默失效。
- * @param errors 接收错误的数组；路径指向具体规则字段。
- */
-function inspectSwitchRules(value: unknown, platforms: unknown, links: unknown, jammers: unknown, demands: unknown, errors: ValidationIssue[]): void {
-  if (!Array.isArray(value)) {
-    addError(errors, 'SWITCH_RULES_INVALID', '链路切换规则必须是列表。', 'linkSettings.switchRules')
-    return
-  }
-  const ids = (items: unknown) => new Set(Array.isArray(items)
-    ? items.flatMap(item => typeof item === 'object' && item !== null && typeof (item as { id?: unknown }).id === 'string' ? [(item as { id: string }).id] : [])
-    : [])
-  const platformIds = ids(platforms)
-  const jammerIds = ids(jammers)
-  const linkList = Array.isArray(links) ? links.filter((link): link is Record<string, unknown> => typeof link === 'object' && link !== null) : []
-  const demandList = Array.isArray(demands)
-    ? demands.filter((demand): demand is Record<string, unknown> => typeof demand === 'object' && demand !== null && demand.enabled !== false) : []
-  /** 业务方向：显式方向优先，其次取所属链路方向；均缺省表示不限方向。 */
-  const demandDirection = (demand: Record<string, unknown>) => demand.direction ?? linkList.find(item => item.id === demand.linkId)?.direction
-  const seen = new Set<string>()
-  value.forEach((rule, index) => {
-    const path = `linkSettings.switchRules[${index}]`
-    if (!isClosedObject(rule, SWITCH_RULE_KEYS, OPTIONAL_SWITCH_RULE_KEYS)) {
-      addError(errors, 'SWITCH_RULE_SHAPE_INVALID', '链路切换规则结构不正确。', path)
-      return
-    }
-    if (typeof rule.id !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(rule.id)) {
-      addError(errors, 'SWITCH_RULE_ID_INVALID', '规则编号须以英文字母开头，仅含字母、数字、下划线或连字符。', `${path}.id`)
-    } else if (seen.has(rule.id)) {
-      addError(errors, 'SWITCH_RULE_ID_DUPLICATED', '规则编号不能重复。', `${path}.id`)
-    } else seen.add(rule.id)
-    if (Object.hasOwn(rule, 'enabled') && typeof rule.enabled !== 'boolean') addError(errors, 'SWITCH_RULE_ENABLED_INVALID', '规则启用状态必须为布尔值。', `${path}.enabled`)
-    const trigger = rule.trigger
-    if (!(LINK_SWITCH_TRIGGERS as readonly unknown[]).includes(trigger)) addError(errors, 'SWITCH_RULE_TRIGGER_INVALID', '请选择切换条件。', `${path}.trigger`)
-    for (const key of ['sourcePlatformId', 'targetPlatformId'] as const) {
-      if (typeof rule[key] !== 'string' || !platformIds.has(rule[key])) {
-        addError(errors, 'SWITCH_RULE_ENDPOINT_INVALID', `${key === 'sourcePlatformId' ? '源' : '目标'}平台必须引用当前节点。`, `${path}.${key}`)
-      }
-    }
-    if (rule.sourcePlatformId === rule.targetPlatformId) addError(errors, 'SWITCH_RULE_ENDPOINT_DUPLICATED', '源平台和目标平台不能相同。', `${path}.targetPlatformId`)
-    const link = linkList.find(item => item.id === rule.toLinkId)
-    if (link === undefined) {
-      addError(errors, 'SWITCH_RULE_LINK_INVALID', '切换目标链路必须引用当前场景链路。', `${path}.toLinkId`)
-    } else if (link.sourcePlatformId !== rule.sourcePlatformId || link.targetPlatformId !== rule.targetPlatformId) {
-      addError(errors, 'SWITCH_RULE_LINK_MISMATCH', '切换目标链路必须连接规则中的源平台与目标平台。', `${path}.toLinkId`)
-    } else if (rule.enabled !== false) {
-      const covered = demandList.filter(demand => demand.sourcePlatformId === rule.sourcePlatformId
-        && Array.isArray(demand.destinationPlatformIds) && demand.destinationPlatformIds.includes(rule.targetPlatformId))
-      if (covered.length > 0 && !covered.some(demand => [undefined, link.direction].includes(demandDirection(demand)))) {
-        addError(errors, 'SWITCH_RULE_DIRECTION_MISMATCH', '切换目标链路方向与该端点业务方向不一致：前向业务只能切到前向链路，返向同理。', `${path}.toLinkId`)
-      }
-    }
-    const distanceTrigger = trigger === 'DISTANCE_ABOVE' || trigger === 'DISTANCE_BELOW'
-    if (distanceTrigger && !isPositiveFiniteNumber(rule.distanceThresholdM)) {
-      addError(errors, 'SWITCH_RULE_DISTANCE_INVALID', '距离阈值必须大于 0 m。', `${path}.distanceThresholdM`)
-    }
-    if (!distanceTrigger && Object.hasOwn(rule, 'distanceThresholdM')) {
-      addError(errors, 'SWITCH_RULE_DISTANCE_UNUSED', '干扰条件不使用距离阈值，请清除。', `${path}.distanceThresholdM`)
-    }
-    const jammingTrigger = trigger === 'JAMMING_ACTIVE' || trigger === 'JAMMING_STOPPED'
-    if (jammingTrigger && (typeof rule.jammerId !== 'string' || !jammerIds.has(rule.jammerId))) {
-      addError(errors, 'SWITCH_RULE_JAMMER_INVALID', '干扰条件必须引用当前场景的干扰设备。', `${path}.jammerId`)
-    }
-    if (!jammingTrigger && Object.hasOwn(rule, 'jammerId')) {
-      addError(errors, 'SWITCH_RULE_JAMMER_UNUSED', '距离条件不使用干扰设备，请清除。', `${path}.jammerId`)
-    }
-  })
 }
 
 /**
@@ -803,8 +771,20 @@ function inspectTemplatePlatformRoutes(value: Record<string, unknown>, index: nu
   if (Object.hasOwn(value, 'loiterWaypoints')) {
     if (!loiterSupported) addError(errors, 'LOITER_NOT_APPLICABLE', '盘旋路线仅支持任务无人机、前出中继或机载干扰平台。', `${path}.loiterWaypoints`)
     else {
-      const valid = inspectTemplateRoutePoints(value.loiterWaypoints, `${path}.loiterWaypoints`, errors, mode)
-      if (valid && Array.isArray(value.loiterWaypoints) && value.loiterWaypoints.length < 2) addError(errors, 'LOITER_POINT_COUNT_INVALID', '盘旋路线至少需要两个位置点。', `${path}.loiterWaypoints`)
+      const loiter = value.loiterWaypoints
+      const valid = inspectTemplateRoutePoints(loiter, `${path}.loiterWaypoints`, errors, mode)
+      if (valid && Array.isArray(loiter)) {
+        if (loiter.length < 2) addError(errors, 'LOITER_POINT_COUNT_INVALID', '盘旋路线至少需要两个位置点。', `${path}.loiterWaypoints`)
+        const approach = Array.isArray(value.waypoints) ? value.waypoints : []
+        const previous = approach.length > 0 ? approach.at(-1) : value.initialPosition
+        const first: unknown = loiter[0]
+        if (mode === 'write' && isClosedObject(first, [...POSITION_KEYS, 'speed'])
+          && isClosedObject(previous, POSITION_KEYS, ['speed', 'arrivalTime', ...OPTIONAL_WAYPOINT_KEYS])
+          && POSITION_KEYS.every(key => isFiniteNumber(first[key]) && previous[key] === first[key])) {
+          const previousLabel = approach.length > 0 ? '普通航线末点' : '初始位置'
+          addError(errors, 'LOITER_ENTRY_COINCIDENT', `节点 ${value.id} 的盘旋首点与${previousLabel}重合，请调整盘旋首点。`, `${path}.loiterWaypoints[0].longitude`)
+        }
+      }
     }
   }
   if (Object.hasOwn(value, 'returnPlan')) {
@@ -849,8 +829,8 @@ function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): voi
           if (!isPositiveFiniteNumber(parameters[key])) addError(errors, 'DEVICE_PORT_VALUE_INVALID', `${label}必须大于 0。`, `${path}.${key}`)
         }
         if (!isFiniteNumber(parameters.noiseFigureDb, 0)) addError(errors, 'DEVICE_PORT_VALUE_INVALID', '接收机噪声系数必须为非负有限数值。', `${path}.noiseFigureDb`)
-        for (const key of ['eirpDbw', 'gtDbk'] as const) {
-          if (Object.hasOwn(parameters, key) && !isFiniteNumber(parameters[key])) addError(errors, 'DEVICE_PORT_VALUE_INVALID', `${key}必须为有限数值。`, `${path}.${key}`)
+        for (const [key, label] of [['eirpDbw', 'EIRP'], ['gtDbk', 'G/T']] as const) {
+          if (Object.hasOwn(parameters, key) && !isFiniteNumber(parameters[key])) addError(errors, 'DEVICE_PORT_VALUE_INVALID', `${label}必须为有限数值。`, `${path}.${key}`)
         }
         if (Object.hasOwn(parameters, 'parameterSource')) {
           if (!isLinkParameterSource(parameters.parameterSource)) addError(errors, 'DEVICE_PORT_SOURCE_INVALID', '通信端口参数来源结构不正确。', `${path}.parameterSource`)
@@ -899,8 +879,10 @@ function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): voi
     if (value.antennaGains === null || typeof value.antennaGains !== 'object' || Array.isArray(value.antennaGains)) {
       addError(errors, 'ANTENNA_GAINS_INVALID', '天线增益必须为对象。', 'deviceParameters.antennaGains')
     } else for (const [name, gain] of Object.entries(value.antennaGains)) {
-      if (!(TEMPLATE_ANTENNA_NAMES as readonly string[]).includes(name) || !isFiniteNumber(gain)) {
-        addError(errors, 'ANTENNA_GAIN_INVALID', '天线类型或峰值增益不正确。', `deviceParameters.antennaGains.${name}`)
+      if (!(TEMPLATE_ANTENNA_NAMES as readonly string[]).includes(name)) {
+        addError(errors, 'ANTENNA_GAIN_INVALID', '天线类型不正确。', `deviceParameters.antennaGains.${name}`)
+      } else if (!isFiniteNumber(gain)) {
+        addError(errors, 'ANTENNA_GAIN_INVALID', '峰值增益必须为有限数值。', `deviceParameters.antennaGains.${name}`)
       }
     }
   }
@@ -930,17 +912,57 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (mode === 'write' ? !isPositiveFiniteNumber(value.defaultPower) : !isFiniteNumber(value.defaultPower, 0)) {
     addError(errors, 'JAMMER_POWER_INVALID', mode === 'write' ? '默认功率必须大于 0 W。' : '默认功率不能小于 0 W。', `${path}.defaultPower`)
   }
-  if (mode === 'write' && isPositiveFiniteNumber(value.defaultPower) && !isControlledPowerDbm(wattsToDbm(value.defaultPower))) {
-    addError(errors, 'JAMMER_POWER_OUT_OF_RANGE', '干扰功率须为 -10～30 dBm，且按 5 dB 档位设置。', `${path}.defaultPower`)
+  if (mode === 'write' && isPositiveFiniteNumber(value.defaultPower) && !isJammerEditorPowerDbm(wattsToDbm(value.defaultPower))) {
+    addError(errors, 'JAMMER_POWER_OUT_OF_RANGE', '干扰功率须为 -10～65 dBm，且按 5 dB 档位设置。', `${path}.defaultPower`)
   }
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
-  else if (mode === 'write' && value.type === 'BARRAGE' && !(BARRAGE_BANDWIDTH_OPTIONS_MHZ as readonly number[]).includes(value.bandwidth)) {
-    addError(errors, 'JAMMER_BANDWIDTH_OUT_OF_RANGE', '宽带压制干扰带宽须为 100、200 或 400 MHz。', `${path}.bandwidth`)
-  } else if (mode === 'write' && value.type === 'SPOT' && value.bandwidth !== SPOT_BANDWIDTH_MHZ) {
-    addError(errors, 'JAMMER_BANDWIDTH_OUT_OF_RANGE', '瞄准式干扰带宽须为 5 MHz。', `${path}.bandwidth`)
+  let band0SpotChecked = false
+  if (Object.hasOwn(value, 'weaponBands')) {
+    if (!Array.isArray(value.weaponBands) || value.weaponBands.length === 0) {
+      addError(errors, 'JAMMER_WEAPON_BANDS_INVALID', '干扰频段至少保留 1 组。', `${path}.weaponBands`)
+    } else {
+      value.weaponBands.forEach((band, bandIndex) => {
+        const bandPath = `${path}.weaponBands[${bandIndex}]`
+        if (!isClosedObject(band, JAMMER_BAND_KEYS, OPTIONAL_JAMMER_BAND_KEYS)) {
+          addError(errors, 'JAMMER_WEAPON_BAND_INVALID', '干扰频段结构不正确。', bandPath)
+          return
+        }
+        if (!isPositiveFiniteNumber(band.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${bandPath}.frequency`)
+        if (!isPositiveFiniteNumber(band.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${bandPath}.bandwidth`)
+        if (Object.hasOwn(band, 'mode') && (typeof band.mode !== 'string' || !(JAMMER_TYPES as readonly string[]).includes(band.mode))) {
+          addError(errors, 'JAMMER_TYPE_INVALID', '干扰设备类型不正确。', `${bandPath}.mode`)
+        }
+        const effectiveMode = typeof band.mode === 'string' && (JAMMER_TYPES as readonly string[]).includes(band.mode) ? band.mode : value.type
+        if (Object.hasOwn(band, 'spotBandwidthMHz')) {
+          const validSpot = effectiveMode === 'SPOT'
+            ? isPositiveFiniteNumber(band.spotBandwidthMHz)
+            : isFiniteNumber(band.spotBandwidthMHz, 0)
+          if (!validSpot) {
+            addError(errors, 'JAMMER_SPOT_BANDWIDTH_INVALID', effectiveMode === 'SPOT' ? '瞄准带宽必须大于 0 MHz。' : '瞄准带宽必须为非负有限数值。', `${bandPath}.spotBandwidthMHz`)
+          }
+        }
+        if (Object.hasOwn(band, 'sweepDutyCycle')) {
+          const validDuty = effectiveMode === 'SWEEP'
+            ? isPositiveFiniteNumber(band.sweepDutyCycle) && (band.sweepDutyCycle as number) <= 1
+            : isFiniteNumber(band.sweepDutyCycle, 0, 1)
+          if (!validDuty) {
+            addError(errors, 'JAMMER_CALC_PARAMETER_INVALID', effectiveMode === 'SWEEP' ? '扫频占空比须大于 0 且不超过 1。' : '扫频占空比须在 0～1 之间。', `${bandPath}.sweepDutyCycle`)
+          }
+        }
+        if (bandIndex === 0) band0SpotChecked = true
+        if (effectiveMode === 'SPOT' && isPositiveFiniteNumber(band.frequency) && !enabledLinkFrequencies.has(band.frequency)) {
+          warnings.push({
+            severity: 'WARNING',
+            code: 'JAMMER_SPOT_FREQUENCY_UNMATCHED',
+            message: bandIndex === 0 ? '瞄准式干扰中心频率未对准任何链路工作频率。' : `瞄准式干扰第 ${bandIndex + 1} 组中心频率未对准任何链路工作频率。`,
+            fieldPath: bandIndex === 0 ? `${path}.frequency` : `${bandPath}.frequency`,
+          })
+        }
+      })
+    }
   }
-  if (value.type === 'SPOT' && isPositiveFiniteNumber(value.frequency) && !enabledLinkFrequencies.has(value.frequency)) {
+  if (!band0SpotChecked && value.type === 'SPOT' && isPositiveFiniteNumber(value.frequency) && !enabledLinkFrequencies.has(value.frequency)) {
     warnings.push({ severity: 'WARNING', code: 'JAMMER_SPOT_FREQUENCY_UNMATCHED', message: '瞄准式干扰中心频率未对准任何链路工作频率。', fieldPath: `${path}.frequency` })
   }
   if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'JAMMER_RANGE_INVALID', '探测范围不能小于 0 m。', `${path}.detectionRange`)
@@ -965,17 +987,19 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
     }
   }
   // 时长本身非法时由场景字段报错，不连带误报合法触发时刻。
-  if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) addError(errors, 'JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
+  // 触发时间、计划帧不写入脚本，界面已不提供编辑；旧值异常只提示，不阻止保存（2026-11-24）。
+  const hidden = (code: string, message: string, fieldPath: string) => { warnings.push({ severity: 'WARNING', code, message: `${message}该字段不参与仿真，界面已不再提供配置，仅作提示。`, fieldPath }) }
+  if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) hidden('JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
   // 计划帧：非负整数，且停止帧严格大于启动帧；0 是合法的显式值，不当作未配置。
   for (const [key, label] of [['plannedStartFrame', '计划启动帧'], ['plannedStopFrame', '计划停止帧']] as const) {
     if (Object.hasOwn(value, key) && !(Number.isSafeInteger(value[key]) && (value[key] as number) >= 0)) {
-      addError(errors, 'JAMMER_PLANNED_FRAME_INVALID', `${label}必须为非负整数。`, `${path}.${key}`)
+      hidden('JAMMER_PLANNED_FRAME_INVALID', `${label}必须为非负整数。`, `${path}.${key}`)
     }
   }
   if (Object.hasOwn(value, 'plannedStartFrame') && Object.hasOwn(value, 'plannedStopFrame')
     && Number.isSafeInteger(value.plannedStartFrame) && Number.isSafeInteger(value.plannedStopFrame)
     && (value.plannedStopFrame as number) <= (value.plannedStartFrame as number)) {
-    addError(errors, 'JAMMER_PLANNED_FRAME_ORDER_INVALID', '计划停止帧必须大于计划启动帧。', `${path}.plannedStopFrame`)
+    hidden('JAMMER_PLANNED_FRAME_ORDER_INVALID', '计划停止帧必须大于计划启动帧。', `${path}.plannedStopFrame`)
   }
 }
 
@@ -996,9 +1020,16 @@ function inspectTemplateJammerConsistency(jammers: unknown[], platforms: unknown
     byPlatform.add(entry.platformId)
     const platformType = platformTypes.get(entry.platformId)
     if (!platformType) return
+    const normalizedBands = Array.isArray(entry.weaponBands) && entry.weaponBands.length > 0
+      ? entry.weaponBands.map(band => {
+        const record = band as Record<string, unknown>
+        return [record?.frequency, record?.bandwidth]
+      })
+      : [[entry.frequency, entry.bandwidth]]
     const current = {
       frequency: entry.frequency,
       bandwidth: entry.bandwidth,
+      weaponBands: JSON.stringify(normalizedBands),
       defaultPower: entry.defaultPower,
       detectionRange: entry.detectionRange,
       detectionMinimumRange: Object.hasOwn(jammer, 'detectionMinimumRange') ? entry.detectionMinimumRange : 1000,
@@ -1014,6 +1045,9 @@ function inspectTemplateJammerConsistency(jammers: unknown[], platforms: unknown
     for (const [key, label] of [['frequency', '频率'], ['bandwidth', '带宽'], ['defaultPower', '功率'], ['detectionRange', '探测范围'], ['detectionMinimumRange', '最小探测距离'], ['radarFrequency', '侦测雷达频率'], ['radarBandwidth', '侦测雷达带宽'], ['radarPower', '侦测雷达功率'], ['noiseFigureDb', '侦测接收噪声系数']] as const) {
       if (baseline[key] !== shared[key]) addError(errors, 'JAMMER_PLATFORM_PARAMETER_CONFLICT', `同一干扰平台类型的${label}必须保持一致。`, `${path}.${key}`)
     }
+    if (baseline.frequency === shared.frequency && baseline.bandwidth === shared.bandwidth && baseline.weaponBands !== shared.weaponBands) {
+      addError(errors, 'JAMMER_PLATFORM_PARAMETER_CONFLICT', '同一干扰平台类型的干扰频段必须保持一致。', `${path}.weaponBands`)
+    }
   })
 }
 
@@ -1021,6 +1055,19 @@ function inspectTemplateJammerConsistency(jammers: unknown[], platforms: unknown
 function occupiedBand(value: Record<string, unknown>): [number, number] | undefined {
   if (!isPositiveFiniteNumber(value.frequency) || !isPositiveFiniteNumber(value.bandwidth)) return undefined
   return [value.frequency - value.bandwidth / 2, value.frequency + value.bandwidth / 2]
+}
+
+/** 读取干扰设备的全部有效占用频段；支持多频段 weaponBands，旧数据回退为顶层单频段。 */
+function occupiedJammerBands(value: Record<string, unknown>): [number, number][] {
+  if (Array.isArray(value.weaponBands) && value.weaponBands.length > 0) {
+    return value.weaponBands.flatMap(band => {
+      if (typeof band !== 'object' || band === null || Array.isArray(band)) return []
+      const item = occupiedBand(band as Record<string, unknown>)
+      return item ? [item] : []
+    })
+  }
+  const single = occupiedBand(value)
+  return single ? [single] : []
 }
 
 function bandsOverlap(a: [number, number], b: [number, number]): boolean {
@@ -1033,12 +1080,29 @@ function bandsOverlap(a: [number, number], b: [number, number]): boolean {
  * 2. 干扰设备频段不与任何启用链路重叠：该干扰对场景内链路无作用。
  * @remarks 不阻断保存，生成脚本前按警告确认；不判断阵营，也不推算实际干扰效果。
  */
-function inspectSpectrumConflicts(links: readonly unknown[], jammers: readonly unknown[], warnings: ValidationIssue[]): void {
+function inspectSpectrumConflicts(links: readonly unknown[], jammers: readonly unknown[], warnings: ValidationIssue[], platforms: readonly unknown[] = []): void {
+  const platformLabels: readonly Pick<Platform, 'id' | 'name'>[] = platforms.flatMap(item =>
+    typeof item === 'object' && item !== null && typeof (item as { id?: unknown }).id === 'string' && typeof (item as { name?: unknown }).name === 'string'
+      ? [{ id: (item as { id: string }).id, name: (item as { name: string }).name }]
+      : [],
+  )
   const active = links.flatMap((link, index) => {
     // 光纤为导引介质，不占用射频频段，不参与同频互扰与干扰覆盖判断。
     if (!isClosedObject(link, LINK_KEYS, OPTIONAL_LINK_KEYS) || link.enabled === false || link.type === 'FIBER' || typeof link.targetPlatformId !== 'string') return []
     const band = occupiedBand(link)
-    return band ? [{ index, id: String(link.id), type: link.type, target: link.targetPlatformId, band }] : []
+    return band
+      ? [{
+          index,
+          id: String(link.id),
+          type: link.type,
+          bandName: link.type === 'DATALINK' && typeof link.band === 'string' ? link.band : undefined,
+          direction: typeof link.direction === 'string' ? link.direction : undefined,
+          source: typeof link.sourcePlatformId === 'string' ? link.sourcePlatformId : '',
+          relay: typeof link.relayPlatformId === 'string' ? link.relayPlatformId : undefined,
+          target: link.targetPlatformId,
+          band,
+        }]
+      : []
   })
   // 同体制且频点、带宽完全相同视为同一网络共用信道（分时复用），不按互扰报警。
   const sharedChannel = (a: typeof active[number], b: typeof active[number]) => a.type === b.type && a.band[0] === b.band[0] && a.band[1] === b.band[1]
@@ -1046,28 +1110,32 @@ function inspectSpectrumConflicts(links: readonly unknown[], jammers: readonly u
     const other = active.find(candidate => candidate.index !== link.index && candidate.target === link.target
       && bandsOverlap(candidate.band, link.band) && !sharedChannel(candidate, link))
     if (!other) continue
+    const targetLabel = scenarioPlatformLabel(platformLabels, link.target)
     warnings.push({ severity: 'WARNING', code: 'LINK_FREQUENCY_CONFLICT',
-      message: `与链路 ${other.id} 在同一接收平台 ${link.target} 的频段重叠（${link.band[0]}～${link.band[1]} MHz 与 ${other.band[0]}～${other.band[1]} MHz），接收端存在同频互扰，请调整频率或带宽。`,
+      message: `与${formatSpectrumConflictLink(other, platformLabels)}在同一接收平台「${targetLabel}」的频段重叠（${link.band[0]}～${link.band[1]} MHz 与 ${other.band[0]}～${other.band[1]} MHz），接收端存在同频互扰，请调整频率或带宽。`,
       fieldPath: `links[${link.index}].frequency` })
   }
   jammers.forEach((jammer, index) => {
     if (!isClosedObject(jammer, JAMMER_KEYS, OPTIONAL_JAMMER_KEYS)) return
-    const band = occupiedBand(jammer)
-    if (!band || active.length === 0 || active.some(link => bandsOverlap(link.band, band))) return
+    const bands = occupiedJammerBands(jammer)
+    if (bands.length === 0 || active.length === 0 || bands.some(band => active.some(link => bandsOverlap(link.band, band)))) return
+    const ranges = bands.map(band => `${band[0]}～${band[1]} MHz`).join('、')
     warnings.push({ severity: 'WARNING', code: 'JAMMER_BAND_UNMATCHED',
-      message: `干扰频段 ${band[0]}～${band[1]} MHz 未覆盖任何启用链路，该干扰设备对场景链路无作用。`, fieldPath: `jammers[${index}].frequency` })
+      message: `干扰频段 ${ranges} 未覆盖任何启用链路，该干扰设备对场景链路无作用。`, fieldPath: `jammers[${index}].frequency` })
   })
 }
 
 /** 校验一台传感器的规范参数和归属平台。 */
-function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write'): void {
+function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write', warnings: ValidationIssue[]): void {
   const path = `sensors[${index}]`
+  // 传感器页已并入干扰设备，config.sensors 仅为兼容旧场景保留；数值异常只提示，不阻止保存。
+  const legacy = (code: string, message: string, fieldPath: string) => { warnings.push({ severity: 'WARNING', code, message: `${message}该字段不参与仿真，界面已不再提供配置，仅作提示。`, fieldPath }) }
   if (!isClosedObject(value, SENSOR_KEYS)) {
     addError(errors, 'SENSOR_SHAPE_INVALID', '传感器结构不正确。', path)
     return
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'SENSOR_ID_INVALID', '传感器 ID 为必填项。', `${path}.id`)
-  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'SENSOR_PLATFORM_INVALID', '传感器必须归属于当前节点。', `${path}.platformId`)
+  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) legacy('SENSOR_PLATFORM_INVALID', '传感器必须归属于当前节点。', `${path}.platformId`)
   if (!isClosedObject(value.frequencyRange, FREQUENCY_RANGE_KEYS)) {
     addError(errors, 'SENSOR_FREQUENCY_RANGE_INVALID', '传感器频率范围结构不正确。', `${path}.frequencyRange`)
   } else {
@@ -1075,14 +1143,14 @@ function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<s
     const maximum = value.frequencyRange.max
     const minimumValid = isPositiveFiniteNumber(minimum)
     const maximumValid = isPositiveFiniteNumber(maximum)
-    if (!minimumValid) addError(errors, 'SENSOR_FREQUENCY_MIN_INVALID', '最低频率必须大于 0 MHz。', `${path}.frequencyRange.min`)
-    if (!maximumValid) addError(errors, 'SENSOR_FREQUENCY_MAX_INVALID', '最高频率必须大于 0 MHz。', `${path}.frequencyRange.max`)
+    if (!minimumValid) legacy('SENSOR_FREQUENCY_MIN_INVALID', '最低频率必须大于 0 MHz。', `${path}.frequencyRange.min`)
+    if (!maximumValid) legacy('SENSOR_FREQUENCY_MAX_INVALID', '最高频率必须大于 0 MHz。', `${path}.frequencyRange.max`)
     if (minimumValid && maximumValid && maximum < minimum) {
-      addError(errors, 'SENSOR_FREQUENCY_RANGE_REVERSED', '最高频率不能小于最低频率。', `${path}.frequencyRange.max`)
+      legacy('SENSOR_FREQUENCY_RANGE_REVERSED', '最高频率不能小于最低频率。', `${path}.frequencyRange.max`)
     }
   }
   if (mode === 'write' ? !isPositiveFiniteNumber(value.detectionRange) : !isFiniteNumber(value.detectionRange, 0)) {
-    addError(errors, 'SENSOR_RANGE_INVALID', mode === 'write' ? '侦测距离必须大于 0 m。' : '侦测距离不能小于 0 m。', `${path}.detectionRange`)
+    legacy('SENSOR_RANGE_INVALID', mode === 'write' ? '侦测距离必须大于 0 m。' : '侦测距离不能小于 0 m。', `${path}.detectionRange`)
   }
 }
 
@@ -1184,12 +1252,12 @@ function inspectInformationDemand(value: unknown, index: number, platformIds: Re
       if (value.direction !== link.direction && !reportedAsTypeConflict) addError(errors, 'INFORMATION_DEMAND_LINK_DIRECTION_MISMATCH', '业务方向必须与所属链路一致。', `${path}.direction`)
     }
   }
-  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'INFORMATION_DEMAND_SOURCE_INVALID', '信息需求源平台必须引用当前节点。', `${path}.sourcePlatformId`)
+  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'INFORMATION_DEMAND_SOURCE_INVALID', '信息需求源节点必须引用当前节点。', `${path}.sourcePlatformId`)
   if (!Array.isArray(value.destinationPlatformIds) || value.destinationPlatformIds.length === 0
     || value.destinationPlatformIds.some((id) => typeof id !== 'string' || !platformIds.has(id))) {
-    addError(errors, 'INFORMATION_DEMAND_DESTINATION_INVALID', '信息需求至少需要一个有效目标平台。', `${path}.destinationPlatformIds`)
+    addError(errors, 'INFORMATION_DEMAND_DESTINATION_INVALID', '信息需求至少需要一个有效目标节点。', `${path}.destinationPlatformIds`)
   } else if (new Set(value.destinationPlatformIds).size !== value.destinationPlatformIds.length) {
-    addError(errors, 'INFORMATION_DEMAND_DESTINATION_DUPLICATED', '信息需求目标平台不允许重复。', `${path}.destinationPlatformIds`)
+    addError(errors, 'INFORMATION_DEMAND_DESTINATION_DUPLICATED', '信息需求目标节点不允许重复。', `${path}.destinationPlatformIds`)
   }
   if (typeof value.informationType !== 'string' || !value.informationType.trim()) addError(errors, 'INFORMATION_DEMAND_TYPE_INVALID', '信息类型格式不正确。', `${path}.informationType`)
   else if (/[\u0000-\u001f\u007f"\\]/.test(value.informationType)) addError(errors, 'INFORMATION_DEMAND_TYPE_INVALID', 'AFSIM 字符串不支持双引号、反斜杠或控制字符，无法无损生成。', `${path}.informationType`)
@@ -1223,6 +1291,10 @@ export function inspectScenarioUiExtensions(
     return { result: { valid: false, errors, warnings: [] } }
   }
 
+  // 干扰指向、俯仰与旧传感器扩展不参与仿真且界面不再提供编辑；值异常只提示（2026-11-24）。
+  const uiWarnings: ValidationIssue[] = []
+  const uiHidden = (code: string, message: string, fieldPath: string) => { uiWarnings.push({ severity: 'WARNING', code, message: `${message}该字段不参与仿真，界面已不再提供配置，仅作提示。`, fieldPath }) }
+
   value.jammers.forEach((extension, index) => {
     const path = `uiExtensions.jammers[${index}]`
     if (!isClosedObject(extension, JAMMER_UI_EXTENSION_KEYS.filter(key => key !== 'direction'), [...OPTIONAL_JAMMER_UI_EXTENSION_KEYS, 'direction'])) {
@@ -1230,8 +1302,8 @@ export function inspectScenarioUiExtensions(
       return
     }
     if (typeof extension.jammerId !== 'string' || extension.jammerId.trim() === '') addError(errors, 'JAMMER_UI_EXTENSION_ID_INVALID', '干扰设备扩展 ID 为必填项。', `${path}.jammerId`)
-    if (!isFiniteNumber(extension.direction, 0, 360)) addError(errors, 'JAMMER_UI_EXTENSION_DIRECTION_INVALID', '干扰方向必须在 0 至 360 度之间。', `${path}.direction`)
-    if (Object.hasOwn(extension, 'elevation') && !isFiniteNumber(extension.elevation, -10, 60)) addError(errors, 'JAMMER_UI_EXTENSION_ELEVATION_INVALID', '干扰俯仰角必须在 -10 至 60 度之间。', `${path}.elevation`)
+    if (!isFiniteNumber(extension.direction, 0, 360)) uiHidden('JAMMER_UI_EXTENSION_DIRECTION_INVALID', '干扰方向必须在 0 至 360 度之间。', `${path}.direction`)
+    if (Object.hasOwn(extension, 'elevation') && !isFiniteNumber(extension.elevation, -10, 60)) uiHidden('JAMMER_UI_EXTENSION_ELEVATION_INVALID', '干扰俯仰角必须在 -10 至 60 度之间。', `${path}.elevation`)
     if (typeof extension.enabled !== 'boolean') addError(errors, 'JAMMER_UI_EXTENSION_ENABLED_INVALID', '干扰设备启用开关格式不正确。', `${path}.enabled`)
   })
 
@@ -1254,8 +1326,8 @@ export function inspectScenarioUiExtensions(
     }
     if (typeof extension.sensorId !== 'string' || extension.sensorId.trim() === '') addError(errors, 'SENSOR_UI_EXTENSION_ID_INVALID', '传感器扩展 ID 为必填项。', `${path}.sensorId`)
     if (extension.type !== 'ESM') addError(errors, 'SENSOR_UI_EXTENSION_TYPE_INVALID', '传感器扩展类型必须为 ESM。', `${path}.type`)
-    if (extension.direction !== 'OMNI' && !isFiniteNumber(extension.direction, 0, 360)) addError(errors, 'SENSOR_UI_EXTENSION_DIRECTION_INVALID', '传感器方向必须为全向或 0 至 360 度。', `${path}.direction`)
-    if (!isFiniteNumber(extension.probability, 0, 1)) addError(errors, 'SENSOR_UI_EXTENSION_PROBABILITY_INVALID', '传感器侦测概率必须在 0 至 1 之间。', `${path}.probability`)
+    if (extension.direction !== 'OMNI' && !isFiniteNumber(extension.direction, 0, 360)) uiHidden('SENSOR_UI_EXTENSION_DIRECTION_INVALID', '传感器方向必须为全向或 0 至 360 度。', `${path}.direction`)
+    if (!isFiniteNumber(extension.probability, 0, 1)) uiHidden('SENSOR_UI_EXTENSION_PROBABILITY_INVALID', '传感器侦测概率必须在 0 至 1 之间。', `${path}.probability`)
     if (typeof extension.enabled !== 'boolean') addError(errors, 'SENSOR_UI_EXTENSION_ENABLED_INVALID', '传感器启用开关格式不正确。', `${path}.enabled`)
     // Native ESM 参数直接对应 WSF_ESM_SENSOR 的 mode 指令；没有把旧概率、距离或方向换算进去。
     if (Object.hasOwn(extension, 'esm')) {
@@ -1263,10 +1335,10 @@ export function inspectScenarioUiExtensions(
       if (!isClosedObject(extension.esm, NATIVE_ESM_KEYS)) {
         addError(errors, 'NATIVE_ESM_SETTINGS_SHAPE_INVALID', '原生 ESM 参数结构不正确。', esmPath)
       } else {
-        if (!isFiniteNumber(extension.esm.sensitivityDbw) || extension.esm.sensitivityDbw > 0) addError(errors, 'NATIVE_ESM_SENSITIVITY_INVALID', '原生 ESM 灵敏度必须为不大于 0 的有限 dBW 值。', `${esmPath}.sensitivityDbw`)
-        if (!isFiniteNumber(extension.esm.detectionThresholdDb, 0)) addError(errors, 'NATIVE_ESM_THRESHOLD_INVALID', '原生 ESM 检测阈值必须为不小于 0 的有限 dB 值。', `${esmPath}.detectionThresholdDb`)
-        if (!isPositiveFiniteNumber(extension.esm.dwellTimeS)) addError(errors, 'NATIVE_ESM_DWELL_INVALID', '原生 ESM 驻留时间必须大于 0 秒。', `${esmPath}.dwellTimeS`)
-        if (!isPositiveFiniteNumber(extension.esm.revisitTimeS)) addError(errors, 'NATIVE_ESM_REVISIT_INVALID', '原生 ESM 重访时间必须大于 0 秒。', `${esmPath}.revisitTimeS`)
+        if (!isFiniteNumber(extension.esm.sensitivityDbw) || extension.esm.sensitivityDbw > 0) uiHidden('NATIVE_ESM_SENSITIVITY_INVALID', '原生 ESM 灵敏度必须为不大于 0 的有限 dBW 值。', `${esmPath}.sensitivityDbw`)
+        if (!isFiniteNumber(extension.esm.detectionThresholdDb, 0)) uiHidden('NATIVE_ESM_THRESHOLD_INVALID', '原生 ESM 检测阈值必须为不小于 0 的有限 dB 值。', `${esmPath}.detectionThresholdDb`)
+        if (!isPositiveFiniteNumber(extension.esm.dwellTimeS)) uiHidden('NATIVE_ESM_DWELL_INVALID', '原生 ESM 驻留时间必须大于 0 秒。', `${esmPath}.dwellTimeS`)
+        if (!isPositiveFiniteNumber(extension.esm.revisitTimeS)) uiHidden('NATIVE_ESM_REVISIT_INVALID', '原生 ESM 重访时间必须大于 0 秒。', `${esmPath}.revisitTimeS`)
       }
     }
   })
@@ -1282,7 +1354,7 @@ export function inspectScenarioUiExtensions(
     addError(errors, 'SENSOR_UI_EXTENSION_IDS_MISMATCH', '传感器与界面扩展必须按 ID 一一对应。', 'uiExtensions.sensors')
   }
 
-  const result: ValidationResult = { valid: errors.length === 0, errors, warnings: [] }
+  const result: ValidationResult = { valid: errors.length === 0, errors, warnings: uiWarnings }
   return result.valid
     ? { result, jammers: value.jammers as JammerUiExtension[], sensors: value.sensors as SensorUiExtension[] }
     : { result }
@@ -1341,7 +1413,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (!Array.isArray(value.sensors)) addError(errors, 'SENSORS_INVALID', '传感器配置格式不正确。', 'sensors')
   if (typeof value.output !== 'object' || value.output === null || Array.isArray(value.output)) addError(errors, 'OUTPUT_INVALID', '输出配置格式不正确。', 'output')
   if (!Array.isArray(value.informationDemand) || value.informationDemand.length === 0) addError(errors, 'INFORMATION_DEMAND_INVALID', '场景至少需要一项信息需求。', 'informationDemand')
-  if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors, mode, value.links, value.jammers, value.informationDemand)
+  if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors, mode, value.links)
   if (Object.hasOwn(value, 'jammingEnabled') && typeof value.jammingEnabled !== 'boolean') addError(errors, 'JAMMING_ENABLED_INVALID', '干扰总开关必须为布尔值。', 'jammingEnabled')
 
   if (!isClosedObject(value.scenario, SCENARIO_KEYS, ['phases', 'realtime'])) {
@@ -1486,7 +1558,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         addError(errors, 'PLATFORM_FACTION_INVALID', '所属阵营请选择蓝方、红方或中立。', `${path}.faction`)
       }
       if (Object.hasOwn(platform, 'communicationRangeM') && !isPositiveFiniteNumber(platform.communicationRangeM)) {
-        addError(errors, 'PLATFORM_COMMUNICATION_RANGE_INVALID', '节点通信能力范围必须为大于 0 的有限数值（m）；未配置请留空（0 不是有效值）。', `${path}.communicationRangeM`)
+        addError(errors, 'PLATFORM_COMMUNICATION_RANGE_INVALID', '节点通信范围必须为大于 0 的有限数值。未配置请留空。', `${path}.communicationRangeM`)
       }
       if (Object.hasOwn(platform, 'loiterWaypoints') || Object.hasOwn(platform, 'returnPlan')) {
         inspectTemplatePlatformRoutes(platform, index, typeof scenario.duration === 'number' ? scenario.duration : 0, errors, mode)
@@ -1619,13 +1691,13 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
 
   if (Object.hasOwn(value, 'deviceParameters')) inspectDeviceParameters(value.deviceParameters, errors)
 
-  if (Array.isArray(value.links)) inspectSpectrumConflicts(value.links, Array.isArray(value.jammers) ? value.jammers : [], warnings)
+  if (Array.isArray(value.links)) inspectSpectrumConflicts(value.links, Array.isArray(value.jammers) ? value.jammers : [], warnings, Array.isArray(value.platforms) ? value.platforms : [])
 
   if (Array.isArray(value.sensors)) {
     const sensorIds = collectIds(value.sensors)
     const platformIds = collectIds(value.platforms)
     if (sensorIds.size !== value.sensors.length) addError(errors, 'SENSOR_ID_DUPLICATED', '传感器 ID 不允许为空或重复。', 'sensors')
-    value.sensors.forEach((sensor, index) => inspectSensor(sensor, index, platformIds, errors, mode))
+    value.sensors.forEach((sensor, index) => inspectSensor(sensor, index, platformIds, errors, mode, warnings))
   }
 
   inspectOutput(value.output, scenario.timeStep, errors)

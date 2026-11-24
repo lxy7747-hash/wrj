@@ -1,21 +1,24 @@
-import type { Link, Platform, PortParameters, ScenarioDraft, TemplateAntennaName, TemplatePlatformType } from '../../src/contracts/domain-models.js'
+import type { Link, Modulation, Platform, PortParameters, ScenarioDraft, TemplateAntennaName, TemplatePlatformType } from '../../src/contracts/domain-models.js'
 import { configuredScenarioOutput } from '../../src/config/app.config.js'
 import {
   INFORMATION_TYPE_DIRECTIONS,
   inspectScenarioConfig,
-  laserOnlyBusinessPaths,
 } from '../../src/features/scenarios/scenario-validation.js'
 import { isConfiguredLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
 import { readLinkCalcSettings, readNaturalEnvironment } from '../../src/features/scenarios/link-calc-defaults.js'
 import { hotLinkChainError, readHotLinks } from '../../src/features/scenarios/hot-links.js'
+import { FIBER_MAPPED_PORT_FIELDS, LINK_PORT_FIELDS, RADIO_MAPPED_PORT_FIELDS, linkOverride, mappedPortFields } from '../../src/features/scenarios/link-port-parameters.js'
 import { deriveCommPortsFromLinks, readDeviceParameters, resolveLinkRequiredCommPorts, resolveTemplateLinkPorts, templatePlatformType, TEMPLATE_PLATFORM_TYPES, TEMPLATE_PORT_PARAMS } from '../../src/features/scenarios/template-defaults.js'
-import { JAMMER_CALC_DEFAULTS, readJammerParameters } from '../../src/features/scenarios/jammer-settings.js'
+import { JAMMER_CALC_DEFAULTS, readJammerBands, readJammerParameters } from '../../src/features/scenarios/jammer-settings.js'
 import { AD_HOC_COMM_FILE, AD_HOC_COMM_TEXT } from './ad-hoc-comm.js'
 import { renderTemplate1112, replaceLinkCalcBlock, stripScriptComments, filterPlatformCommPorts, TemplateRegionError } from './afsim-template-patch.js'
 import { TEMPLATE_1112_FILES, TEMPLATE_1112_PATCHES, TEMPLATE_1112_SHA256, TEMPLATE_1112_SOURCE_DIRECTORY, type Template1112FileName } from './afsim-template-1112.js'
 
 export class MissionGenerationError extends Error {
-  constructor(readonly fieldPath: string, reason: string) { super(`${fieldPath}：${reason}`); this.name = 'MissionGenerationError' }
+  constructor(readonly fieldPath: string, reason: string, readonly displayFieldPath?: string) {
+    super(`${displayFieldPath ?? fieldPath}：${reason}`)
+    this.name = 'MissionGenerationError'
+  }
 }
 
 /** 每次生成独立编号；中继先占无人机序号，同类保持配置顺序。 */
@@ -53,11 +56,45 @@ const TYPE_FILE_BY_PLATFORM: Record<TemplatePlatformType, string> = {
 }
 /** 每个模板平台类型实际输出的端口（顺序与模板 port_params 一致；fiber_link 由 fiber() 固定输出）。 */
 const OUTPUT_PORTS: Record<TemplatePlatformType, readonly string[]> = {
-  MISSION_UAV_PLATFORM: ['sat_link', 'microwave_link', 'c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink'],
+  MISSION_UAV_PLATFORM: ['sat_link', 'microwave_link', 'c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink', 'lazer_link'],
   COMMAND_VEHICLE_PLATFORM: ['c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink', 'fiber_link'],
   REAR_COMM_PLATFORM: ['sat_link_a', 'sat_link_b', 'microwave_link', 'fiber_link'],
   TIAN_TONG_SAT: ['sat_link'],
   SHEN_TONG_SAT: ['sat_link'],
+}
+/** 生成错误提示用中文平台/端口名，避免把模板英文标识直接暴露给用户。 */
+const GENERATION_PLATFORM_LABELS: Record<TemplatePlatformType, string> = {
+  MISSION_UAV_PLATFORM: '任务无人机（含中继）',
+  COMMAND_VEHICLE_PLATFORM: '集群指挥车',
+  REAR_COMM_PLATFORM: '后方通信车',
+  TIAN_TONG_SAT: '天通卫星',
+  SHEN_TONG_SAT: '神通卫星',
+}
+const GENERATION_PORT_LABELS: Record<string, string> = {
+  sat_link: '卫通',
+  sat_link_a: '卫通 A（前向）',
+  sat_link_b: '卫通 B（返向）',
+  microwave_link: '微波',
+  c_band_uplink: 'C 波段上行',
+  c_band_downlink: 'C 波段下行',
+  l_band_uplink: 'L 波段上行',
+  l_band_downlink: 'L 波段下行',
+  fiber_link: '光纤',
+  lazer_link: '激光',
+  laser_link: '激光',
+}
+function generationPortLabel(type: TemplatePlatformType, port: string): string {
+  return `${GENERATION_PLATFORM_LABELS[type]} · ${GENERATION_PORT_LABELS[port] ?? port}`
+}
+function generationLinkLabel(config: ScenarioDraft['config'], index: number): string {
+  const link = config.links[index]
+  if (!link) return `第 ${index + 1} 条链路`
+  const platformName = (id: string) => config.platforms.find(platform => platform.id === id)?.name ?? id
+  const route = [link.sourcePlatformId, ...(link.relayPlatformId ? [link.relayPlatformId] : []), link.targetPlatformId]
+    .filter(Boolean)
+    .map(platformName)
+    .join(' → ')
+  return route ? `第 ${index + 1} 条链路（${route}）` : `第 ${index + 1} 条链路`
 }
 /**
  * 读取场景数据里的端口清单（未显式配置时根据已启用链路自动推导），转换成“平台类型 → 允许生成的端口集合”。
@@ -112,7 +149,8 @@ const ANTENNAS: Record<TemplateAntennaName, readonly [number, number]> = {
   SAT_GROUND_MOBILE_ANTENNA: [360, 180], SAT_SPACE_BEAM_ANTENNA: [360, 180], SAT_UAV_CLUSTER_WIDEBAND_ANTENNA: [360, 180], LASER_COMM_ANTENNA: [360, 180],
 }
 type Device = { linkId: string; linkType: Link['type']; direction: Link['direction']; source: { platformId: string; deviceId: string; platformType: TemplatePlatformType }; target: { platformId: string; deviceId: string; platformType: TemplatePlatformType }; relayPlatformId: string | null; relayDeviceId: string | null }
-type Jammer = { jammerId: string; platformId: string; weaponId: 'prophet_jammer' | 'alq99_jammer'; type: string; configuredEnabled: boolean; frequencyMHz: number; bandwidthMHz: number; powerW: number; detectionRangeM: number; detectionMinimumRangeM: number; jammingRangeM: number; releaseRangeM: number; detectionDelayS?: number; jammingDurationS?: number } & Record<keyof typeof JAMMER_CALC_DEFAULTS, number>
+type JammerBand = { frequencyMHz: number; bandwidthMHz: number; mode: string; spotBandwidthMHz: number; sweepDutyCycle: number }
+type Jammer = { jammerId: string; platformId: string; weaponId: 'prophet_jammer' | 'alq99_jammer'; type: string; configuredEnabled: boolean; frequencyMHz: number; bandwidthMHz: number; weaponBands: JammerBand[]; powerW: number; detectionRangeM: number; detectionMinimumRangeM: number; jammingRangeM: number; releaseRangeM: number; detectionDelayS?: number; jammingDurationS?: number } & Record<keyof typeof JAMMER_CALC_DEFAULTS, number>
 
 /** 保留场景中配置的数值，不以展示精度截断脚本或 link_calc JSON。 */
 const n = (value: number) => String(value)
@@ -660,7 +698,17 @@ function devices(config: ScenarioDraft['config']): { items: Device[]; warnings: 
   })
   return { items, warnings }
 }
-type EmittedPortParams = Array<{ platform_type: TemplatePlatformType; comm_params: Array<{ comm_name: string; transmitter: Record<string, number>; receiver: Record<string, number> }> }>
+type EmittedPortParams = Array<{ platform_type: TemplatePlatformType; comm_params: Array<{ comm_name: string; modulation?: Modulation; transmitter: Record<string, number>; receiver: Record<string, number> }> }>
+/** 调制方式只对射频端口有意义：光纤（WSF_COMM_TRANSCEIVER）与激光（lazer_link）端口不写 modulation。 */
+const isRadioPort = (port: string): boolean => port !== 'fiber_link' && port !== 'lazer_link' && port !== 'laser_link'
+/** 端口调制方式取绑定该端口的链路配置；无绑定链路时按 BPSK 缺省。冲突在 resolveEffectivePorts 中已阻断。 */
+function portModulation(config: ScenarioDraft['config'], resolved: EffectivePorts, key: string): Modulation {
+  for (const index of resolved.bindings.get(key)?.indexes ?? []) {
+    const value = config.links[index]?.modulation
+    if (value === 'BPSK' || value === 'QPSK') return value
+  }
+  return 'BPSK'
+}
 function portParams(config: ScenarioDraft['config'], resolved: EffectivePorts, allowedPorts?: Map<TemplatePlatformType, Set<string>>): EmittedPortParams {
   const explicitGains = config.deviceParameters?.antennaGains
   return TEMPLATE_PORT_PARAMS.flatMap(platformEntry => {
@@ -670,6 +718,7 @@ function portParams(config: ScenarioDraft['config'], resolved: EffectivePorts, a
       platform_type: platformEntry.platform_type,
       comm_params: platformEntry.comm_params.filter(base => allowed === undefined || allowed.has(base.comm_name)).map(base => {
       const override = resolved.overrides.get(`${platformEntry.platform_type}.${base.comm_name}`) ?? {}
+      const modulation = isRadioPort(base.comm_name) ? portModulation(config, resolved, `${platformEntry.platform_type}.${base.comm_name}`) : undefined
       const rateKey = Object.keys(base.transmitter).find(key => key.startsWith('information_rate_'))!
       const rateUnit = rateKey.slice('information_rate_'.length) as 'bit/s' | 'kbits/sec' | 'mbits/sec'
       const tx: Record<string, number> = { ...base.transmitter }
@@ -682,51 +731,23 @@ function portParams(config: ScenarioDraft['config'], resolved: EffectivePorts, a
         if (override.rxFrequency !== undefined) rx.frequency_ghz = override.rxFrequency / 1000
         if (override.rxBandwidth !== undefined) rx.bandwidth_mhz = override.rxBandwidth
         if (override.noiseFigureDb !== undefined) rx.noise_figure_dB = override.noiseFigureDb
-        // 交付 TXT 的 G/T 统一写 0（按用户 2026-11-14 要求）；配置值仍保留在快照中。
-        if (Object.hasOwn(rx, 'G_T_dBK')) rx.G_T_dBK = 0
+        // 端口 EIRP/G/T 为可配置项（DeviceParametersPanel），交付 TXT 直接采用配置值；缺省沿用模板值。
+        if (override.gtDbk !== undefined) rx.G_T_dBK = override.gtDbk
         // #3：仅当该天线被 deviceParameters.antennaGains 显式包含时，才覆盖引用它的端口峰值增益。
         const antennaName = antenna(platformEntry.platform_type, base.comm_name)
         if (explicitGains && Object.hasOwn(explicitGains, antennaName) && typeof explicitGains[antennaName] === 'number') {
           tx.peak_gain_dB = explicitGains[antennaName]!
           rx.peak_gain_dB = explicitGains[antennaName]!
         }
-        // 交付 TXT 的 EIRP 统一写 0（按用户 2026-11-13 要求）；配置值仍保留在快照中。
-        if (Object.hasOwn(tx, 'eirp_dBW')) tx.eirp_dBW = 0
       }
       if (override.transferRate !== undefined) { tx[rateKey] = Number(rate(override.transferRate, rateUnit)); rx[rateKey] = Number(rate(override.transferRate, rateUnit)) }
-      return { comm_name: base.comm_name, transmitter: tx, receiver: rx }
+      return { comm_name: base.comm_name, ...(modulation === undefined ? {} : { modulation }), transmitter: tx, receiver: rx }
     }),
     }]
   })
 }
-type PortBinding = { indexes: number[]; chosen: number | null; conflicting: boolean }
+type PortBinding = { indexes: number[]; chosen: number | null; conflicting: boolean; inherited: boolean }
 type EffectivePorts = { values: Map<string, PortParameters>; overrides: Map<string, Partial<PortParameters>>; sources: Map<string, 'CONFIGURED' | 'TEMPLATE_DEFAULT'>; bindings: Map<string, PortBinding>; conflicts: Array<{ fieldPath: string; message: string }> }
-/** 链路字段 → 端口字段的映射（含冲突定位用中文标签）。 */
-const LINK_PORT_FIELDS: ReadonlyArray<{ portKey: keyof PortParameters; linkKey: keyof Link; label: string }> = [
-  { portKey: 'txFrequency', linkKey: 'frequency', label: '频率(MHz)' },
-  { portKey: 'txBandwidth', linkKey: 'bandwidth', label: '发射带宽(MHz)' },
-  { portKey: 'txPower', linkKey: 'txPower', label: '功率(W)' },
-  { portKey: 'transferRate', linkKey: 'dataRate', label: '速率(Mbps)' },
-  { portKey: 'rxFrequency', linkKey: 'rxFrequency', label: '接收频率(MHz)' },
-  { portKey: 'rxBandwidth', linkKey: 'rxBandwidth', label: '接收带宽(MHz)' },
-  { portKey: 'noiseFigureDb', linkKey: 'noiseFigureDb', label: '噪声系数(dB)' },
-]
-/** 该端口实际映射到输出的字段：光纤 comm 为 WSF_COMM_TRANSCEIVER，仅 transferRate 映射；无线端口映射收发频率/带宽/功率/速率/噪声。EIRP/G-T 非链路字段不参与冲突比较。 */
-const RADIO_MAPPED_PORT_FIELDS = ['txFrequency', 'txBandwidth', 'txPower', 'transferRate', 'rxFrequency', 'rxBandwidth', 'noiseFigureDb'] as const
-const FIBER_MAPPED_PORT_FIELDS = ['transferRate'] as const
-function mappedPortFields(port: string): readonly (keyof PortParameters)[] {
-  return port === 'fiber_link' ? FIBER_MAPPED_PORT_FIELDS : RADIO_MAPPED_PORT_FIELDS
-}
-function linkOverride(link: Link, port: string): Partial<PortParameters> {
-  const override: Partial<PortParameters> = {}
-  const mapped = mappedPortFields(port)
-  for (const { portKey, linkKey } of LINK_PORT_FIELDS) {
-    if (!mapped.includes(portKey)) continue
-    const value = link[linkKey]
-    if (typeof value === 'number') (override as Record<string, number>)[portKey as string] = value
-  }
-  return override
-}
 /** 设备端口显式字段：光纤仅 transferRate；无线端口另含 EIRP/G-T（用于覆盖 port_params 默认集）。 */
 function deviceOverride(value: PortParameters | null | undefined, port: string): Partial<PortParameters> {
   const override: Partial<PortParameters> = {}
@@ -740,26 +761,34 @@ function deviceOverride(value: PortParameters | null | undefined, port: string):
 }
 /**
  * #1/#6/#4 单一“有效端口参数”解析器（comm 域取值）：
- * 模板默认 ← deviceParameters 端口配置 ← 绑定到该(platformType,port)的启用链路显式字段。
- * #1：同端口被多条启用链路映射且显式字段不一致、或链路显式值与 deviceParameters 显式值冲突 → 抛 MissionGenerationError 阻断并定位 links[i]。
- * 仅对已映射端口叠加；未绑定端口保持设备/模板默认。overrides 记录显式覆盖字段，供 portParams() 在其独立默认集上叠加。
+ * 旧链路保留显式参数。继承链路引用平台端口的配置或默认值，其链路数值只用于兼容显示。
+ * 同一端口的历史显式参数冲突时定位到 links[i]，防止覆盖已有值。
  */
 function resolveEffectivePorts(config: ScenarioDraft['config'], items: readonly Device[]): EffectivePorts {
   const parameters = readDeviceParameters(config)
   const explicit = config.deviceParameters?.ports
   const linkIndex = new Map(config.links.map((link, index) => [link.id, index]))
-  const bindingMap = new Map<string, number[]>()
-  const addBinding = (key: string, index: number | undefined) => {
-    if (index === undefined) return
-    const list = bindingMap.get(key) ?? []
+  const legacyBindings = new Map<string, number[]>()
+  const actualBindings = new Map<string, number[]>()
+  const inheritedPorts = new Set<string>()
+  const addBinding = (bindings: Map<string, number[]>, key: string, index: number) => {
+    const list = bindings.get(key) ?? []
     if (!list.includes(index)) list.push(index)
-    bindingMap.set(key, list)
+    bindings.set(key, list)
   }
   for (const item of items) {
     const index = linkIndex.get(item.linkId)
-    addBinding(`${item.source.platformType}.${item.source.deviceId}`, index)
-    addBinding(`${item.target.platformType}.${item.target.deviceId}`, index)
-    if (item.relayPlatformId !== null && item.relayDeviceId !== null) addBinding(`MISSION_UAV_PLATFORM.${item.relayDeviceId}`, index)
+    if (index === undefined) continue
+    const link = config.links[index]!
+    for (const { platformType, portName } of resolveLinkRequiredCommPorts(config.platforms, link)) {
+      const key = `${platformType}.${portName}`
+      addBinding(actualBindings, key, index)
+      if (link.inheritPortParameters) inheritedPorts.add(key)
+    }
+    if (link.inheritPortParameters) continue
+    addBinding(legacyBindings, `${item.source.platformType}.${item.source.deviceId}`, index)
+    addBinding(legacyBindings, `${item.target.platformType}.${item.target.deviceId}`, index)
+    if (item.relayPlatformId !== null && item.relayDeviceId !== null) addBinding(legacyBindings, `MISSION_UAV_PLATFORM.${item.relayDeviceId}`, index)
   }
   const values = new Map<string, PortParameters>(); const overrides = new Map<string, Partial<PortParameters>>()
   const sources = new Map<string, 'CONFIGURED' | 'TEMPLATE_DEFAULT'>(); const bindings = new Map<string, PortBinding>(); const conflicts: Array<{ fieldPath: string; message: string }> = []
@@ -768,10 +797,27 @@ function resolveEffectivePorts(config: ScenarioDraft['config'], items: readonly 
     const base = parameters.ports[type]?.[port]
     if (!base) throw new MissionGenerationError(`deviceParameters.ports.${type}.${port}`, '模板端口参数缺失。')
     const hasDeviceConfig = explicit?.[type] !== undefined && Object.hasOwn(explicit[type]!, port)
-    const device = hasDeviceConfig ? deviceOverride(explicit![type]![port] ?? null, port) : {}
-    const hasDeviceMapped = Object.keys(device).length > 0
-    const indexes = [...(bindingMap.get(key) ?? [])].sort((left, right) => left - right)
-    const entries = indexes.map(index => ({ index, override: linkOverride(config.links[index]!, port) }))
+    const inherited = inheritedPorts.has(key)
+    const device = deviceOverride(inherited ? base : explicit?.[type]?.[port], port)
+    // 保留只含旧配置的端口输出，继承端口按实际绑定识别两端及中继的共享链路。
+    const indexes = [...((inherited ? actualBindings : legacyBindings).get(key) ?? [])].sort((left, right) => left - right)
+    // 引擎 port_params 每个端口只有一个 modulation；绑定该端口的链路调制方式必须一致。
+    if (isRadioPort(port)) {
+      const modulations = indexes.map(index => config.links[index]!.modulation)
+        .filter((value): value is Modulation => value === 'BPSK' || value === 'QPSK')
+      const distinct = [...new Set(modulations)]
+      if (distinct.length > 1) {
+        const firstIndex = indexes.find(index => config.links[index]!.modulation === distinct[0])!
+        const mismatchIndex = indexes.find(index => config.links[index]!.modulation === distinct[1])!
+        throw new MissionGenerationError(
+          `links[${mismatchIndex}].modulation`,
+          `共享模板端口“${generationPortLabel(type, port)}”的调制方式在${generationLinkLabel(config, firstIndex)}（${distinct[0]}）与${generationLinkLabel(config, mismatchIndex)}（${distinct[1]}）不一致；引擎 port_params 每个端口只能配置一种调制方式，请统一后再生成。`,
+          `第 ${mismatchIndex + 1} 条链路 · 调制方式`,
+        )
+      }
+    }
+    const entries = indexes.filter(index => !config.links[index]!.inheritPortParameters)
+      .map(index => ({ index, override: linkOverride(config.links[index]!, port) }))
     const mappedFields = LINK_PORT_FIELDS.filter(field => mappedPortFields(port).includes(field.portKey))
     // 同端口多条链路“已映射字段”显式值不一致 → 阻断（未映射字段不比较）。
     for (const { portKey, linkKey, label } of mappedFields) {
@@ -780,15 +826,25 @@ function resolveEffectivePorts(config: ScenarioDraft['config'], items: readonly 
       const first = present[0]!
       const mismatch = present.find(entry => entry.override[portKey] !== first.override[portKey])
       if (mismatch) {
-        throw new MissionGenerationError(`links[${mismatch.index}].${String(linkKey)}`, `共享模板端口 ${type}.${port} 的${label}在 links[${first.index}](${String(first.override[portKey])}) 与 links[${mismatch.index}](${String(mismatch.override[portKey])}) 不一致；请先消除共享端口冲突再生成。`)
+        throw new MissionGenerationError(
+          `links[${mismatch.index}].${String(linkKey)}`,
+          `共享模板端口“${generationPortLabel(type, port)}”的${label}在${generationLinkLabel(config, first.index)}（${String(first.override[portKey])}）与${generationLinkLabel(config, mismatch.index)}（${String(mismatch.override[portKey])}）不一致；请先消除共享端口冲突再生成。`,
+          `第 ${mismatch.index + 1} 条链路 · ${label}`,
+        )
       }
     }
-    // 链路显式值与设备端口显式值在“已映射字段”上不一致 → 阻断（未映射字段差异不阻断）。
+    // 旧链路显式值与平台端口配置（继承端口缺省时为平台默认值）不一致时定位并阻断。
     for (const entry of entries) for (const { portKey, linkKey, label } of mappedFields) {
       const linkValue = entry.override[portKey]
       const deviceValue = device[portKey]
       if (linkValue !== undefined && deviceValue !== undefined && linkValue !== deviceValue) {
-        throw new MissionGenerationError(`links[${entry.index}].${String(linkKey)}`, `链路 links[${entry.index}] 的${label}=${String(linkValue)} 与 deviceParameters.ports.${type}.${port}.${String(portKey)}=${String(deviceValue)} 冲突；请消除冲突再生成。`)
+        const source = inherited && !hasDeviceConfig ? '平台默认端口' : '平台端口配置'
+        const portDisplay = generationPortLabel(type, port)
+        throw new MissionGenerationError(
+          `links[${entry.index}].${String(linkKey)}`,
+          `${generationLinkLabel(config, entry.index)}的${label}=${String(linkValue)} 与${source}“${portDisplay}”的${label}=${String(deviceValue)} 冲突；请消除冲突再生成。`,
+          `第 ${entry.index + 1} 条链路 · ${label}`,
+        )
       }
     }
     // #2：逐字段收集所有绑定链路的显式值（含 0），单一/相同值采用；多个不同值已在上面阻断。
@@ -801,8 +857,8 @@ function resolveEffectivePorts(config: ScenarioDraft['config'], items: readonly 
     }
     overrides.set(key, combined)
     values.set(key, { ...base, ...combined })
-    sources.set(key, entries.length === 0 ? (hasDeviceMapped ? 'CONFIGURED' : 'TEMPLATE_DEFAULT') : 'CONFIGURED')
-    bindings.set(key, { indexes, chosen: entries.length === 0 ? null : entries[0]!.index, conflicting: false })
+    sources.set(key, hasDeviceConfig || entries.length > 0 ? 'CONFIGURED' : 'TEMPLATE_DEFAULT')
+    bindings.set(key, { indexes, chosen: inherited ? null : (entries[0]?.index ?? null), conflicting: false, inherited })
   }
   return { values, overrides, sources, bindings, conflicts }
 }
@@ -825,8 +881,8 @@ function portAdoption(
 ): PortAdoption[] {
   const explicit = config.deviceParameters?.ports
   const explicitGains = config.deviceParameters?.antennaGains
-  const emitted = new Map<string, { transmitter: Record<string, number>; receiver: Record<string, number> }>()
-  for (const platformEntry of emittedPortParams) for (const comm of platformEntry.comm_params) emitted.set(`${platformEntry.platform_type}.${comm.comm_name}`, { transmitter: comm.transmitter, receiver: comm.receiver })
+  const emitted = new Map<string, { modulation?: Modulation; transmitter: Record<string, number>; receiver: Record<string, number> }>()
+  for (const platformEntry of emittedPortParams) for (const comm of platformEntry.comm_params) emitted.set(`${platformEntry.platform_type}.${comm.comm_name}`, { ...(comm.modulation === undefined ? {} : { modulation: comm.modulation }), transmitter: comm.transmitter, receiver: comm.receiver })
   return TEMPLATE_PLATFORM_TYPES.flatMap(type => {
     const allowedPorts = allowedCommPorts?.get(type)
     const ports = [...new Set([...OUTPUT_PORTS[type], ...portParamsPortNames(type)])]
@@ -843,23 +899,26 @@ function portAdoption(
       // comm 段只列实际映射到 comm 输出的字段（未映射字段不标已采用）；光纤仅 transferRate。
       // 1112 固定模板：comm 段不随设备参数改写，设备参数只进入 link_calc port_params。
       const comm: PortAdoptionSegment | null = null
+      const configuredPortParams = binding?.inherited ? hasDeviceConfig : Object.keys(override).length > 0
       const portParams: PortAdoptionSegment | null = emittedValue
-        ? { adoptedValue: emittedValue as unknown as Record<string, unknown>, source: Object.keys(override).length > 0 || hasAntennaGain ? 'CONFIGURED' : 'TEMPLATE_DEFAULT', unit: 'GHz / MHz / W / bit/s 等（按 1112 port_params 键）', outputPath: `${TYPE_FILE_BY_PLATFORM[type]} 的 link_calc port_params.${port}` }
+        ? { adoptedValue: emittedValue as unknown as Record<string, unknown>, source: configuredPortParams || hasAntennaGain ? 'CONFIGURED' : 'TEMPLATE_DEFAULT', unit: 'GHz / MHz / W / bit/s / 调制 BPSK|QPSK（按 1112 port_params 键）', outputPath: `${TYPE_FILE_BY_PLATFORM[type]} 的 link_calc port_params.${port}` }
         : null
       const outputStatus: PortAdoption['outputStatus'] = !isAllowed
         ? 'NOT_EMITTED'
         : (referenced ? 'REFERENCED' : 'DEFINED_OUTPUT')
       const note = !isAllowed
         ? '未包含在本次生成端口清单（commPorts 或链路自动推导）中，comm 段与 port_params 均未输出该端口。'
-        : referenced
-          ? `由链路 links[${binding!.chosen}] 的显式收发参数采用；comm 与 port_params 各自记录实际输出值。`
-          : (hasDeviceConfig ? '未绑定链路，按设备端口配置输出定义。' : '未绑定链路，按模板缺省输出定义。')
+        : binding?.inherited
+          ? (hasDeviceConfig ? '链路继承该平台端口配置。' : '链路继承该平台端口默认参数。')
+          : referenced
+            ? `由链路 links[${binding!.chosen}] 的显式收发参数采用；comm 与 port_params 各自记录实际输出值。`
+            : (hasDeviceConfig ? '未绑定链路，按设备端口配置输出定义。' : '未绑定链路，按模板缺省输出定义。')
       return {
         fieldPath: `deviceParameters.ports.${type}.${port}`, platformType: type, port,
         configuredValue: hasDeviceConfig ? (explicit![type]![port] ?? null) : null,
         comm, portParams,
         outputStatus, engineExecution: 'UNVERIFIED',
-        linkOverride: referenced ? { linkIndex: binding!.chosen!, conflicting: false } : null,
+        linkOverride: referenced && binding?.chosen != null ? { linkIndex: binding.chosen, conflicting: false } : null,
         note,
       }
     })
@@ -946,6 +1005,7 @@ function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDra
   const enabled = config.jammingEnabled ?? false
   return config.jammers.map(stored => {
     const value = readJammerParameters(stored)
+    const bands = readJammerBands(value)
     const extension = uiExtensions.jammers.find(item => item.jammerId === value.id)
     const airborne = config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'
     // 未配置的链路计算字段取 1112 jammer_param 基准（地面 G_T -12/eirp 50/增益 30；机载 G_T -10/eirp 40/增益 25）。
@@ -965,10 +1025,17 @@ function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDra
       jammerId: value.id,
       platformId: value.platformId,
       weaponId: airborne ? 'alq99_jammer' : 'prophet_jammer',
-      type: value.type,
+      type: bands[0]!.mode,
       configuredEnabled: enabled && (extension?.enabled ?? false),
-      frequencyMHz: value.frequency,
-      bandwidthMHz: value.bandwidth,
+      frequencyMHz: bands[0]!.frequency,
+      bandwidthMHz: bands[0]!.bandwidth,
+      weaponBands: bands.map(band => ({
+        frequencyMHz: band.frequency,
+        bandwidthMHz: band.bandwidth,
+        mode: band.mode,
+        spotBandwidthMHz: band.spotBandwidthMHz,
+        sweepDutyCycle: band.sweepDutyCycle,
+      })),
       powerW: value.defaultPower,
       detectionRangeM: value.detectionRange,
       detectionMinimumRangeM: value.detectionMinimumRange ?? 1000,
@@ -990,7 +1057,7 @@ function routeInputs(
 ): RouteInputs {
   const settings = readLinkSettings(config)
   const enabledLinks = config.links.filter(link => all.some(item => item.linkId === link.id))
-  const hot = readHotLinks(settings.hotLinks, enabledLinks, settings.priority)
+  const hot = readHotLinks(settings.hotLinks)
   // 显式热链引用不存在/停用链路、方向不一致或跳点不相接时在生成前报错，不静默丢弃该链。
   for (const [direction, chains] of [['FORWARD', hot.forward], ['REVERSE', hot.reverse]] as const) {
     for (const chain of chains) {
@@ -1009,14 +1076,22 @@ function calculator(
 ): string {
   const settings = readLinkSettings(config); const calc = readLinkCalcSettings(settings.linkCalc); const environment = readNaturalEnvironment(config.scenario.environment)
   const natural = { rain: { enabled: environment.rainEnabled, rain_rate_mm_hr: environment.rainRateMmPerHour, rain_altitude_limit_m: environment.rainAltitudeLimitM, rain_attenuation_db: environment.rainAttenuationDb }, cloud: { enabled: environment.cloudEnabled, cloud_altitude_min_m: environment.cloudAltitudeMinM, cloud_altitude_max_m: environment.cloudAltitudeMaxM, cloud_water_density_g_m3: environment.cloudWaterDensityGM3 }, atmosphere: { enabled: true, model: environment.atmosphereModel, simplified_attenuation_db_per_km: environment.simplifiedAttenuationDbPerKm }, misc_loss_db: { polarization_mismatch_db: environment.polarizationMismatchDb, pointing_error_db: environment.pointingErrorDb }, sea_state: { enabled: config.scenario.environment.multipathEnabled, sea_state_level: environment.seaState, low_altitude_threshold_m: environment.seaLowAltitudeThresholdM, path_over_sea_threshold_km: environment.seaPathOverSeaThresholdKm, mode: environment.seaModel, sea_polygon: (environment.seaPolygon ?? []).map(point => ({ lat: point.latitude, lon: point.longitude })), polarization: environment.seaPolarization, sea_water_temp_c: environment.seaWaterTempC, sea_surface_roughness_m: environment.seaSurfaceRoughnessM } }
+  const jammerParamMode = (mode: string) => mode === 'BARRAGE' ? 'broadband' : mode === 'SPOT' ? 'spot' : 'sweep'
   const jams = { jammers: jammers.map(item => ({
     platform_name: item.platformId, weapon_name: item.weaponId, jammer_type: item.weaponId === 'alq99_jammer' ? 'airborne' : 'ground',
-    G_T_dBK: 0, enabled: item.configuredEnabled, mode: item.type === 'BARRAGE' ? 'broadband' : item.type === 'SPOT' ? 'spot' : 'sweep',
+    G_T_dBK: 0, enabled: item.configuredEnabled, mode: jammerParamMode(item.type),
     frequency_ghz: item.radarFrequency / 1000, bandwidth_mhz: item.radarBandwidth, power_w: item.radarPower, noise_figure: item.noiseFigureDb,
-    weapon_frequency_ghz: item.frequencyMHz / 1000, weapon_bandwidth_mhz: item.bandwidthMHz, weapon_power_w: item.powerW,
-    weapon_eirp_dBW: 0, weapon_antenna_gain_dbi: item.antennaGainDbi, tx_loss_db: item.txLossDb,
+    weapon_power_w: item.powerW, weapon_eirp_dBW: item.eirpDbw, weapon_antenna_gain_dbi: item.antennaGainDbi,
+    weapon_band_params: item.weaponBands.map(band => ({
+      frequency_ghz: band.frequencyMHz / 1000,
+      bandwidth_mhz: band.bandwidthMHz,
+      mode: jammerParamMode(band.mode),
+      spot_bandwidth_mhz: band.mode === 'SPOT' ? band.spotBandwidthMHz : 0,
+      sweep_duty_cycle: band.mode === 'SWEEP' ? band.sweepDutyCycle : 0,
+    })),
+    tx_loss_db: item.txLossDb,
     detect_radius_nm: item.detectionRangeM / 1852, trigger_radius_nm: item.jammingRangeM / 1852, release_radius_nm: item.releaseRangeM / 1852,
-    spot_bandwidth_mhz: item.type === 'SPOT' ? item.bandwidthMHz : 20, sweep_duty_cycle: item.sweepDutyCycle,
+    spot_bandwidth_mhz: item.type === 'SPOT' ? (item.weaponBands[0]?.spotBandwidthMHz ?? item.bandwidthMHz) : 20, sweep_duty_cycle: item.sweepDutyCycle,
   })) }
   return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR', `    update_interval ${n(calc.updateIntervalS)} sec`, `    emergency_threshold ${sci(calc.emergencyThreshold)}`, `    warning_threshold ${sci(calc.warningThreshold)}`, `    value_threshold_ber ${n(calc.valueThresholdBer)}`, `    channel_encoding_scheme ${n(calc.channelEncodingScheme)}`, `    traffic_type ${JSON.stringify(routes.traffic)}`, `    relay_uav_names ${JSON.stringify(config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id))}`, `    hot_link_ret ${JSON.stringify(routes.reverse)}`, `    hot_link_fw ${JSON.stringify(routes.forward)}`, `    port_params ${JSON.stringify(emittedPortParams)}`, `    natural_environment ${JSON.stringify(natural)}`, `    jammer_param ${JSON.stringify(jams)}`, '  end_processor'].join('\n')
 }
@@ -1267,6 +1342,16 @@ function isMissionUavPlatform(platform: Platform): boolean {
   return platform.type === 'FORWARD_RELAY_NODE' || platform.type === 'AIRBORNE_MISSION_CLUSTER'
 }
 
+/** 场景中按 1112 模板 5.x 干扰源段生成的平台：地面干扰站与机载干扰平台。 */
+function isJammerPlatform(platform: Platform): boolean {
+  return platform.type === 'GROUND_JAMMER_DETECTION_STATION' || platform.type === 'AIRBORNE_JAMMER_PLATFORM'
+}
+
+/** 在 comm_platform_INS.txt 中由场景配置动态生成（而非保持模板固定）的平台类型。 */
+function isConfiguredInsPlatform(platform: Platform): boolean {
+  return isMissionUavPlatform(platform) || isJammerPlatform(platform)
+}
+
 /** mission_uav 实例序号，用于按模板编号顺序输出。 */
 function missionUavIndex(id: string): number {
   const match = /^mission_uav_(\d+)$/u.exec(id)
@@ -1303,6 +1388,67 @@ function missionUavSection(config: ScenarioDraft['config']): string[] {
       lines.push('  execute at_time ' + n(uav.returnPlan.timeS) + ' sec absolute', `    PLATFORM.FollowRoute("return_${uav.id}");`, '  end_execute')
     }
     lines.push('end_platform', '')
+  }
+  if (lines.at(-1) === '') lines.pop()
+  return lines
+}
+
+/**
+ * 按场景配置生成 comm_platform_INS.txt 的 5.x 干扰源配置段。
+ * @remarks 数量、阵营、初始位置、空中盘旋航线及地面站侦测范围均来自场景；实例名沿用 engineNames。
+ */
+function jammerSection(config: ScenarioDraft['config'], jammers: readonly Jammer[]): string[] {
+  const lines = ['// ============================================================', '// 5.x 干扰源配置（按场景配置生成）', '// ============================================================', '']
+  const grounds = config.platforms.filter(item => item.type === 'GROUND_JAMMER_DETECTION_STATION')
+  const airbornes = config.platforms.filter(item => item.type === 'AIRBORNE_JAMMER_PLATFORM')
+  for (const station of grounds) {
+    const jammer = jammers.find(item => item.platformId === station.id)
+    const detectionRangeNm = jammer === undefined ? 30 : jammer.detectionRangeM / 1852
+    const posLine = station.initialPosition.altitude === 0
+      ? `    position ${position(station.initialPosition.latitude, station.initialPosition.longitude)}`
+      : `    position ${position(station.initialPosition.latitude, station.initialPosition.longitude)} altitude ${n(station.initialPosition.altitude)} m`
+    lines.push(
+      `platform ${station.id} GROUND_JAMMER_STATION`,
+      `  side ${station.faction ? station.faction.toLowerCase() : 'red'}`,
+      '  icon triangle',
+      '  creation_time 0 sec',
+      '',
+      '  route',
+      posLine,
+      '  end_route',
+      '',
+      '  script_variables',
+      `    double detection_range_nm = ${n(detectionRangeNm)};`,
+      '  end_script_variables',
+      '',
+      '  execute at_time 1 sec absolute',
+      '    WsfSensor sensor = PLATFORM.Sensor("detection_radar");',
+      '    if (sensor.IsValid())',
+      '    {',
+      '      sensor.SetFOV_Range(1000.0, detection_range_nm * 1852.0);',
+      '    }',
+      '',
+      `    writeln("SCENARIO: [INIT] Ground jammer station ${station.id} active. Detection range=${n(detectionRangeNm)}nm");`,
+      '  end_execute',
+      'end_platform',
+      '',
+    )
+  }
+  for (const airborne of airbornes) {
+    lines.push(
+      `platform ${airborne.id} AIRBORNE_JAMMER_PLATFORM`,
+      `  side ${airborne.faction ? airborne.faction.toLowerCase() : 'red'}`,
+      '  icon triangle',
+      '  creation_time 0 sec',
+      '',
+      ...route(airborne, true),
+      '',
+      '  execute at_time 1 sec absolute',
+      `    writeln("SCENARIO: [INIT] Airborne jammer ${airborne.id} (AN/ALQ-99) active");`,
+      '  end_execute',
+      'end_platform',
+      '',
+    )
   }
   if (lines.at(-1) === '') lines.pop()
   return lines
@@ -1378,8 +1524,8 @@ const TEMPLATE_INSTANCE_ORDER = [
 ] as const
 
 /**
- * 场景平台必须映射到 1112 固定 INS 中已存在的实例；mission_uav 段由场景配置动态生成，
- * 允许超过模板的 mission_uav_01..03。超出非无人机实例、重复占用或名称无法映射时生成前报错。
+ * 场景平台必须映射到 1112 固定 INS 中已存在的实例；mission_uav 与 5.x 干扰源段由场景配置动态生成，
+ * 允许按场景增减数量与调整位置/航线。超出固定平台实例、重复占用或名称无法映射时生成前报错。
  */
 function validateTemplateInstances(config: ScenarioDraft['config']): { names: Map<string, string>; template: Map<string, string>; allowed: Set<string>; warnings: string[] } {
   const template = templateInstanceNames()
@@ -1387,8 +1533,8 @@ function validateTemplateInstances(config: ScenarioDraft['config']): { names: Ma
     if (!template.has(name)) throw new MissionGenerationError('template.comm_platform_INS.txt', `模板缺少固定实例 ${name}，无法按 1112 基线生成。`)
   }
   const names = engineNames(config.platforms)
-  const dynamicUavNames = new Set(config.platforms.filter(isMissionUavPlatform).map(platform => names.get(platform.id)!))
-  const allowed = new Set<string>([...template.keys(), ...dynamicUavNames])
+  const dynamicInsNames = new Set(config.platforms.filter(isConfiguredInsPlatform).map(platform => names.get(platform.id)!))
+  const allowed = new Set<string>([...template.keys(), ...dynamicInsNames])
   const occupied = new Map<string, string>()
   const typeByName = new Map(config.platforms.map(platform => [names.get(platform.id)!, platform.type]))
   const warnings: string[] = []
@@ -1562,32 +1708,9 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     demand.destinationPlatformIds = demand.destinationPlatformIds.map(id => names.get(id)!)
   }
   for (const item of [...config.jammers, ...config.sensors]) item.platformId = names.get(item.platformId)!
-  for (const rule of config.linkSettings?.switchRules ?? []) {
-    rule.sourcePlatformId = names.get(rule.sourcePlatformId)!
-    rule.targetPlatformId = names.get(rule.targetPlatformId)!
-  }
-  const laserOnlyPaths = laserOnlyBusinessPaths(config)
-  const laserOnlyWarnings = laserOnlyPaths.map(item => {
-    const demand = config.informationDemand[item.demandIndex]!
-    const direction = demand.direction ?? INFORMATION_TYPE_DIRECTIONS[demand.informationType as keyof typeof INFORMATION_TYPE_DIRECTIONS]
-    const label = direction === 'FORWARD' ? '前向' : direction === 'REVERSE' ? '返向' : ''
-    const message = item.targetIndex === 'ALL'
-      ? '该业务已绑定激光链路；激光链路不建立可执行通信路由映射，业务不会生成可执行通信路径。'
-      : '该业务到 ' + demand.destinationPlatformIds[item.targetIndex] + ' 的' + label + '路径仅依赖激光链路；激光链路不建立可执行通信路由映射。'
-    return { fieldPath: item.fieldPath, message }
-  })
+  // 激光链路已纳入可执行端口映射后，不再按“仅激光业务”剔除路由和业务目的地。
   const laserOnlyTargets = new Map<number, Set<number> | 'ALL'>()
-  laserOnlyPaths.forEach(({ demandIndex, targetIndex }) => {
-    if (targetIndex === 'ALL') {
-      laserOnlyTargets.set(demandIndex, 'ALL')
-      return
-    }
-    const existing = laserOnlyTargets.get(demandIndex)
-    if (existing === 'ALL') return
-    const targetIndexes = existing ?? new Set<number>()
-    targetIndexes.add(targetIndex)
-    laserOnlyTargets.set(demandIndex, targetIndexes)
-  })
+  const laserOnlyWarnings: Array<{ fieldPath: string; message: string }> = []
   const start = startTime(config.scenario.startTime)
   const directory = outputDirectory(runtime?.outputDirectory ?? config.output.directory)
   const templateInstances = validateTemplateInstances(config)
@@ -1644,6 +1767,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   try {
     templateFiles = renderTemplate1112({
       missionUavLines: missionUavSection(config),
+      jammerLines: jammerSection(config, jammers),
       rearSituationDestinations,
       rearTargetDestinations,
       relayNames: relays,
@@ -1674,8 +1798,6 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   }
 
   const scriptFiles = [SCENARIO_PREVIEW_FILE, ENTRY_FILE, DEFINITION_FILE, ...TYPE_FILES, INSTANCE_FILE, 'observers.txt', AD_HOC_COMM_FILE]
-  const templateStartDate = /^start_date (.+)$/mu.exec(templateFiles[ENTRY_FILE])?.[1] ?? start.date
-  const templateStartTime = /^start_time (.+)$/mu.exec(templateFiles[ENTRY_FILE])?.[1] ?? start.time
   const templateEventAer = /^\s+file (.+\.aer)$/mu.exec(templateFiles[ENTRY_FILE])?.[1] ?? null
   const templateEventCsv = /^\s+file (.+\.csv)$/mu.exec(templateFiles[ENTRY_FILE])?.[1] ?? null
   const mappedLinkIds = new Set(mapped.items.map(item => item.linkId))
@@ -1694,6 +1816,8 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   const activeJammers = draft.uiExtensions.jammers.map((extension, index) => ({ extension, index, jammerIndex: original.jammers.findIndex(jammer => jammer.id === extension.jammerId) }))
     .filter(({ extension, jammerIndex }) => original.jammingEnabled === true && extension.enabled && jammerIndex >= 0)
   const emitted = [
+    { fieldPath: 'scenario.startTime', detail: '场景开始时间已写入交付脚本与本地运行包。' },
+    { fieldPath: 'scenario.duration', detail: '场景总时长已写入交付脚本与本地运行包。' },
     ...(originalSettings?.linkCalc === undefined ? [] : [{ fieldPath: 'linkSettings.linkCalc', detail: '已写入 comm_platform_REAR.txt 的 link_calc 更新周期、BER 门限和编码方案；不再输出模板没有的 jamming_range。' }]),
     ...(originalSettings?.messageIntervalS === undefined ? [] : [{ fieldPath: 'linkSettings.messageIntervalS', detail: '已用于模板固定业务处理器的发送周期（模板为 5 秒，生成器不新增变量）。' }]),
     ...(originalSettings?.hotLinks === undefined ? [] : [{ fieldPath: 'linkSettings.hotLinks', detail: '已写入 link_calc 的 hot_link_fw / hot_link_ret。' }]),
@@ -1703,30 +1827,35 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       if (demand.enabled === false) return []
       if (laserOnlyTargets.get(index) === 'ALL') return []
       if (demand.linkId !== undefined && !mappedLinkIds.has(demand.linkId)) return []
-      return [{ fieldPath: `informationDemand[${index}]`, detail: '已写入 link_calc traffic_type，并汇总到 REAR / MISSION_UAV 的固定目的地数组；激光-only 目标不计入。' }]
+      return [{ fieldPath: `informationDemand[${index}]`, detail: '已写入 link_calc traffic_type，并汇总到 REAR / MISSION_UAV 的固定目的地数组。' }]
     }),
     ...[...portPaths].map(fieldPath => ({ fieldPath, detail: '已写入 link_calc port_params；模板 comm 定义保持固定，不随设备参数改写。' })),
-    ...original.links.flatMap((link, index) => mappedLinkIds.has(link.id) ? [{ fieldPath: `links[${index}]`, detail: '已写入 link_calc 的端口映射、热链和业务路径；模板 comm 定义保持固定。' }] : []),
-    ...activeJammers.map(({ jammerIndex }) => ({ fieldPath: `jammers[${jammerIndex}]`, detail: '已写入 link_calc 的 jammer_param；模板 JAMMER 平台定义保持固定。' })),
+    ...original.links.flatMap((link, index) => mappedLinkIds.has(link.id) ? [{ fieldPath: `links[${index}]`, detail: '已写入 link_calc 的端口映射、热链和业务路径；模板 comm 定义保持固定；射频链路的调制方式写入对应端口的 port_params.modulation（BPSK/QPSK，未绑定端口按 BPSK 缺省）。' }] : []),
+    ...activeJammers.map(({ jammerIndex }) => ({ fieldPath: `jammers[${jammerIndex}]`, detail: '已写入 link_calc 的 jammer_param（地面站探测半径同时写入 comm_platform_INS.txt）；模板 JAMMER 平台定义保持固定。' })),
     ...inputConfig.platforms.map((platform, index) => ({
       fieldPath: `platforms[${index}].id`,
       detail: isMissionUavPlatform(platform)
         ? `已映射到模板实例 ${inputNames.get(platform.id)}；mission_uav 实例段由场景配置生成。`
-        : `已映射到固定模板实例 ${inputNames.get(platform.id)}；实例、位置和航线由 comm_platform_INS.txt 固定。`,
+        : isJammerPlatform(platform)
+          ? `已映射到模板实例 ${inputNames.get(platform.id)}；5.x 干扰源实例段由场景配置生成。`
+          : `已映射到固定模板实例 ${inputNames.get(platform.id)}；实例、位置和航线由 comm_platform_INS.txt 固定。`,
     })),
-    ...original.platforms.flatMap((platform, index) => isMissionUavPlatform(platform) ? [
-      { fieldPath: `platforms[${index}].initialPosition`, detail: '已写入 comm_platform_INS.txt 的 mission_uav 实例。' },
-      ...(platform.waypoints.length > 0 ? [{ fieldPath: `platforms[${index}].waypoints`, detail: '已写入 comm_platform_INS.txt 的 mission_uav 航线。' }] : []),
-      ...((platform.loiterWaypoints?.length ?? 0) > 0 ? [{ fieldPath: `platforms[${index}].loiterWaypoints`, detail: '已写入 comm_platform_INS.txt 的 mission_uav 盘旋航点。' }] : []),
-      ...(platform.returnPlan !== undefined ? [{ fieldPath: `platforms[${index}].returnPlan`, detail: '已写入 comm_platform_INS.txt 的 mission_uav 返航航线与执行时刻。' }] : []),
-    ] : []),
+    ...original.platforms.flatMap((platform, index) => {
+      if (!isConfiguredInsPlatform(platform)) return []
+      const section = isMissionUavPlatform(platform) ? 'mission_uav' : '干扰源'
+      return [
+        { fieldPath: `platforms[${index}].initialPosition`, detail: `已写入 comm_platform_INS.txt 的 ${section} 实例。` },
+        ...(platform.waypoints.length > 0 ? [{ fieldPath: `platforms[${index}].waypoints`, detail: `已写入 comm_platform_INS.txt 的 ${section} 航线。` }] : []),
+        ...((platform.loiterWaypoints?.length ?? 0) > 0 ? [{ fieldPath: `platforms[${index}].loiterWaypoints`, detail: `已写入 comm_platform_INS.txt 的 ${section} 盘旋航点。` }] : []),
+        ...(platform.returnPlan !== undefined ? [{ fieldPath: `platforms[${index}].returnPlan`, detail: `已写入 comm_platform_INS.txt 的 ${section} 返航航线与执行时刻。` }] : []),
+      ]
+    }),
   ]
   const retainedSnapshot = [
-    { fieldPath: 'scenario.startTime', detail: 'start_date / start_time 按 scenario.startTime 写入 comm_SimSetup.txt（交付 TXT 与本地运行包均生效）。' },
-    { fieldPath: 'scenario.duration', detail: '仿真总时长写入 comm_SimSetup.txt 的 end_time（交付 TXT 与本地运行包均按场景时长生成）。' },
+    { fieldPath: 'scenario.timeStep', detail: '配置快照保留时间步长，生成清单未声明独立的引擎时间步长。' },
     ...original.platforms.flatMap((platform, index) => {
       const items: Array<{ fieldPath: string; detail: string }> = []
-      if (!isMissionUavPlatform(platform)) {
+      if (!isConfiguredInsPlatform(platform)) {
         items.push({ fieldPath: `platforms[${index}].initialPosition`, detail: 'comm_platform_INS.txt 固定模板实例，不写入配置位置。' })
         if (platform.waypoints.length > 0) items.push({ fieldPath: `platforms[${index}].waypoints`, detail: 'comm_platform_INS.txt 固定模板航线，不写入配置航点/速度。' })
         if ((platform.loiterWaypoints?.length ?? 0) > 0) items.push({ fieldPath: `platforms[${index}].loiterWaypoints`, detail: 'comm_platform_INS.txt 固定模板航线，不写入配置盘旋点。' })
@@ -1743,15 +1872,11 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       { fieldPath: `uiExtensions.jammers[${index}].direction`, detail: '干扰方位角未写入模板固定 JAMMER 段，仅保留快照。' },
       ...(extension.elevation === undefined ? [] : [{ fieldPath: `uiExtensions.jammers[${index}].elevation`, detail: '干扰俯仰角未写入模板固定 JAMMER 段，仅保留快照。' }]),
     ]),
-    ...activeLinks.flatMap(({ link, index }) => link.type === 'LASER' ? [{ fieldPath: `links[${index}]`, detail: '激光通信端口在模板中仅保留 lazer_link 基准；激光链路配置仅保留快照。' }] : []),
     ...original.sensors.flatMap((sensor, index) => draft.uiExtensions.sensors.some(extension => extension.sensorId === sensor.id && extension.enabled) ? [{ fieldPath: `sensors[${index}]`, detail: '已启用 ESM 传感器未写入模板，仅保留快照。' }] : []),
-    ...(originalSettings?.switchRules?.length ? [{ fieldPath: 'linkSettings.switchRules', detail: '链路切换规则未写入模板固定执行逻辑，仅保留快照。' }] : []),
   ]
   const dependencyUnconfirmed = [
     ...(!localStub ? [{ fieldPath: 'linkSettings.linkCalc', detail: 'WSF_LINK_CALC_PROCESSOR 由外部 AFSIM/LinkCalc 提供；本包已写入参数，但提供方定义待确认。' }] : []),
-    ...(runtime === undefined ? activeJammers.flatMap(({ jammerIndex }) => original.platforms.find(platform => platform.id === original.jammers[jammerIndex]!.platformId)?.type === 'GROUND_JAMMER_DETECTION_STATION'
-      ? [{ fieldPath: `jammers[${jammerIndex}]`, detail: '已启用地面干扰机对应 prophet_jammer 在模板中被注释；需提供方模板/插件确认。' }]
-      : []) : []),
+    // 地面站 prophet_jammer 武器块为提供方有意注释，插件按 jammer_param 计算（2026-11-23 已验证），不再列为待确认依赖。
     ...mapped.warnings.map(message => ({ fieldPath: 'links', detail: `未写入端口映射：${message}` })),
   ]
   const executionStatus = {
@@ -1762,14 +1887,14 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     portConflicts: resolved.conflicts,
     configuredNotEmitted: configuredNotEmitted(config, resolved, emittedPortParams, allowedCommPorts),
     templateRegions: [
-      'comm_platform_INS.txt：mission_uav 实例段（数量/阵营/初始位置/航点/盘旋/返航/角色；其余平台实例保持模板原文）',
+      'comm_platform_INS.txt：mission_uav 实例段（数量/阵营/初始位置/航点/盘旋/返航/角色）与 5.x 干扰源实例段（数量/阵营/初始位置/航线/盘旋/侦测范围；其余平台实例保持模板原文）',
       'comm_platform_REAR.txt：fw_sit_dst / fw_tgt_dst 数组元素',
       'comm_platform_REAR.txt：link_calc 处理器参数块',
-      'comm_platform_MISSION_UAV.txt：relayNames / rt_video_dsts / rt_status_dsts 数组元素',
+      'comm_platform_MISSION_UAV.txt：relayNames / rt_video_dsts / rt_status_dsts 数组元素及 sat_link 接收频率单位',
       'comm_SimSetup.txt：realtime / clock_rate',
       '激光端口 laser_link → lazer_link 的必要声明/引用统一（1112 源模板已统一，命中 0 处）',
     ],
-    fixedContent: '除上述区域外，10 个执行 TXT 与 1112 模板逐字节一致；非 mission_uav 平台实例、注释、顺序和固定路径均不随场景改写。',
+    fixedContent: '除上述区域外，10 个执行 TXT 与 1112 模板逐字节一致；后方指挥、集群指挥车与卫星平台实例、注释、顺序和固定路径均不随场景改写。',
   }
   const manifest = {
     scope: 'TEMPLATE_ALIGNED_PLATFORM_PORTS',
@@ -1787,9 +1912,9 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       patchedFiles: [INSTANCE_FILE],
       allowedRegions: executionStatus.templateRegions,
       knownIssues: [
-        { id: 'MISSION_UAV_SAT_RX_11_8_MHZ', file: 'comm_platform_MISSION_UAV.txt', detail: 'sat_link 接收频率写为 11.8 MHz（疑似应为 GHz）；模板原文保留，未擅自修正。' },
+        { id: 'MISSION_UAV_SAT_RX_11_8_MHZ', file: 'comm_platform_MISSION_UAV.txt', detail: '模板 sat_link 接收频率为 11.8 MHz，生成时修正为 11.8 GHz，与卫星下行频率一致。' },
         { id: 'REAR_ARRAY_TRAILING_BACKSLASH', file: 'comm_platform_REAR.txt', detail: '模板 fw_sit_dst / fw_tgt_dst 行尾带反斜杠；生成时已去除行尾反斜杠，避免 AFSIM 语法错误。' },
-        { id: 'GROUND_JAMMER_WEAPON_COMMENTED', file: 'comm_platform_JAMMER.txt', detail: '地面站 prophet_jammer 武器块在模板中被注释；交付 TXT 不补造定义，需提供方确认。' },
+        { id: 'GROUND_JAMMER_WEAPON_COMMENTED', file: 'comm_platform_JAMMER.txt', detail: '地面站 prophet_jammer 武器块由插件提供方有意注释；交付 TXT 不补造定义，地面站侦测与干扰由 LinkCalc 插件按 jammer_param 计算（2026-11-23 运行已验证）。' },
         { id: 'AIRBORNE_JAMMER_WEAPON_NAME', file: 'comm_platform_REAR.txt', detail: '模板 jammer_param 的机载项写 prophet_jammer；生成器按实际机载武器写 alq99_jammer，差异已记录待对接方确认。' },
         { id: 'FIXED_MESSAGE_SIZE_VS_LINK_CALC', file: 'comm_platform_REAR.txt / comm_platform_MISSION_UAV.txt', detail: '模板固定 SetSizeInBits(8)，link_calc traffic_type 的 data_volume_bits 来自业务配置；两者语义不一致，未修改固定执行逻辑。' },
         { id: 'TEMPLATE_ABSOLUTE_OUTPUT_PATH', file: 'comm_SimSetup.txt', detail: '交付模板保留 D:\\... 绝对输出路径；本地运行包在运行副本中适配为包内 output 目录，交付 TXT 不改。' },
@@ -1814,7 +1939,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     sensors: [],
     motion: config.platforms.filter(platform => platform.waypoints.length > 0).map(platform => ({
       platformId: platform.id,
-      templateFixed: !isMissionUavPlatform(platform),
+      templateFixed: !isConfiguredInsPlatform(platform),
       waypoints: platform.waypoints.map(waypoint => ({
         longitude: waypoint.longitude, latitude: waypoint.latitude, altitude: waypoint.altitude, speed: waypoint.speed,
         arrivalTimeS: waypoint.arrivalTime, headingDeg: waypoint.heading ?? null, accelerationMps2: waypoint.acceleration ?? null,
@@ -1829,7 +1954,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     linkCalc: {
       emitted: true,
       hostPlatformId: host ?? null,
-      excludedOpticalLinkIds: config.links.filter(item => item.type === 'LASER').map(item => item.id),
+      excludedOpticalLinkIds: [],
       jammingRangeEmitted: false,
       note: 'port_params 按模板平台类型共享；jamming_range 不在 1112 模板中，已从交付输出移除。',
     },
@@ -1847,25 +1972,23 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     },
     scenarioStartTime: {
       value: config.scenario.startTime,
-      scriptDate: templateStartDate,
-      scriptTime: templateStartTime,
+      scriptDate: start.date,
+      scriptTime: start.time,
       configuredScriptDate: start.date,
       configuredScriptTime: start.time,
       convention: 'AS_STORED_UTC',
-      engineEmitted: runtime !== undefined,
-      detail: runtime === undefined ? '交付 TXT 使用模板固定 start_date / start_time；本地运行包另行适配。' : '本地运行包已按场景时间适配。',
+      engineEmitted: true,
+      detail: '交付脚本与本地运行包都使用场景开始时间。',
     },
     retainedButNotEmitted: [
-      '非 mission_uav 平台实例/位置/航线/盘旋/返航（comm_platform_INS.txt 固定）',
+      '后方指挥/集群指挥车/通信卫星实例与位置（comm_platform_INS.txt 固定）',
       'mission_uav 航点的航向/加速度/到达时间（模板航线执行不读取）',
-      'start_date/start_time（交付 TXT 固定；本地运行包适配）；end_time 按 scenario.duration 生成',
       '其余平台航点的航向/加速度/到达时间',
       '干扰方位角/俯仰角',
-      '激光通信端口配置（模板只保留 lazer_link 基准）',
       '侦测传感器/ESM',
       '业务 QoS',
-      '链路切换规则/优先级/质量门限',
-      '调制/BER/编码/增益修正',
+      '链路优先级/质量门限',
+      'BER 阈值/编码/增益修正',
       '海峡宽度',
       '时间步长',
       ...laserOnlyWarnings.map(item => `${item.fieldPath}：${item.message}`),
@@ -1878,14 +2001,14 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     'mapping.json': JSON.stringify(manifest, null, 2) + '\n',
     'input.json': JSON.stringify(draft, null, 2) + '\n',
     'README.txt': [
-      '1112 模板脚本包（mission_uav 实例段按场景配置生成）。',
-      '10 个执行 TXT 以 1112 模板为基准，只允许变化：INS 的 mission_uav 实例段（数量/阵营/位置/航线/盘旋/返航/角色）、REAR 的 fw_sit_dst/fw_tgt_dst、REAR 的 link_calc 参数块、MISSION_UAV 的 relayNames/rt_video_dsts/rt_status_dsts、comm_SimSetup 的 realtime/clock_rate，以及 lazer_link 命名统一（当前源模板已统一，命中 0 处）。',
-      '非 mission_uav 平台实例、固定参数、注释、顺序和模板固定路径均保持原文；mission_uav 的位置/航线写入 INS，其余场景位置/航线保留在 mapping.json / input.json。',
+      '1112 模板脚本包（mission_uav 与 5.x 干扰源实例段按场景配置生成）。',
+      '10 个执行 TXT 以 1112 模板为基准，只允许变化：INS 的 mission_uav 实例段（数量/阵营/位置/航线/盘旋/返航/角色）、INS 的 5.x 干扰源实例段（数量/阵营/位置/航线/盘旋/侦测范围）、REAR 的 fw_sit_dst/fw_tgt_dst、REAR 的 link_calc 参数块、MISSION_UAV 的 relayNames/rt_video_dsts/rt_status_dsts 与 sat_link 接收频率单位、comm_SimSetup 的 realtime/clock_rate，以及 lazer_link 命名统一（当前源模板已统一，命中 0 处）。',
+      '后方指挥/集群指挥车/通信卫星实例、固定参数、注释、顺序和模板固定路径均保持原文；mission_uav 与干扰源平台的位置/航线/盘旋写入 INS，其余场景位置/航线保留在 mapping.json / input.json。',
       '交付执行 TXT 已去除模板注释（// 与 # 整行/行尾注释）；全速档不输出 realtime 行（等价于模板中的 //realtime）。',
-      '交付 TXT 的 port_params.eirp_dBW 与 jammer_param.weapon_eirp_dBW 统一写 0；配置快照保留原值。',
+      '交付 TXT 的 port_params.eirp_dBW / G_T_dBK 采用端口配置值（缺省为模板值）；jammer_param.weapon_eirp_dBW / weapon_antenna_gain_dbi 采用干扰设备配置值（缺省为模板值），配置快照保留原值。',
       `倍速：${speed.option}（realtime ${speed.realtimeEnabled ? '启用' : '不启用'}，clock_rate ${speed.clockRate}）。`,
       'jamming_range 不在 1112 模板中，交付 TXT 不输出。',
-      '模板疑似问题：MISSION_UAV sat_link 接收 11.8 MHz；REAR 数组行尾反斜杠（生成时已去除）；地面站 prophet_jammer 武器块被注释；模板 jammer_param 机载项写 prophet_jammer；固定 SetSizeInBits(8) 与 traffic_type 数据量语义不一致；SimSetup 绝对输出路径。',
+      '模板差异说明：MISSION_UAV sat_link 接收频率单位在生成时修正为 GHz；REAR 数组行尾反斜杠已去除；地面站 prophet_jammer 武器块为提供方有意注释（地面站干扰由插件按 jammer_param 计算）；模板 jammer_param 机载项写 prophet_jammer；固定 SetSizeInBits(8) 与 traffic_type 数据量语义不一致；SimSetup 绝对输出路径。',
       ...templateInstances.warnings,
       ...templateLimitations,
       ...mapped.warnings,

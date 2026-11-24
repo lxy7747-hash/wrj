@@ -2,10 +2,17 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { frameJammerExecutions } from '../../features/situation/frame-evidence'
 import { BARRAGE_BANDWIDTH_OPTIONS_MHZ, dbmToWatts, isControlledPowerDbm, isControlledPowerWatts, JAMMER_POWER_DBM_TIERS, SPOT_BANDWIDTH_MHZ, wattsToDbm } from '../../features/scenarios/jammer-settings'
-import type { CapabilityState, JammingCommand } from '../../contracts/domain-models'
+import type { CapabilityState, Jammer, JammingCommand, ScenarioDraft } from '../../contracts/domain-models'
+import { JAMMER_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useAuthStore } from '../../stores/auth'
 import { useScenarioStore } from '../../stores/scenario'
 import { useTelemetryStore } from '../../stores/telemetry'
+
+const props = defineProps<{
+  embedded?: boolean
+  scenario?: ScenarioDraft | null
+  taskId?: string
+}>()
 
 const authStore = useAuthStore()
 const scenarioStore = useScenarioStore()
@@ -79,15 +86,22 @@ const legacyPowerWarning = computed(() => (
     : ''
 ))
 
-const jammers = computed(() => scenarioStore.draft?.config.jammers ?? [])
+const activeScenario = computed(() => (props.scenario !== undefined ? props.scenario : scenarioStore.draft))
+const jammers = computed(() => activeScenario.value?.config.jammers ?? [])
 const selectedJammer = computed(() => jammers.value.find((item) => item.id === selectedJammerId.value) ?? null)
 const selectedExtension = computed(() => (
-  scenarioStore.draft?.uiExtensions.jammers.find((item) => item.jammerId === selectedJammerId.value) ?? null
+  activeScenario.value?.uiExtensions.jammers.find((item) => item.jammerId === selectedJammerId.value) ?? null
 ))
 const hostPlatform = computed(() => (
-  scenarioStore.draft?.config.platforms.find((item) => item.id === selectedJammer.value?.platformId) ?? null
+  activeScenario.value?.config.platforms.find((item) => item.id === selectedJammer.value?.platformId) ?? null
 ))
-const taskId = computed(() => telemetryStore.frame?.taskId ?? 'TASK-001')
+function jammerOptionLabel(jammer: Jammer): string {
+  const hostName = activeScenario.value?.config.platforms.find((item) => item.id === jammer.platformId)?.name
+    ?? jammer.platformId
+    ?? jammer.id
+  return `${hostName} · ${JAMMER_TYPE_LABELS[jammer.type] ?? jammer.type}`
+}
+const taskId = computed(() => props.taskId ?? telemetryStore.frame?.taskId ?? 'TASK-001')
 const frequencyRange = computed(() => {
   const jammer = selectedJammer.value
   return jammer === null
@@ -125,8 +139,10 @@ const pending = computed(() => (
   telemetryStore.jammerControlState === 'VALIDATING' || telemetryStore.jammerControlState === 'EXECUTING'
 ))
 const displayState = computed<CapabilityState>(() => {
-  if (scenarioStore.panelState === 'LOADING') return 'LOADING'
-  if (scenarioStore.panelState === 'ERROR' && scenarioStore.draft === null) return 'ERROR'
+  if (props.scenario === undefined && scenarioStore.panelState === 'LOADING') return 'LOADING'
+  if (props.scenario === undefined && scenarioStore.panelState === 'ERROR' && scenarioStore.draft === null) return 'ERROR'
+  if (activeScenario.value === null && scenarioStore.panelState === 'LOADING') return 'LOADING'
+  if (activeScenario.value === null && scenarioStore.panelState === 'ERROR') return 'ERROR'
   const state = telemetryStore.jammerControlState
   if (state === 'SUCCESS' && (currentJammerState.value === null || !requestStillCurrent.value)) return 'EMPTY'
   if (state === 'ERROR' && !requestStillCurrent.value) return 'EMPTY'
@@ -152,7 +168,7 @@ const stateType = computed(() => ({
   SUCCESS: 'success', EMPTY: 'info', ERROR: 'danger',
 } as const)[displayState.value])
 const errorMessage = computed(() => {
-  if (scenarioStore.panelState === 'ERROR' && scenarioStore.draft === null) return scenarioStore.resultMessage
+  if (scenarioStore.panelState === 'ERROR' && activeScenario.value === null) return scenarioStore.resultMessage
   return telemetryStore.jammerResultFieldPath === null
     ? telemetryStore.jammerResultMessage
     : `${telemetryStore.jammerResultMessage}（${telemetryStore.jammerResultFieldPath}）`
@@ -172,7 +188,7 @@ const resultSourceLabel = computed(() => {
  */
 function applyControlDefaults(jammerId: string): void {
   const jammer = jammers.value.find((item) => item.id === jammerId)
-  const extension = scenarioStore.draft?.uiExtensions.jammers.find((item) => item.jammerId === jammerId)
+  const extension = activeScenario.value?.uiExtensions.jammers.find((item) => item.jammerId === jammerId)
   if (jammer === undefined || extension === undefined) return
   const frame = telemetryStore.frame
   const evidence = frame && frameJammerExecutions(frame).find(item => item.jammerId === jammerId)
@@ -334,13 +350,21 @@ async function execute(): Promise<boolean> {
     powerSubmitError.value = '启扰功率必须为 -10～30 dBm 且按 5 dB 档位设置。'
     return false
   }
+  const jammerId = selectedJammer.value.id
   editing.value = false
   requestContext.value = {
-    jammerId: selectedJammer.value.id,
+    jammerId,
     runId: telemetryStore.frame?.runId,
     taskId: taskId.value,
   }
-  return telemetryStore.controlJammer(taskId.value, selectedJammer.value.id, command)
+  if (props.embedded) {
+    const [executed] = await Promise.all([
+      telemetryStore.controlJammer(taskId.value, jammerId, command),
+      savePlan(),
+    ])
+    return executed
+  }
+  return telemetryStore.controlJammer(taskId.value, jammerId, command)
 }
 
 watch(jammers, (items) => {
@@ -382,8 +406,15 @@ watch(runtimeParameters, () => {
 </script>
 
 <template>
-  <el-card class="rf-panel" shadow="never" aria-labelledby="rf-panel-title" data-testid="rf-jammer-panel">
-    <template #header>
+  <component
+    :is="embedded ? 'div' : 'el-card'"
+    class="rf-panel"
+    :class="{ 'rf-panel--embedded': embedded }"
+    :shadow="embedded ? undefined : 'never'"
+    :aria-labelledby="embedded ? undefined : 'rf-panel-title'"
+    data-testid="rf-jammer-panel"
+  >
+    <template v-if="!embedded" #header>
       <div class="rf-panel__header">
         <div>
           <p class="eyebrow">T-XQ-015 · RF 干扰机控制</p>
@@ -393,8 +424,13 @@ watch(runtimeParameters, () => {
       </div>
     </template>
 
+    <div v-if="embedded" class="rf-panel__embedded-bar">
+      <span class="rf-panel__embedded-subtitle">宽带压制 / 瞄准式参数与启停控制（本地投影校验）</span>
+      <el-tag :type="stateType" effect="dark" data-testid="rf-state">{{ stateLabel }}</el-tag>
+    </div>
+
     <el-alert
-      v-if="scenarioStore.panelState === 'ERROR' && scenarioStore.draft === null"
+      v-if="scenarioStore.panelState === 'ERROR' && activeScenario === null"
       type="error"
       :closable="false"
       show-icon
@@ -433,7 +469,7 @@ watch(runtimeParameters, () => {
             <el-option
               v-for="jammer in jammers"
               :key="jammer.id"
-              :label="`${jammer.id} · ${jammer.type === 'BARRAGE' ? '宽带压制' : '瞄准式'}`"
+              :label="jammerOptionLabel(jammer)"
               :value="jammer.id"
             />
           </el-select>
@@ -484,7 +520,7 @@ watch(runtimeParameters, () => {
         <el-form-item label="计划停止帧" :error="planError">
           <el-input-number v-model="planStopFrame" :precision="0" :step="1" :disabled="pending" placeholder="如 900" data-testid="rf-plan-stop" @update:model-value="markPlanDirty" />
         </el-form-item>
-        <el-form-item label="计划操作">
+        <el-form-item v-if="!embedded" label="计划操作">
           <el-button :disabled="pending || planBusy || !canControl" :loading="planBusy" data-testid="rf-save-plan" @click="savePlan">保存计划</el-button>
         </el-form-item>
         <el-form-item label="样式带宽建议">
@@ -515,7 +551,7 @@ watch(runtimeParameters, () => {
           data-testid="rf-plan-error"
         />
         <div class="rf-panel__action">
-          <el-button type="primary" :loading="pending" :disabled="!canControl || selectedJammer === null" @click="execute">
+          <el-button type="primary" :loading="pending || (embedded && planBusy)" :disabled="!canControl || selectedJammer === null || (embedded && planBusy)" @click="execute">
             执行命令
           </el-button>
         </div>
@@ -539,7 +575,7 @@ watch(runtimeParameters, () => {
         <el-descriptions-item label="设备状态">{{ selectedExtension?.enabled ? '可用' : '不可用' }}</el-descriptions-item>
         <el-descriptions-item label="频率边界">{{ frequencyRange.min }}–{{ frequencyRange.max }} MHz</el-descriptions-item>
         <el-descriptions-item label="默认功率">{{ selectedJammer.defaultPower }} W（默认值，非上限）</el-descriptions-item>
-        <el-descriptions-item label="时长上限">{{ scenarioStore.draft?.config.scenario.duration }} s</el-descriptions-item>
+        <el-descriptions-item label="时长上限">{{ activeScenario?.config.scenario.duration }} s</el-descriptions-item>
       </el-descriptions>
 
       <el-result
@@ -558,13 +594,31 @@ watch(runtimeParameters, () => {
       </el-result>
 
     </div>
-  </el-card>
+  </component>
 </template>
 
 <style scoped>
 .rf-panel {
   border-color: var(--console-border);
   background: var(--console-bg-elevated);
+}
+
+.rf-panel--embedded {
+  border: 0;
+  background: transparent;
+}
+
+.rf-panel__embedded-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.rf-panel__embedded-subtitle {
+  color: var(--console-text-muted);
+  font-size: var(--console-font-size-min);
 }
 
 .rf-panel__header,

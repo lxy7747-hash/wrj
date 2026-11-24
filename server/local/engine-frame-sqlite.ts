@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite'
 import { createHash, randomUUID } from 'node:crypto'
 import { isAbsolute } from 'node:path'
-import type { EngineFrameSnapshot } from '../../src/contracts/domain-models.js'
+import type { EngineFrameEvent, EngineFrameSnapshot, EngineRouteAlarm, EngineRouteSwitch } from '../../src/contracts/domain-models.js'
 import { isEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot.js'
-import { isEngineReplaySnapshot, type EngineReplaySnapshot } from '../../src/features/replays/engine-replay.js'
+import { formatCommunicationPortLabel } from '../../src/features/situation/file-message-links.js'
+import { isEngineReplaySnapshot, type EngineReplaySnapshot, type EngineReplayTimelineMarker } from '../../src/features/replays/engine-replay.js'
 import type { EngineFrameArchiveScope } from './engine-frame-archive.js'
 import type { EngineLinkBinding } from './engine-frame-csv.js'
 import { readStableUtf8Lines } from './afsim-log-reader.js'
@@ -11,6 +12,133 @@ import { ENGINE_JSONL_LINE_LIMIT_BYTES } from './engine-frame-csv.js'
 
 const sha = (value: string) => createHash('sha256').update(value).digest('hex')
 const identity = (s: EngineFrameArchiveScope) => JSON.stringify([s.taskId, s.runId, s.scenarioId, s.revision, s.startedAt])
+
+function compactPortMedium(port: string): string {
+  const lower = port.toLowerCase()
+  if (lower.startsWith('sat_link')) return '卫星'
+  if (lower.includes('microwave')) return '微波'
+  if (lower.startsWith('c_band') || lower.startsWith('l_band')) return '数传'
+  if (lower.includes('lazer') || lower.includes('laser')) return '激光'
+  if (lower.includes('fiber')) return '光纤'
+  return formatCommunicationPortLabel(port)
+}
+
+function formatEngineActorName(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  if (trimmed === 'rear_comm_vehicle') return '后方指挥节点'
+  if (trimmed === 'command_vehicle') return '集群指挥车'
+  if (trimmed === 'tiantong_sat') return '天通卫星'
+  if (trimmed === 'shentong_sat') return '神通卫星'
+  const uav = /^mission_uav_(\d+)$/i.exec(trimmed)
+  if (uav) return `无人节点 ${Number(uav[1])}`
+  const groundJammer = /^jammer_station_(\d+)$/i.exec(trimmed)
+  if (groundJammer) return `地面干扰站 ${Number(groundJammer[1])}`
+  const airJammer = /^jammer_airborne_(\d+)$/i.exec(trimmed)
+  if (airJammer) return `机载干扰平台 ${Number(airJammer[1])}`
+  return trimmed
+}
+
+function buildReplayTimelineMarkers(
+  rows: ReadonlyArray<Record<string, unknown>>,
+): EngineReplayTimelineMarker[] {
+  // 同秒内优先保留结构化 route / alarm 记录，再由 event 补充侦测与进入干扰。
+  const priority = (kind: string) => kind === 'route' ? 0 : kind === 'alarm' ? 1 : 2
+  const ordered = [...rows].sort((left, right) => {
+    const timeDiff = Number(left.simulationTime) - Number(right.simulationTime)
+    if (timeDiff !== 0) return timeDiff
+    const prioDiff = priority(String(left.kind)) - priority(String(right.kind))
+    if (prioDiff !== 0) return prioDiff
+    return Number(left.frameId) - Number(right.frameId) || Number(left.itemIndex) - Number(right.itemIndex)
+  })
+  const markers: EngineReplayTimelineMarker[] = []
+  const seen = new Set<string>()
+  for (const row of ordered) {
+    if (markers.length >= 200) break
+    const frameId = Number(row.frameId)
+    const time = Number(row.simulationTime)
+    const rawKind = String(row.kind)
+    let marker: EngineReplayTimelineMarker | null = null
+    if (rawKind === 'route') {
+      const route = JSON.parse(String(row.payload)) as EngineRouteSwitch
+      const mediums = [...new Set(route.nodes.map(node => node.outPort || node.inPort).filter((port): port is string => Boolean(port)).map(compactPortMedium))]
+      const mediumText = mediums.length ? mediums.join('/') : '新路径'
+      const target = formatEngineActorName(route.targetName ?? route.targetPlatformId ?? '')
+      const actorIds = route.targetPlatformId ? [route.targetPlatformId] : undefined
+      marker = {
+        id: `SWITCH:${frameId}:${row.itemIndex}`,
+        kind: 'SWITCH',
+        time,
+        frameId,
+        label: '链路切换',
+        detail: target ? `切至 ${mediumText}（${target}）` : `切至 ${mediumText}`,
+        ...(actorIds ? { actorIds } : {}),
+      }
+    } else if (rawKind === 'alarm') {
+      const alarm = JSON.parse(String(row.payload)) as EngineRouteAlarm
+      marker = {
+        id: `ALARM:${frameId}:${row.itemIndex}`,
+        kind: 'ALARM',
+        time,
+        frameId,
+        label: '受扰告警',
+        detail: alarm.message?.trim() || alarm.linkId || '触发受扰告警',
+      }
+    } else if (rawKind === 'event') {
+      const event = JSON.parse(String(row.payload)) as EngineFrameEvent
+      const rawType = (event.type ?? '').toLowerCase()
+      const actors = [...event.jammerNames, ...event.uavNames].map(formatEngineActorName).filter(Boolean).slice(0, 2).join(' → ')
+      const actorIds = [...event.jammerIds, ...event.uavIds].filter(Boolean).slice(0, 2)
+      if (rawType.includes('switch')) {
+        marker = {
+          id: `EVENT-SWITCH:${frameId}:${row.itemIndex}`,
+          kind: 'SWITCH',
+          time,
+          frameId,
+          label: '链路切换',
+          detail: actors || '受扰触发重路由',
+          ...(actorIds.length ? { actorIds } : {}),
+        }
+      } else if (rawType.includes('jamm')) {
+        marker = {
+          id: `EVENT-JAM:${frameId}:${row.itemIndex}`,
+          kind: 'JAMMING',
+          time,
+          frameId,
+          label: '进入干扰',
+          detail: actors || '目标进入干扰范围',
+          ...(actorIds.length ? { actorIds } : {}),
+        }
+      } else if (rawType.includes('esm') || rawType.includes('detect')) {
+        marker = {
+          id: `EVENT-DETECT:${frameId}:${row.itemIndex}`,
+          kind: 'DETECTION',
+          time,
+          frameId,
+          label: '目标侦测',
+          detail: actors || '侦测到通信目标',
+          ...(actorIds.length ? { actorIds } : {}),
+        }
+      } else if (rawType.includes('alarm')) {
+        marker = {
+          id: `EVENT-ALARM:${frameId}:${row.itemIndex}`,
+          kind: 'ALARM',
+          time,
+          frameId,
+          label: '受扰告警',
+          detail: actors || '触发链路告警',
+          ...(actorIds.length ? { actorIds } : {}),
+        }
+      }
+    }
+    if (!marker) continue
+    const dedupKey = `${Math.floor(time)}:${marker.kind}`
+    if (seen.has(dedupKey)) continue
+    seen.add(dedupKey)
+    markers.push(marker)
+  }
+  return markers
+}
 
 /** One shared history database; all reads and writes retain the immutable run scope. */
 export class EngineFrameSqliteStorage {
@@ -167,10 +295,16 @@ export class EngineFrameSqliteStorage {
         if (rows.length > 200) historyTruncated = true
         return rows.slice(0, 200).reverse().map(item => ({ frameId: Number(item.frameId), simulationTime: Number(item.simulationTime), [kind]: JSON.parse(String(item.payload)) }))
       }
+      const timelineRows = this.db.prepare(`SELECT f.frame_id AS frameId,f.simulation_time AS simulationTime,i.kind,i.item_index AS itemIndex,i.payload
+        FROM engine_frames f JOIN engine_items i ON i.frame_sequence=f.sequence
+        WHERE f.run_id=? AND f.engine_epoch=?
+        ORDER BY f.simulation_time ASC,f.frame_id ASC,i.item_index ASC LIMIT 600`).all(scope.runId, engineEpoch)
+      const timelineMarkers = buildReplayTimelineMarkers(timelineRows)
       const bindings = JSON.parse(String(run.bindings_json)) as Record<string, EngineLinkBinding>
       const value = { runId: scope.runId, scenarioId: scope.scenarioId, sourceSha256: run.source_sha256,
         frameCount: run.frame_count, epochs, engineEpoch, time, nextFrameTime: next.time, engineFrame,
         engineEvents: items('event'), engineSwitches: items('route'), engineAlarms: items('alarm'), historyTruncated,
+        timelineMarkers,
         links: Object.entries(bindings).map(([id, binding]) => ({ id, type: binding.type, sourcePlatformId: binding.sourcePlatformId, targetPlatformId: binding.targetPlatformId })) }
       if (!isEngineReplaySnapshot(value)) throw new Error('引擎历史数据不符合回放契约。')
       return value

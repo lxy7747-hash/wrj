@@ -1,8 +1,35 @@
 import { execFile } from 'node:child_process'
 import { readlink } from 'node:fs/promises'
+import { isIPv4, type Socket } from 'node:net'
 import { promisify } from 'node:util'
 
 const execute = promisify(execFile)
+
+type TcpPeer = Pick<Socket, 'localAddress' | 'localPort' | 'remoteAddress' | 'remotePort'>
+
+/** 核对已连接套接字的服务端 TCP 四元组，避免仅凭端口向别的进程发送命令。 */
+export async function isMissionWebSocketPeer(socket: TcpPeer, pid: number): Promise<boolean> {
+  const { localAddress, localPort, remoteAddress, remotePort } = socket
+  if (!localAddress || !isIPv4(localAddress) || !remoteAddress || !isIPv4(remoteAddress)
+    || !localPort || !remotePort || !Number.isSafeInteger(pid) || pid <= 0) return false
+  const server = `${remoteAddress}:${remotePort}`
+  const client = `${localAddress}:${localPort}`
+  if (process.platform === 'win32') {
+    const { stdout } = await execute('netstat.exe', ['-ano', '-p', 'tcp'], { windowsHide: true, timeout: 3000 })
+    return stdout.split('\n').some(line => {
+      const [protocol, local, remote, state, owner] = line.trim().split(/\s+/)
+      return protocol === 'TCP' && local === server && remote === client && state === 'ESTABLISHED' && owner === String(pid)
+    })
+  }
+  if (process.platform !== 'linux') return false
+  const { stdout } = await execute('ss', ['-Hntp', 'state', 'established'], { timeout: 3000 })
+  const owner = new RegExp(`\\bpid=${pid}(?=[,)])`)
+  return stdout.split('\n').some(line => {
+    const fields = line.trim().split(/\s+/)
+    const index = fields.indexOf(server)
+    return index >= 0 && fields[index + 1] === client && owner.test(fields.slice(index + 2).join(' '))
+  })
+}
 
 export interface MissionProcessIdentity {
   pid: number

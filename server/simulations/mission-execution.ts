@@ -1,4 +1,5 @@
 import type { ScenarioDraft, SimulationCommand } from '../../src/contracts/domain-models.js'
+import type { MissionMessageSnapshot } from '../../src/features/situation/mission-messages.js'
 import type { MissionPositionSnapshot } from '../../src/features/situation/mission-positions.js'
 
 /**
@@ -22,6 +23,8 @@ export interface MissionProcess {
   engineManifest?: unknown
   /** 本地运行器登记的本次独占位置输出；未接入本地引擎的实现不提供此入口。 */
   readPositions?(): Promise<MissionPositionSnapshot | null>
+  /** 本地运行器登记的本次独占增量收发消息输出；未接入本地引擎的实现不提供此入口。 */
+  readMessages?(afterCursor?: number, options?: { simulationEnded?: boolean }): Promise<MissionMessageSnapshot | null>
   completed: Promise<MissionOutcome>
   /** 运行期间发生归档故障；调用方应显示错误并继续保持进程/场景保护，直至确认关闭。 */
   dataFailure?: Promise<string>
