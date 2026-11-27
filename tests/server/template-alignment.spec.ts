@@ -136,10 +136,14 @@ describe('1112 固定模板基线', () => {
   it('除明确允许区域外，10 个执行 TXT 去除注释后与模板逐字节一致', async () => {
     const generated = buildMissionPackage(withAllTemplateCommPorts())
     for (const name of TEMPLATE_FILES) {
-      const template = await readFile(join(TEMPLATE_DIRECTORY, name), 'utf8')
-      const expected = name === 'comm_platform_MISSION_UAV.txt'
+      const template: string = await readFile(join(TEMPLATE_DIRECTORY, name), 'utf8')
+      let expected = name === 'comm_platform_MISSION_UAV.txt'
         ? template.replace(/(\breceiver\r?\n[ \t]*frequency 11\.8 )MHz(?=\r?\n)/u, '$1GHz')
         : template
+      if (name === 'comm_platform_REAR.txt' || name === 'comm_platform_MISSION_UAV.txt') {
+        expected = expected.replace(/if\s*\(\s*nxts2\s*!=\s*""\s*&&\s*nxts\s*!=\s*"interrupted"\s*\)/gu, match =>
+          match.replace(/&&\s*nxts\s*!=/u, '&& nxts2 !='))
+      }
       const generatedText = name === 'comm_platform_INS.txt'
         ? maskDynamicInsSections(patchModule.stripScriptComments(generated.files[name]!))
         : maskAllowedRegions(name, patchModule.stripScriptComments(generated.files[name]!))
@@ -227,15 +231,46 @@ describe('1112 固定模板基线', () => {
   })
 
   it('link_calc 参数名称、顺序与模板一致，且不输出 jamming_range / end_platform_type', () => {
-    const rear = buildMissionPackage(createTemplateScenario()).files['comm_platform_REAR.txt']!
+    const pkg = buildMissionPackage(createTemplateScenario())
+    const rear = pkg.files['comm_platform_REAR.txt']!
+    const uav = pkg.files['comm_platform_MISSION_UAV.txt']!
     const block = linkCalcBlock(rear)
     const directives = block.flatMap(line => /^ {4}([a-z_]+)\s/u.exec(line)?.[1] ?? [])
     expect(directives).toEqual([
       'update_interval', 'emergency_threshold', 'warning_threshold', 'value_threshold_ber', 'channel_encoding_scheme',
-      'traffic_type', 'relay_uav_names', 'hot_link_ret', 'hot_link_fw', 'port_params', 'natural_environment', 'jammer_param',
+      'traffic_type', 'traffic_distance', 'relay_uav_names', 'hot_link_ret', 'hot_link_fw', 'port_params', 'natural_environment', 'jammer_param',
     ])
+    expect(directiveValue(block, 'traffic_distance')).toEqual([
+      {
+        link_type: 'cl_link',
+        distance_set: [
+          { dist_seg: 'relay-uav', distance: 60 },
+          { dist_seg: 'relay-relay', distance: 200 },
+          { dist_seg: 'relay-comand', distance: 240 },
+          { dist_seg: 'uav-comand', distance: 240 },
+        ],
+      },
+      { link_type: 'microwave_link', distance: 200 },
+      { link_type: 'lazer_link', distance: 40 },
+    ])
+    expect(rear).toContain('if (nxts != "" && nxts != "interrupted")')
+    expect(rear).toContain('if (nxts2 != "" && nxts2 != "interrupted")')
+    expect(rear).not.toContain('nxts2 != "" && nxts != "interrupted"')
+    expect(uav).toContain('if (nxts != "" && nxts != "interrupted")')
+    expect(uav).toContain('if (nxts2 != "" && nxts2 != "interrupted")')
+    expect(uav).not.toContain('nxts2 != "" && nxts != "interrupted"')
     expect(block.join('\n')).not.toContain('jamming_range')
     expect(block.join('\n')).not.toContain('end_platform_type')
+  })
+
+  it('仅本机运行包注释 traffic_distance，保留交付值和其余指令', () => {
+    const draft = createTemplateScenario()
+    const file = 'comm_platform_REAR.txt'
+    const delivery = linkCalcBlock(buildMissionPackage(draft).files[file]!)
+    const local = linkCalcBlock(buildMissionPackage(draft, undefined, { linkCalc: 'PRESERVE' }).files[file]!)
+    const distance = delivery.find(line => line.trimStart().startsWith('traffic_distance '))
+    expect(distance).toBeDefined()
+    expect(local).toEqual(delivery.map(line => line === distance ? line.replace('traffic_distance', '// traffic_distance') : line))
   })
 
   it('激光端口声明、port_params 与引用统一为 lazer_link，不保留 laser_link', () => {
@@ -251,8 +286,8 @@ describe('1112 固定模板基线', () => {
     expect(mission.comm_params.map(item => item.comm_name)).not.toContain('laser_link')
     // 模板中的 lazer_link 收发参数未被改动；EIRP/G_T 直接采用端口配置值。
     const lazer = mission.comm_params.find(item => item.comm_name === 'lazer_link') as unknown as { transmitter: Record<string, number>; receiver: Record<string, number> }
-    expect(lazer.transmitter).toMatchObject({ frequency_ghz: 681300, bandwidth_mhz: 1000, power_w: 0.1, eirp_dBW: 20, peak_gain_dB: 45, 'information_rate_bit/s': 2_500_000_000 })
-    expect(lazer.receiver).toMatchObject({ noise_figure_dB: 5, 'G_T_dBK': 15 })
+    expect(lazer.transmitter).toMatchObject({ frequency_ghz: 193500, bandwidth_mhz: 1000, power_w: 0.1, eirp_dBW: 0, peak_gain_dB: 45, 'information_rate_bit/s': 2_500_000_000 })
+    expect(lazer.receiver).toMatchObject({ frequency_ghz: 681300, noise_figure_dB: 5, 'G_T_dBK': 0 })
   })
 
   it('区域定位必须唯一：缺失或重复标记时明确报错，不使用第一个匹配', () => {

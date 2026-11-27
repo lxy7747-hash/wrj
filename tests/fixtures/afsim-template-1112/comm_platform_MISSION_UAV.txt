@@ -325,7 +325,7 @@ end_script_variables
           foreach (int i : string dst in rt_video_dsts)
           {
             string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_next_platform_name");
-            if (nxts != "")
+            if (nxts != "" && nxts != "interrupted")
             {
               string nexts = nxts;
               string outs  = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_out_port_name");
@@ -346,7 +346,7 @@ end_script_variables
           foreach (int i : string dst in rt_status_dsts)
           {
             string nxts2 = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_next_platform_name");
-            if (nxts2 != "")
+            if (nxts2 != "" && nxts2 != "interrupted")
             {
               string nexts = nxts2;
               string outs  = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_out_port_name");
@@ -370,7 +370,7 @@ end_script_variables
           script
             string dest = MESSAGE.AuxDataString("destination");
             string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_platform_name");
-            if (nxts != "")
+            if (nxts != "" && nxts != "interrupted")
             {
               string nexts = nxts;
               string outs  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_out_port_name");
@@ -386,7 +386,7 @@ end_script_variables
           script
             string dest = MESSAGE.AuxDataString("destination");
             string nxts = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_platform_name");
-            if (nxts != "")
+            if (nxts != "" && nxts != "interrupted")
             {
               string nexts = nxts;
               string outs  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_out_port_name");
@@ -406,7 +406,7 @@ end_script_variables
             }
             else{
               string nxts = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_platform_name");
-              if (nxts != "")
+              if (nxts != "" && nxts != "interrupted")
               {
                 string nexts = nxts;
                 string outs  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_out_port_name");
@@ -426,7 +426,7 @@ end_script_variables
               writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
             }else{
               string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_platform_name");
-              if (nxts != "")
+              if (nxts != "" && nxts != "interrupted")
               {
                 string nexts = nxts;
                 string outs  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_out_port_name");

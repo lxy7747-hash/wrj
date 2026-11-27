@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { BusinessInformationNodeType, CapabilityState, DeviceParameters, GeoPoint, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
+import type { BusinessInformationNodeType, CapabilityState, DeviceParameters, GeoPoint, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { formatScriptExecutionLog } from '../../features/scenarios/script-execution-status'
 import { applyLinkEdit, synchronizePlatformLinkIds } from '../../features/scenarios/link-edit'
@@ -12,8 +12,8 @@ import { createPlatformGrid } from '../../features/scenarios/platform-layout'
 import { PLATFORM_POINT_DEFAULT_ALTITUDE, PLATFORM_POSITION_RULES, REAR_DEFAULT_ORIGIN, RELAY_DEFAULT_ORIGIN, RELAY_DEFAULT_ROUTE, SATELLITE_GEO_POSITION } from '../../features/scenarios/platform-position-rules'
 import { saveScriptText } from '../../features/scenarios/script-file'
 import type { ScriptGenerationReceipt as ScriptGenerationResult } from '../../features/scenarios/script-package-preflight'
-import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerBands, readJammerReleaseRange, wattsToDbm } from '../../features/scenarios/jammer-settings'
-import { linkTypeDefaults, RAIN_TIER_OPTIONS, RAIN_TIER_RATES, type RainTier } from '../../features/scenarios/link-calc-defaults'
+import { isJammerPlatformType, JAMMER_CALC_DEFAULTS, JAMMER_DEFAULT_BANDS, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerBands, readJammerReleaseRange, wattsToDbm } from '../../features/scenarios/jammer-settings'
+import { formatDataRate, linkTypeDefaults, RAIN_TIER_OPTIONS, RAIN_TIER_RATES, type RainTier } from '../../features/scenarios/link-calc-defaults'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   INFORMATION_NODE_LIMIT,
@@ -31,7 +31,6 @@ import {
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
-import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
 import ScriptPreviewDialog from '../../components/scenarios/ScriptPreviewDialog.vue'
@@ -42,7 +41,6 @@ import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
 import DeviceParametersPanel from '../../components/scenarios/DeviceParametersPanel.vue'
 import SeaAreaMapPicker from '../../components/scenarios/SeaAreaMapPicker.vue'
 import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
-import TaskPhaseEditor from '../../components/scenarios/TaskPhaseEditor.vue'
 import NativeEsmEditor, { NATIVE_ESM_PROBE_DEFAULTS } from '../../components/scenarios/NativeEsmEditor.vue'
 import { SCENARIO_BASIC_DEFAULTS, scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 import { readDeviceParameters, TEMPLATE_PLATFORM_TYPES, templatePortAntennaName } from '../../features/scenarios/template-defaults'
@@ -60,11 +58,7 @@ const {
   resultCode,
   resultMessage,
   validation,
-  templates,
-  selectedTemplate,
   templateState,
-  templateResultMessage,
-  lastConfirmation,
   script,
   scriptState,
   scriptResultMessage,
@@ -82,6 +76,7 @@ const draftReviewed = ref(false)
 const scriptAction = ref<'save' | 'generate' | null>(null)
 const previewingScript = ref(false)
 const scriptPreviewVisible = ref(false)
+const scriptPreviewReceipt = ref<ScriptGenerationResult | null>(null)
 const scriptOutputPath = ref('')
 const scriptGenerationLog = ref<string[]>([])
 const scriptGenerationReceipt = ref<ScriptGenerationResult | null>(null)
@@ -224,7 +219,13 @@ const currentScriptPreview = computed(() => {
   return preview.scenarioId === current.config.scenario.id
     && preview.configVersion === `${current.config.scenario.id}-v${current.revision}` ? preview : null
 })
-watch(currentScriptPreview, preview => { if (!preview) scriptPreviewVisible.value = false }, { flush: 'sync' })
+watch(currentScriptPreview, preview => {
+  if (!preview) {
+    scriptPreviewVisible.value = false
+    scriptPreviewReceipt.value = null
+  }
+}, { flush: 'sync' })
+watch(scriptPreviewVisible, open => { if (!open) scriptPreviewReceipt.value = null })
 const canMaintainTemplates = computed(() => authStore.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed)
 
 // 校验资格只属于当前草稿；编辑、重载或替换草稿后失效，不把“已保存”等同于“已校验”。
@@ -232,6 +233,7 @@ watch([draft, dirty], () => {
   draftReviewed.value = false
   scriptGenerationReceiptVisible.value = false
   scriptGenerationReceipt.value = null
+  scriptPreviewReceipt.value = null
 }, { flush: 'sync' })
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
@@ -531,19 +533,30 @@ async function closePortParameters(): Promise<void> {
 type NaturalNumberKey = 'rainAltitudeLimitM' | 'rainAttenuationDb' | 'simplifiedAttenuationDbPerKm' | 'polarizationMismatchDb'
   | 'pointingErrorDb' | 'seaLowAltitudeThresholdM' | 'seaPathOverSeaThresholdKm' | 'seaWaterTempC' | 'seaSurfaceRoughnessM'
 type NaturalGroup = 'rain' | 'atmosphere' | 'misc' | 'sea'
-/** link_calc natural_environment 数值字段，按文档“环境参数（全局）”的小标题分组；范围与校验一致。 */
-const NATURAL_NUMBER_FIELDS: readonly { key: NaturalNumberKey; group: NaturalGroup; label: string; min: number; max?: number; step: number; hint?: string }[] = [
+/**
+ * link_calc natural_environment 数值字段，按文档“环境参数（全局）”的小标题分组；范围与校验一致。
+ * hidden：2026-11-25 实测插件不使用该值，界面不展示但仍按默认值写入脚本；fineOnly：仅多径模型（fine）下插件生效。
+ */
+const NATURAL_NUMBER_FIELDS: readonly { key: NaturalNumberKey; group: NaturalGroup; label: string; min: number; max?: number; step: number; hint?: string; hidden?: boolean; fineOnly?: boolean }[] = [
   { key: 'rainAltitudeLimitM', group: 'rain', label: '雨区顶部高度（m）', min: 0, max: 30000, step: 100, hint: '典型 1000～5000 m' },
-  { key: 'rainAttenuationDb', group: 'rain', label: '固定雨衰兜底值（dB）', min: 0, step: 0.1, hint: '仅雨强为 0 时生效' },
-  { key: 'simplifiedAttenuationDbPerKm', group: 'atmosphere', label: '简化衰减率（dB/km）', min: 0, step: 0.01, hint: '仅简化模式填写；大于 0 时优先于 ITU 模型' },
+  { key: 'rainAttenuationDb', group: 'rain', label: '固定雨衰兜底值（dB）', min: 0, step: 0.1, hidden: true },
+  { key: 'simplifiedAttenuationDbPerKm', group: 'atmosphere', label: '简化衰减率（dB/km）', min: 0, step: 0.01, hint: '简化/自动模式生效；自动模式下为 0 时按 ITU 计算' },
   { key: 'polarizationMismatchDb', group: 'misc', label: '极化失配损耗（dB）', min: 0, step: 0.1, hint: '通常 0～3 dB' },
   { key: 'pointingErrorDb', group: 'misc', label: '指向误差损耗（dB）', min: 0, step: 0.1 },
   { key: 'seaLowAltitudeThresholdM', group: 'sea', label: '贴海飞行高度阈值（m）', min: 0, step: 10 },
   { key: 'seaPathOverSeaThresholdKm', group: 'sea', label: '跨海距离阈值（km）', min: 0, step: 1 },
-  { key: 'seaWaterTempC', group: 'sea', label: '海水温度（℃）', min: -2, max: 30, step: 1 },
-  { key: 'seaSurfaceRoughnessM', group: 'sea', label: '海面高度标准差（m）', min: 0, max: 5, step: 0.1, hint: '0 表示按海况等级推导' },
+  { key: 'seaWaterTempC', group: 'sea', label: '海水温度（℃）', min: -2, max: 30, step: 1, fineOnly: true },
+  { key: 'seaSurfaceRoughnessM', group: 'sea', label: '海面高度标准差（m）', min: 0, max: 5, step: 0.1, hint: '0 表示按海况等级推导', fineOnly: true },
 ]
-const naturalFields = (group: NaturalGroup) => NATURAL_NUMBER_FIELDS.filter(field => field.group === group)
+const naturalFields = (group: NaturalGroup) => NATURAL_NUMBER_FIELDS.filter(field => field.group === group && !field.hidden)
+/** 当前是否为经验模型（coarse）；此时多径模型专属参数不参与插件计算。 */
+function seaFineInactive(): boolean {
+  return draft.value?.config.scenario.environment.seaModel !== 'fine'
+}
+/** 返回数值字段下方提示；多径模型专属参数在经验模型下提示其不生效。 */
+function naturalFieldHint(field: { hint?: string; fineOnly?: boolean }): string | undefined {
+  return field.fineOnly && seaFineInactive() ? '仅多径模型（fine）生效' : field.hint
+}
 const NATURAL_ENVIRONMENT_FIELD_KEYS = new Set<string>([...NATURAL_NUMBER_FIELDS.map(field => field.key),
   'rainEnabled', 'cloudEnabled', 'atmosphereModel', 'seaModel', 'seaPolarization'])
 
@@ -1045,6 +1058,9 @@ function openNewJammer(): void {
     platformId: '',
     type: 'BARRAGE',
     ...JAMMER_DEFAULTS,
+    eirpDbw: JAMMER_CALC_DEFAULTS.eirpDbw,
+    antennaGainDbi: JAMMER_CALC_DEFAULTS.antennaGainDbi,
+    weaponBands: JAMMER_DEFAULT_BANDS.map(band => ({ ...band })),
   }
   jammerEditorUiExtension.value = { jammerId: jammerEditorJammer.value.id, direction: 0, enabled: true }
   editingJammerIndex.value = null
@@ -1334,8 +1350,7 @@ function validationTargetId(fieldPath: string): string | undefined {
   if (fieldPath === 'jammingEnabled') return 'jamming-enabled'
   const waypointMotionField = /^platforms\[\d+\]\.waypoints\[(\d+)\]\.(heading|acceleration)$/.exec(fieldPath)
   if (waypointMotionField) return `waypoint-${waypointMotionField[2]}-${waypointMotionField[1]}`
-  const advancedPlatformField = /^platforms\[\d+\]\.(faction|communicationRangeM)$/.exec(fieldPath)?.[1]
-  if (advancedPlatformField) return advancedPlatformField === 'faction' ? 'platform-faction' : 'platform-communication-range'
+  if (/^platforms\[\d+\]\.faction$/.test(fieldPath)) return 'platform-faction'
   const jammerEnabledMatch = /^uiExtensions\.jammers\[(\d+)\]\.enabled$/.exec(fieldPath)
   if (jammerEnabledMatch) {
     const jammerId = draft.value?.uiExtensions.jammers[Number(jammerEnabledMatch[1])]?.jammerId
@@ -1367,6 +1382,7 @@ function validationTargetId(fieldPath: string): string | undefined {
     antennaGainCorrectionDb: 'link-gain-correction',
     antiJammingGainDb: 'link-anti-jamming-gain', spatialIsolationDb: 'link-spatial-isolation',
     modulation: 'link-modulation', 'laser.modulation': 'laser-modulation', berThreshold: 'link-ber-threshold', band: 'link-band',
+    forwardDataRate: 'link-forward-data-rate', reverseDataRate: 'link-reverse-data-rate',
     rxFrequency: 'link-rx-frequency', rxBandwidth: 'link-rx-bandwidth', txPolarization: 'link-tx-polarization',
     rxPolarization: 'link-rx-polarization', noiseFigureDb: 'link-noise-figure',
   } as Record<string, string>)[linkField]
@@ -1381,7 +1397,6 @@ function validationTargetId(fieldPath: string): string | undefined {
   const directTargets: Record<string, string> = {
     'linkSettings.switchCooldownS': 'link-switch-cooldown',
     'linkSettings.switchStableChecks': 'link-switch-stable-checks',
-    'linkSettings.priority': 'link-priority-0',
     'scenario.id': 'scenario-id',
     'scenario.name': 'scenario-name',
     'scenario.description': 'scenario-description',
@@ -1397,7 +1412,6 @@ function validationTargetId(fieldPath: string): string | undefined {
     'scenario.environment.seaPolygon': 'open-sea-area',
 
     'scenario.environment.simClockSpeed': 'scenario-sim-speed',
-    'scenario.environment.transmissionDistance': 'scenario-trans-distance',
     'scenario.environment.rainCloudAttenuation': 'scenario-rain-cloud-atten',
   }
   return directTargets[fieldPath]
@@ -1585,6 +1599,7 @@ async function openScriptPreview(): Promise<void> {
       return
     }
     if (!currentScriptPreview.value) { ElMessage.error('脚本版本与当前场景不一致，请重新生成预览。'); return }
+    scriptPreviewReceipt.value = null
     scriptPreviewVisible.value = true
   } finally { previewingScript.value = false }
 }
@@ -1631,10 +1646,13 @@ async function saveScenario(action: 'save' | 'generate' = 'save'): Promise<void>
         const path = await saveScriptText(preview)
         if (!currentScript()) return
         scriptOutputPath.value = path
-        const log = [...executionLog(), '预览未执行引擎校验；实际执行包可能按引擎能力适配，以运行记录为准。']
+        const log = executionLog()
         scriptGenerationLog.value = [`已生成脚本入口：${path}`, `场景修订：${preview.configVersion}`, ...log]
         scriptGenerationReceipt.value = { path, version: preview.configVersion, log }
-        if (action === 'generate') scriptGenerationReceiptVisible.value = true
+        if (action === 'generate') {
+          scriptPreviewReceipt.value = scriptGenerationReceipt.value
+          scriptPreviewVisible.value = true
+        }
       } catch (error) {
         if (currentScript()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : retry}`)
         return
@@ -1679,34 +1697,8 @@ async function generateScriptPreview(): Promise<boolean> {
   }
 }
 
-/**
- * 将模板应用为当前临时工作场景。
- * @param template 待应用模板。
- * @returns 操作结束后无返回值。
- * @sideEffects 确认名称后替换当前临时场景草稿。
- */
-async function applyTemplate(template: ScenarioTemplate): Promise<void> {
-  try {
-    const { value } = await ElMessageBox.prompt('应用后将替换当前临时工作场景。', '应用场景模板', {
-      confirmButtonText: '应用',
-      cancelButtonText: '取消',
-      inputValue: `${template.name} 场景`,
-      inputValidator: (name) => name.trim() !== '' || '请输入临时场景名称。',
-    })
-    if (await scenarioStore.copyTemplate(template.templateId, value)) ElMessage.success(templateResultMessage.value)
-  } catch {
-    // 用户取消应用时保持工作草稿不变。
-  }
-}
-
 onMounted(() => {
   if (draft.value === null) void loadScenario()
-})
-
-watch(activeTab, (tab) => {
-  if (tab === 'templates' && templateState.value === 'EMPTY' && templates.value.length === 0) {
-    void scenarioStore.loadTemplates()
-  }
 })
 </script>
 
@@ -1719,7 +1711,6 @@ watch(activeTab, (tab) => {
         <el-tooltip v-if="canMaintainTemplates" content="请先保存场景；运行中或处理中不可另存模板。" :disabled="alreadySaved && !templatePending">
           <span><el-button :disabled="!alreadySaved || templatePending" :loading="templatePending" data-testid="save-as-template" @click="saveAsTemplate">另存为模板</el-button></span>
         </el-tooltip>
-        <el-button :type="activeTab === 'templates' ? 'primary' : 'default'" :aria-pressed="activeTab === 'templates'" data-testid="open-scenario-templates" @click="activeTab = 'templates'">场景模板</el-button>
       </div>
     </header>
 
@@ -1843,24 +1834,12 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
 
-          <el-form-item data-field-path="scenario.phases" label="任务阶段（可选）" title="设置任务阶段，用于报表筛选。">
-            <TaskPhaseEditor v-model="draft.config.scenario.phases" :duration="draft.config.scenario.duration" :disabled="draft.locked" @update:model-value="markDirty" />
-          </el-form-item>
           <el-form-item data-field-path="scenario.environment.simClockSpeed" label="仿真倍速" :error="issueMessage('scenario.environment.simClockSpeed')">
             <el-select v-model="simSpeed" :disabled="draft.locked" data-testid="scenario-sim-speed">
               <!-- 旧场景的非标准组合只回显当前值，不可选择；选定标准档位后按标准映射归一化。 -->
               <el-option v-if="simSpeed === 'legacy'" :label="legacySimSpeedLabel" value="legacy" disabled />
               <el-option v-for="option in SIM_SPEED_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
-          </el-form-item>
-
-          <el-form-item v-if="liveFieldMessage('scenario.environment.transmissionDistance')" data-field-path="scenario.environment.transmissionDistance" label="历史海峡宽度（km，待修正）" :error="liveFieldMessage('scenario.environment.transmissionDistance')">
-            <el-input-number
-                v-model="draft.config.scenario.environment.transmissionDistance"
-                controls-position="right"
-                data-testid="scenario-trans-distance"
-                @update:model-value="markDirty"
-            />
           </el-form-item>
 
           <el-form-item data-field-path="scenario.description" label="场景描述" :error="issueMessage('scenario.description')">
@@ -1968,14 +1947,16 @@ watch(activeTab, (tab) => {
             </el-select>
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.seaPolarization" label="反射系数极化" :error="issueMessage('scenario.environment.seaPolarization')">
-            <el-select v-model="draft.config.scenario.environment.seaPolarization" data-testid="scenario-env-seaPolarization" @update:model-value="markDirty">
+            <el-select v-model="draft.config.scenario.environment.seaPolarization" :disabled="seaFineInactive()" data-testid="scenario-env-seaPolarization" @update:model-value="markDirty">
               <el-option label="垂直极化" value="vertical" /><el-option label="水平极化" value="horizontal" />
             </el-select>
+            <small v-if="seaFineInactive()" :class="{ 'field-hint--hidden': !!issueMessage('scenario.environment.seaPolarization') }" class="field-hint" data-testid="sea-polarization-hint">仅多径模型（fine）生效</small>
           </el-form-item>
           <el-form-item v-for="field in naturalFields('sea')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
             <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
+              :disabled="!!field.fineOnly && seaFineInactive()"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
-            <small v-if="field.hint" :class="{ 'field-hint--hidden': !!issueMessage(`scenario.environment.${field.key}`) }" class="field-hint">{{ field.hint }}</small>
+            <small v-if="naturalFieldHint(field)" :class="{ 'field-hint--hidden': !!issueMessage(`scenario.environment.${field.key}`) }" class="field-hint">{{ naturalFieldHint(field) }}</small>
           </el-form-item>
         </div>
       </section>
@@ -2063,12 +2044,13 @@ watch(activeTab, (tab) => {
                   :data-testid="`link-enabled-toggle-${linkPageOffset + $index}`"
                   @update:model-value="setLinkEnabled(row, $event)" />
               </template></el-table-column>
-              <el-table-column label="源节点" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.sourcePlatformId, showIds) }}</template></el-table-column>
+              <el-table-column label="发送端" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.sourcePlatformId, showIds) }}</template></el-table-column>
               <el-table-column label="中继节点" min-width="140"><template #default="{ row }">{{ row.relayPlatformId ? scenarioPlatformLabel(draft.config.platforms, row.relayPlatformId, showIds) : '不经中继' }}</template></el-table-column>
-              <el-table-column label="目标节点" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.targetPlatformId, showIds) }}</template></el-table-column>
+              <el-table-column label="接收端" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.targetPlatformId, showIds) }}</template></el-table-column>
               <el-table-column label="频率（MHz）" min-width="110"><template #default="{ row }">{{ effectiveLinkFromPorts(draft.config, row).frequency }}</template></el-table-column>
               <el-table-column label="带宽（MHz）" min-width="110"><template #default="{ row }">{{ effectiveLinkFromPorts(draft.config, row).bandwidth }}</template></el-table-column>
               <el-table-column label="方向" width="80"><template #default="{ row }">{{ linkDirectionLabels[row.direction] }}</template></el-table-column>
+              <el-table-column label="方向速率" min-width="115"><template #default="{ row }">{{ formatDataRate((row.direction === 'REVERSE' ? row.reverseDataRate : row.forwardDataRate) ?? effectiveLinkFromPorts(draft.config, row).dataRate) }}</template></el-table-column>
               <el-table-column label="操作" fixed="right" width="140">
                 <template #default="{ row, $index }">
                   <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-link-${linkPageOffset + $index}`" @click="openLinkEditor(row, linkPageOffset + $index)">编辑</el-button>
@@ -2192,45 +2174,21 @@ watch(activeTab, (tab) => {
             :generation-log="scriptGenerationLog"
             @preflight="scenarioStore.preflightScript"
           />
-          <TemplateLibrary
-            v-else-if="activeTab === 'templates'"
-            :can-maintain="false"
-            :allow-apply="true"
-            :pending="templatePending"
-            :draft-locked="draft?.locked ?? false"
-            :templates="templates"
-            :state="templateState"
-            :result-message="templateResultMessage"
-            :selected-template="selectedTemplate"
-            :last-confirmation="lastConfirmation"
-            @load="scenarioStore.loadTemplate"
-            @copy="applyTemplate"
-          />
       </div>
     </el-form>
 
     <div v-else class="scenario-stage-content">
-      <TemplateLibrary
-        v-if="activeTab === 'templates'"
-        :can-maintain="false"
-        :allow-apply="true"
-        :pending="templatePending"
-        :draft-locked="false"
-        :templates="templates"
-        :state="templateState"
-        :result-message="templateResultMessage"
-        :selected-template="selectedTemplate"
-        :last-confirmation="lastConfirmation"
-        @load="scenarioStore.loadTemplate"
-        @copy="applyTemplate"
-      />
-      <el-empty v-else-if="panelState === 'EMPTY'" description="暂无场景，请新建场景或选择场景模板。" data-testid="scenario-empty">
+      <el-empty v-if="panelState === 'EMPTY'" description="暂无场景，请新建场景。" data-testid="scenario-empty">
         <el-button type="primary" data-testid="create-scenario" @click="createScenario">新建场景</el-button>
-        <el-button @click="activeTab = 'templates'">选择场景模板</el-button>
       </el-empty>
     </div>
 
-    <ScriptPreviewDialog v-model="scriptPreviewVisible" :script="currentScriptPreview" :draft="draft" />
+    <ScriptPreviewDialog
+      v-model="scriptPreviewVisible"
+      :script="currentScriptPreview"
+      :draft="draft"
+      :receipt="scriptPreviewReceipt"
+    />
     <ScriptGenerationReceipt
       ref="scriptGenerationDialog"
       v-model="scriptGenerationReceiptVisible"

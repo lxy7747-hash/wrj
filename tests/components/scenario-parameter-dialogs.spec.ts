@@ -168,6 +168,37 @@ describe('场景参数弹框的真实编辑路径', () => {
     wrapper.unmount()
   })
 
+  it('旧排序不改变按起终点生成的热链，也不影响生成返向', async () => {
+    const config = scenario()
+    const seed = config.links[0]!
+    const { sourcePlatformId, targetPlatformId } = seed
+    const links: Link[] = [
+      { ...seed, id: 'B', type: 'DATALINK' },
+      { ...seed, id: 'A', type: 'MICROWAVE' },
+      { ...seed, id: 'R-B', type: 'DATALINK', direction: 'REVERSE', sourcePlatformId: targetPlatformId, targetPlatformId: sourcePlatformId },
+      { ...seed, id: 'R-A', type: 'FIBER', direction: 'REVERSE', sourcePlatformId: targetPlatformId, targetPlatformId: sourcePlatformId },
+    ]
+    const legacy = { ...readLinkSettings(config), priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'] }
+    const wrapper = mount(LinkSettingsPanel, {
+      props: { modelValue: legacy, dialogVisible: true, platforms: config.platforms, links, disabled: false, typeOptions },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+    })
+    const typed = wrapper as unknown as VueWrapper<{ $props: { modelValue: ScenarioLinkSettings } }>
+    const latest = () => wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    await wrapper.get('[data-testid="hot-link-settings"] > summary').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="hot-link-forward-quick-start"]').exists()).toBe(true))
+    select(wrapper, 'hot-link-forward-quick-start').vm.$emit('update:modelValue', sourcePlatformId)
+    select(wrapper, 'hot-link-forward-quick-end').vm.$emit('update:modelValue', targetPlatformId)
+    await wrapper.get('[data-testid="hot-link-forward-quick-generate"]').trigger('click')
+    expect(latest().hotLinks?.forward).toEqual([['A']])
+    expect(latest()).not.toHaveProperty('priority')
+    const legacyWithForward = { ...latest(), priority: legacy.priority }
+    await typed.setProps({ modelValue: legacyWithForward })
+    await wrapper.get('[data-testid="hot-link-forward-0-reverse"]').trigger('click')
+    expect(latest().hotLinks).toEqual({ forward: [['A']], reverse: [['R-A']] })
+    wrapper.unmount()
+  })
+
   it('链路编辑按类型、波段、方向重置端口参数，并保留接收侧和编码输入', async () => {
     const config = scenario()
     const link = structuredClone(config.links.find(item => item.type === 'SAT')) as Link
@@ -248,9 +279,11 @@ describe('场景参数弹框的真实编辑路径', () => {
     expect(receive.element.open).toBe(false)
     expect(receive.element.contains(wrapper.get('[data-testid="link-noise-figure"]').element)).toBe(true)
     expect(quality.get('[data-testid="link-modulation"]').element.closest('details')).toBeNull()
+    expect(wrapper.find('[data-testid="link-ber-threshold"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="link-coding"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="link-direction"]').element.closest('details')).toBeNull()
-    expect(wrapper.get('[data-testid="link-rx-gain"]').element.closest('details')).toBeNull()
+    expect(wrapper.find('[data-testid="link-tx-gain"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="link-rx-gain"]').exists()).toBe(false)
     const confirm = wrapper.get('[data-testid="apply-link"]')
     await confirm.trigger('click')
     expect(wrapper.emitted('apply')?.[0][0]).toMatchObject(savedParameters)
@@ -266,15 +299,13 @@ describe('场景参数弹框的真实编辑路径', () => {
       .find(item => item.props('label') === '调制方式')
     expect(modulationField?.props('error')).toBe('调制方式不正确。')
     inputNumber(wrapper, 'link-rx-frequency').vm.$emit('update:modelValue', 0)
-    inputNumber(wrapper, 'link-ber-threshold').vm.$emit('update:modelValue', 2)
     await receive.get('summary').trigger('click')
     await confirm.trigger('click')
     expect(receive.element.open).toBe(true)
     modulation.vm.$emit('update:modelValue', 'QPSK')
     inputNumber(wrapper, 'link-rx-frequency').vm.$emit('update:modelValue', 5600)
-    inputNumber(wrapper, 'link-ber-threshold').vm.$emit('update:modelValue', 0.002)
     await confirm.trigger('click')
-    expect(wrapper.emitted('apply')?.at(-1)?.[0]).toMatchObject({ ...savedParameters, rxFrequency: 5600, berThreshold: 0.002 })
+    expect(wrapper.emitted('apply')?.at(-1)?.[0]).toMatchObject({ ...savedParameters, rxFrequency: 5600 })
     expect(receive.element.open).toBe(true)
     expect(link).toMatchObject(savedParameters)
     wrapper.unmount()
@@ -342,7 +373,7 @@ describe('场景参数弹框的真实编辑路径', () => {
     expect(first).not.toHaveProperty('inheritPortParameters')
 
     await choose('link-type', 'LASER')
-    expect(inputNumber(wrapper, 'link-frequency').props('modelValue')).toBe(681_300_000)
+    expect(inputNumber(wrapper, 'link-frequency').props('modelValue')).toBe(193_500_000)
     await choose('link-type', 'DATALINK')
     await confirm.trigger('click')
     expect(wrapper.emitted('apply')!.at(-1)?.[0]).toMatchObject({ frequency: original.frequency, antennaGain: original.antennaGain })
@@ -476,27 +507,59 @@ describe('场景参数弹框的真实编辑路径', () => {
     wrapper.unmount()
   })
 
-  it('卫星方向速率接受范围内数值，清空后删除字段并回退历史速率', async () => {
+  it('每条链路均按当前通信方向展示并编辑对应前向/返向速率，清空后删除字段', async () => {
     const config = scenario()
-    const link = { ...(structuredClone(config.links[0]) as Link), type: 'SAT' as const }
-    delete link.forwardDataRate
-    delete link.reverseDataRate
-    const wrapper = mount(LinkEditorDialog, {
-      props: { modelValue: true, link, editing: true, error: '', pending: false, locked: false,
+    const baseLink = structuredClone(config.links[0]) as Link
+    delete baseLink.forwardDataRate
+    delete baseLink.reverseDataRate
+
+    // 卫星链路：前向仅展示前向速率，切到返向仅展示返向速率。
+    const satWrapper = mount(LinkEditorDialog, {
+      props: { modelValue: true, link: { ...baseLink, type: 'SAT', direction: 'FORWARD' }, editing: true, error: '', pending: false, locked: false,
         platforms: config.platforms, linkTypeOptions: typeOptions, linkDirectionLabels: { FORWARD: '前向', REVERSE: '返向' }, minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
     })
-    inputNumber(wrapper, 'link-forward-data-rate').vm.$emit('update:modelValue', 3)
-    inputNumber(wrapper, 'link-reverse-data-rate').vm.$emit('update:modelValue', 1.5)
-    await wrapper.get('[data-testid="apply-link"]').trigger('click')
-    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ forwardDataRate: 3, reverseDataRate: 1.5 })
-    inputNumber(wrapper, 'link-forward-data-rate').vm.$emit('update:modelValue', undefined)
-    inputNumber(wrapper, 'link-reverse-data-rate').vm.$emit('update:modelValue', undefined)
-    await wrapper.get('[data-testid="apply-link"]').trigger('click')
-    const emitted = wrapper.emitted('apply')!.at(-1)![0] as Link
-    expect(Object.hasOwn(emitted, 'forwardDataRate')).toBe(false)
-    expect(Object.hasOwn(emitted, 'reverseDataRate')).toBe(false)
-    wrapper.unmount()
+    expect(satWrapper.find('[data-testid="link-forward-data-rate"]').exists()).toBe(true)
+    expect(satWrapper.find('[data-testid="link-reverse-data-rate"]').exists()).toBe(false)
+    inputNumber(satWrapper, 'link-forward-data-rate').vm.$emit('update:modelValue', 3)
+    await satWrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(satWrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ forwardDataRate: 3 })
+
+    select(satWrapper, 'link-direction').vm.$emit('update:modelValue', 'REVERSE')
+    select(satWrapper, 'link-direction').vm.$emit('change', 'REVERSE')
+    await flushPromises()
+    expect(satWrapper.find('[data-testid="link-forward-data-rate"]').exists()).toBe(false)
+    expect(satWrapper.find('[data-testid="link-reverse-data-rate"]').exists()).toBe(true)
+    inputNumber(satWrapper, 'link-reverse-data-rate').vm.$emit('update:modelValue', 1.5)
+    await satWrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(satWrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ direction: 'REVERSE', forwardDataRate: 3, reverseDataRate: 1.5 })
+
+    inputNumber(satWrapper, 'link-reverse-data-rate').vm.$emit('update:modelValue', undefined)
+    await satWrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(Object.hasOwn(satWrapper.emitted('apply')!.at(-1)![0] as Link, 'reverseDataRate')).toBe(false)
+    satWrapper.unmount()
+
+    // 托管到端口参数设置的数传/光纤链路同样支持按方向设置独立速率。
+    const fiberWrapper = mount(LinkEditorDialog, {
+      props: {
+        modelValue: true,
+        link: { ...baseLink, type: 'FIBER', direction: 'FORWARD' },
+        editing: true, error: '', pending: false, locked: false,
+        platforms: config.platforms, linkTypeOptions: typeOptions, linkDirectionLabels: { FORWARD: '前向', REVERSE: '返向' }, minimumStep: 0.001,
+        resolvePortParameters: () => ({
+          source: { platformType: 'REAR_COMM_PLATFORM', portName: 'fiber_link' },
+          target: { platformType: 'COMMAND_VEHICLE_PLATFORM', portName: 'fiber_link' },
+          values: { dataRate: 1000 },
+        }),
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+    })
+    expect(fiberWrapper.find('[data-testid="link-forward-data-rate"]').exists()).toBe(true)
+    expect(fiberWrapper.find('[data-testid="link-reverse-data-rate"]').exists()).toBe(false)
+    inputNumber(fiberWrapper, 'link-forward-data-rate').vm.$emit('update:modelValue', 500)
+    await fiberWrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(fiberWrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ type: 'FIBER', forwardDataRate: 500 })
+    fiberWrapper.unmount()
   })
 
   it('脚本预览引导保存生成，保留预检操作和错误位置', async () => {
@@ -593,7 +656,7 @@ describe('干扰带宽档位和链路对准', () => {
     await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
     expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ type: 'SWEEP', bandwidth: 50 })
     await changeType('BARRAGE')
-    expect(inputNumber(wrapper, 'jammer-bandwidth').props('modelValue')).toBe(200)
+    expect(inputNumber(wrapper, 'jammer-bandwidth').props('modelValue')).toBe(10)
     expect(jammer).toMatchObject({ type: 'BARRAGE', bandwidth: 200 })
     wrapper.unmount()
   })
@@ -742,12 +805,12 @@ it('侦测与链路计算默认补副本，保存输入值并保持原设备不�
   // 干扰辐射功率与天线增益已移到主表单常显。
   expect(wrapper.find('[data-testid="jammer-eirpDbw"]').exists()).toBe(true)
   expect(wrapper.find('[data-testid="jammer-antennaGainDbi"]').exists()).toBe(true)
-  for (const [key, value] of Object.entries({ radarFrequency: 2400, radarBandwidth: 1, radarPower: 1000, noiseFigureDb: 3, eirpDbw: 40, antennaGainDbi: 0, txLossDb: 0, sweepDutyCycle: 0.1 })) {
+  for (const [key, value] of Object.entries({ radarFrequency: 2400, radarBandwidth: 1, radarPower: 1000, noiseFigureDb: 3, eirpDbw: 0, antennaGainDbi: 20, txLossDb: 0, sweepDutyCycle: 0.1 })) {
     expect(inputs.find(input => input.attributes('data-testid') === `jammer-${key}`)!.props('modelValue')).toBe(value)
   }
   inputs.find(input => input.attributes('data-testid') === 'jammer-radarPower')!.vm.$emit('update:modelValue', 175)
   await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
-  expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ ...original, radarPower: 175, gtDbk: -12, eirpDbw: 40 })
+  expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ ...original, radarPower: 175, gtDbk: -12, eirpDbw: 0, antennaGainDbi: 20 })
   expect(original).toEqual(draft.config.jammers[0])
   wrapper.unmount()
 })

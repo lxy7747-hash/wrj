@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { lstat, readFile, rename, writeFile } from 'node:fs/promises'
+import { lstat, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { once } from 'node:events'
 import { finished } from 'node:stream/promises'
@@ -17,7 +17,8 @@ interface IndexedEvent { time: number; type: string; id: string; subject?: strin
 interface LinkBinding { id: string; nodes: string[] }
 /** 版本 2 记录共享端口所属的链路集合；版本 1 中按链路编码的旧编号仍可安全读取。 */
 interface IndexManifest { version: 1 | 2; resultId: string; reportId: string; sourceSha256: string; positionSha256: string; rowCount: number; sha256: string; links: LinkBinding[]; bindingsSha256: string }
-interface BuildOptions { devices: unknown; canonicalEventsPath?: string }
+export interface ContinuousEventArchive { path: string; taskId: string; sha256: string }
+interface BuildOptions { devices: unknown; canonicalEvents?: ContinuousEventArchive }
 const DEVICE_TYPES = /^(COMM_TURNED_(ON|OFF)|WEAPON_TURNED_(ON|OFF)|WEAPON_MODE_(ACTIVATED|DEACTIVATED)|JAMMING_REQUEST_(INITIATED|UPDATED|CANCELED))$/
 const DETAIL_LIMIT = 500
 const indexPath = (directory: string, id: string) => join(directory, `${id}.report-index.ndjson`)
@@ -69,8 +70,9 @@ function eventRow(event: AfsimEventLog['events'][number], byDevice: Map<string, 
   return row
 }
 
-function canonicalRow(line: string, headers: string[], byDevice: Map<string, string[]>): IndexedEvent {
-  const cells = parseCsvLine(line); if (!cells || cells.length !== headers.length) throw new Error('连续事件索引行无效。')
+function canonicalRow(line: string, headers: string[], byDevice: Map<string, string[]>, taskId: string): IndexedEvent {
+  const cells = parseCsvLine(line)
+  if (!cells || cells.length !== headers.length || cells[0] !== taskId) throw new Error('连续时序 events.csv 含无效记录或其他任务数据。')
   const data = Object.fromEntries(headers.map((key, index) => [key, cells[index] ?? ''])), time = Number(data.Time)
   if (!Number.isFinite(time) || time < 0 || !data.EventType) throw new Error('连续事件索引时刻无效。')
   let parameters: Record<string, unknown> = {}; try { parameters = data.Parameters ? JSON.parse(data.Parameters) as Record<string, unknown> : {} } catch { throw new Error('连续事件索引参数无效。') }
@@ -84,21 +86,41 @@ export async function publishReportFilterIndex(directory: string, record: Missio
   if (!isLocalReport(report) || !log.valid || report.localEvidence.eventFile.sha256 !== log.source.sha256 || report.localEvidence.positionFile.sha256 !== replay.sha256) throw new Error('报告筛选索引的来源不一致。')
   const { byDevice, links } = bindings(options.devices), path = indexPath(directory, record.resultId), manifestFile = manifestPath(directory, record.resultId), pending = `${path}.pending`, pendingManifest = `${manifestFile}.pending`, writer = createWriteStream(pending, { encoding: 'utf8', flags: 'wx' }), hash = createHash('sha256')
   const writerFinished = finished(writer, { cleanup: true })
+  let ownsPendingIndex = false
+  writer.once('open', () => { ownsPendingIndex = true })
   // 读取输入期间也捕获异步文件错误，防止写盘失败成为未处理事件。
   void writerFinished.catch(() => undefined)
   let rows = 0
   const write = async (row: IndexedEvent) => { const line = `${JSON.stringify(row)}\n`; hash.update(line); rows += 1; if (!writer.write(line)) await Promise.race([once(writer, 'drain'), writerFinished]) }
   try {
     if ('messageDetailsComplete' in log && log.messageDetailsComplete === false) {
-      if (!options.canonicalEventsPath) throw new Error('大型事件缺少已核验的连续归档。')
-      const headers = EVENTS_CSV_HEADER.split(','), canonical = await readStableUtf8Lines(options.canonicalEventsPath, async (line, lineNumber) => { if (lineNumber === 1) { if (line !== EVENTS_CSV_HEADER) throw new Error('连续事件索引表头不正确。'); return } await write(canonicalRow(line, headers, byDevice)) }, 2 * 1024 * 1024 * 1024)
-      if (canonical.waitingForLine) throw new Error('连续事件索引含未完成尾行。')
+      const archive = options.canonicalEvents
+      if (!archive) throw new Error('大型事件缺少已核验的连续归档。')
+      const headers = EVENTS_CSV_HEADER.split(',')
+      const canonical = await readStableUtf8Lines(archive.path, (line, lineNumber) => {
+        if (lineNumber === 1) {
+          if (line !== EVENTS_CSV_HEADER) throw new Error('连续时序 events.csv 表头不符合规范。')
+          return
+        }
+        return write(canonicalRow(line, headers, byDevice, archive.taskId))
+      }, { maxLines: log.summary.eventCount + 1 })
+      if (canonical.source.bytes === 0 || canonical.waitingForLine || rows !== log.summary.eventCount || canonical.source.sha256 !== archive.sha256) {
+        throw new Error('连续时序 events.csv 实际行数、尾行或摘要与完整来源不一致。')
+      }
     } else for (const event of log.events) await write(eventRow(event, byDevice))
     writer.end(); await writerFinished
     if (rows !== report.localEvidence.eventCount) throw new Error('筛选索引缺少完整事件记录。')
     const manifest: IndexManifest = { version: 2, resultId: record.resultId, reportId: report.reportId, sourceSha256: log.source.sha256, positionSha256: replay.sha256, rowCount: rows, sha256: hash.digest('hex'), links, bindingsSha256: createHash('sha256').update(JSON.stringify(links)).digest('hex') }
-    await writeFile(pendingManifest, JSON.stringify(manifest), { encoding: 'utf8', flag: 'wx' }); await rename(pending, path); await rename(pendingManifest, manifestFile)
-  } catch (error) { writer.destroy(); await writerFinished.catch(() => undefined); throw error }
+    await writeFile(pendingManifest, JSON.stringify(manifest), { encoding: 'utf8', flag: 'wx' })
+    await rename(pending, path)
+    ownsPendingIndex = false
+    await rename(pendingManifest, manifestFile)
+  } catch (error) {
+    writer.destroy()
+    await writerFinished.catch(() => undefined)
+    if (ownsPendingIndex) await rm(pending, { force: true })
+    throw error
+  }
 }
 
 async function manifestFor(directory: string, snapshot: MissionResultSnapshot): Promise<IndexManifest> {
@@ -106,6 +128,7 @@ async function manifestFor(directory: string, snapshot: MissionResultSnapshot): 
   const path = manifestPath(directory, snapshot.record.resultId)
   let manifest: IndexManifest; try { const state = await lstat(path); if (!state.isFile() || state.isSymbolicLink() || state.size > 1024 * 1024) throw new Error('invalid'); manifest = JSON.parse(await readFile(path, 'utf8')) as IndexManifest } catch { throw new Error('FILTER_UNSUPPORTED') }
   if (Object.keys(manifest).length !== 9 || !['version', 'resultId', 'reportId', 'sourceSha256', 'positionSha256', 'rowCount', 'sha256', 'links', 'bindingsSha256'].every(key => Object.hasOwn(manifest, key)) || ![1, 2].includes(manifest.version) || manifest.resultId !== snapshot.record.resultId || manifest.reportId !== report.reportId || manifest.sourceSha256 !== report.localEvidence.eventFile.sha256 || manifest.positionSha256 !== report.localEvidence.positionFile.sha256 || !Number.isSafeInteger(manifest.rowCount) || manifest.rowCount < 0 || !/^[a-f0-9]{64}$/.test(manifest.sha256) || !/^[a-f0-9]{64}$/.test(manifest.bindingsSha256) || !Array.isArray(manifest.links) || manifest.links.length > 10_000 || manifest.links.some(link => !link || typeof link.id !== 'string' || !link.id || !Array.isArray(link.nodes) || !link.nodes.length || link.nodes.length > 3 || link.nodes.some(node => typeof node !== 'string' || !node)) || createHash('sha256').update(JSON.stringify(manifest.links)).digest('hex') !== manifest.bindingsSha256) throw new Error('FILTER_UNSUPPORTED')
+  if (manifest.rowCount !== report.localEvidence.eventCount) throw new Error('FILTER_UNSUPPORTED')
   return manifest
 }
 
@@ -158,7 +181,7 @@ export async function filterMissionReport(directory: string, snapshot: MissionRe
     if (timeline.length < 500) timeline.push({ id: row.id, time: row.time, type: row.type, subject: row.subject ?? '未提供', ...(row.target ? { target: row.target } : {}), ...(row.device ? { device: row.device } : {}), ...(row.stage ? { stage: row.stage } : {}) })
     if (connections.length < DETAIL_LIMIT && row.type === 'LINK_ADDED_TO_MANAGER' && row.subject && row.target) { if (!allowedNodes.has(row.subject)) relatedNodeIds.add(row.subject); if (!allowedNodes.has(row.target)) relatedNodeIds.add(row.target); connections.push({ eventId: row.id, time: row.time, scope: row.scope ?? (row.subject === row.target ? 'INTERNAL' : 'INTER_PLATFORM'), sourcePlatformId: row.subject, sourceDeviceId: row.sourceDeviceId ?? row.device ?? '未提供', targetPlatformId: row.target, targetDeviceId: row.targetDeviceId ?? '未提供' }) }
     if (deviceEvents.length < DETAIL_LIMIT && DEVICE_TYPES.test(row.type) && row.subject && allowedNodes.has(row.subject)) deviceEvents.push({ eventId: row.id, type: row.type, time: row.time, platformId: row.subject, deviceId: row.device ?? '未提供' })
-  }, 2 * 1024 * 1024 * 1024) } catch { throw new Error('FILTER_UNSUPPORTED') }
+  }, { maxLines: report.localEvidence.eventCount }) } catch { throw new Error('FILTER_UNSUPPORTED') }
   if (source.waitingForLine || rows !== manifest.rowCount || hash.digest('hex') !== manifest.sha256) throw new Error('FILTER_UNSUPPORTED')
   const tracks = new Map(snapshot.replay.tracks.map(track => [track.platformId, track.positions]))
   const nodes = report.localEvidence.nodes.filter(node => allowedNodes.has(node.platformId)).map(node => { const points = (tracks.get(node.platformId) ?? []).filter(point => inRange(point.time)); return { ...node, positionCount: points.length, firstTimeS: points[0]?.time ?? rangeStart, lastTimeS: points.at(-1)?.time ?? rangeStart } })

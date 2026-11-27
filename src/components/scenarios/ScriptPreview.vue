@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { formatDateTime } from '../../features/shared/date-time'
 import type { CapabilityState, ScriptContract, ValidationResult } from '../../contracts/domain-models'
+
+const PREVIEW_INITIAL_LINES = 400
+const LOG_INITIAL_COUNT = 50
 
 const props = defineProps<{
   state: CapabilityState
@@ -18,6 +21,23 @@ const props = defineProps<{
 const emit = defineEmits<{
   preflight: []
 }>()
+
+const showFullPreview = ref(false)
+const showFullLog = ref(false)
+watch(() => props.script?.preview, () => { showFullPreview.value = false })
+watch(() => props.generationLog, () => { showFullLog.value = false })
+
+const previewInfo = computed(() => {
+  const source = props.script?.preview ?? ''
+  if (showFullPreview.value) return { text: source, truncated: false, totalLines: 0 }
+  const lines = source.split(/\r\n?|\n/)
+  if (lines.length <= PREVIEW_INITIAL_LINES) return { text: source, truncated: false, totalLines: lines.length }
+  return { text: lines.slice(0, PREVIEW_INITIAL_LINES).join('\n'), truncated: true, totalLines: lines.length }
+})
+const visibleGenerationLog = computed(() => {
+  const list = props.generationLog ?? []
+  return showFullLog.value ? list : list.slice(0, LOG_INITIAL_COUNT)
+})
 
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(props.state))
 const issues = computed(() => [...props.preflight.errors, ...props.preflight.warnings])
@@ -56,10 +76,26 @@ function scriptLocation(fieldPath: string): string {
         <el-descriptions-item label="生成路径">{{ outputPath || '尚未写入本机文件' }}</el-descriptions-item>
       </el-descriptions>
       <details v-if="generationLog?.length" class="script-log" data-testid="script-generation-log">
-        <summary>生成日志</summary>
-        <div v-for="line in generationLog" :key="line">{{ line }}</div>
+        <summary>生成日志（{{ generationLog.length }}）</summary>
+        <div v-for="(line, index) in visibleGenerationLog" :key="index">{{ line }}</div>
+        <el-button
+          v-if="!showFullLog && generationLog.length > visibleGenerationLog.length"
+          link
+          type="primary"
+          @click="showFullLog = true"
+        >
+          展开全部 {{ generationLog.length }} 条日志
+        </el-button>
       </details>
-      <pre class="scenario-script-preview" data-testid="script-preview">{{ script.preview }}</pre>
+      <pre class="scenario-script-preview" data-testid="script-preview">{{ previewInfo.text }}</pre>
+      <el-button
+        v-if="previewInfo.truncated"
+        link
+        type="primary"
+        @click="showFullPreview = true"
+      >
+        当前仅展示前 {{ PREVIEW_INITIAL_LINES }} / {{ previewInfo.totalLines }} 行，点击展开完整预览
+      </el-button>
     </template>
     <el-table v-if="issues.length" :data="issues" stripe data-testid="preflight-issues">
       <el-table-column prop="severity" label="级别" width="90" />

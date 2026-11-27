@@ -76,8 +76,8 @@ watch(() => props.selectedLinkId, selected => {
           <el-tag v-if="row.runtimeQuality?.assessment" :type="row.runtimeQuality.assessment.status === 'UP' ? 'success' : row.runtimeQuality.assessment.status === 'DEGRADED' ? 'warning' : row.runtimeQuality.assessment.status === 'DOWN' ? 'danger' : 'info'" :title="runtimeDecisionReason(row.runtimeQuality.assessment.reason)">{{ RUNTIME_STATUS_LABELS[row.runtimeQuality.assessment.status] }}</el-tag>
         </header>
         <dl class="quality-card-metrics">
-          <div><dt>干信比 GXB（dB）</dt><dd data-metric="jsrDb">{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.gxbDb : row.detailed?.jsrDb, 2) }}</dd></div>
-          <div><dt>误码率</dt><dd>{{ berText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.ber : row.ber) }}</dd></div>
+          <div><dt>干信比(GXB)（dB）</dt><dd data-metric="jsrDb">{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.gxbDb : row.detailed?.jsrDb, 2) }}</dd></div>
+          <div><dt>误码率(BER)</dt><dd>{{ berText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.ber : row.ber) }}</dd></div>
           <div><dt>发射辐射功率（dBW）</dt><dd>{{ metricText(row.runtimeQuality?.measurement.quality.inputTrace.eirpDbw, 2) }}</dd></div>
           <div><dt>距离（m）</dt><dd>{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.distanceMeters : row.detailed?.distance, 2) }}</dd></div>
         </dl>

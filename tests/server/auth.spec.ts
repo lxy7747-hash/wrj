@@ -331,7 +331,14 @@ describe('P1 in-memory authentication boundary', () => {
     const conflict = await admin.post('/api/v1/admin/users')
       .send(command('CREATE', duplicate))
       .expect(409)
-    expect(conflict.body).toMatchObject({ ok: false, error: { code: 'CONFLICT' } })
+    expect(conflict.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'CONFLICT',
+        fieldPath: 'user.username',
+        message: '登录账号「operator」已存在，请更换其他登录账号。',
+      },
+    })
 
     const unknown = await admin.delete('/api/v1/admin/users/USR-UNKNOWN').expect(404)
     expect(unknown.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
@@ -402,7 +409,14 @@ describe('P1 in-memory authentication boundary', () => {
     const duplicateUpdate = await admin.put('/api/v1/admin/users/USR-OPERATOR')
       .send(command('UPDATE', { ...fixtureOperator, username: 'admin' }))
       .expect(409)
-    expect(duplicateUpdate.body).toMatchObject({ ok: false, error: { code: 'CONFLICT' } })
+    expect(duplicateUpdate.body).toMatchObject({
+      ok: false,
+      error: {
+        code: 'CONFLICT',
+        fieldPath: 'user.username',
+        message: '登录账号「admin」已存在，请更换其他登录账号。',
+      },
+    })
 
     const unknownUpdate = await admin.put('/api/v1/admin/users/USR-UNKNOWN')
       .send(command('UPDATE', {

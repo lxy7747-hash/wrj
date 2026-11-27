@@ -119,6 +119,9 @@ const linkEngineWsUrl = lan ? lan.linkEngineWsUrl
 // 本机 mission 默认使用 local_link_stub，避免依赖部署机外部 LinkCalc 插件及其 WS 地址；设 WRJ_LINK_CALC_MODE=auto 可恢复探测。
 const forceLinkStub = !lan && (process.env.WRJ_LINK_CALC_MODE?.trim().toLowerCase() ?? 'stub') !== 'auto'
 if (!lan && !forceLinkStub) await syncLocalLinkCalcConfig(missionExecutable, linkEngineWsUrl)
+else if (!lan && forceLinkStub && linkEngineWsUrl) {
+  console.warn(`[wrj-local] 当前 WRJ_LINK_CALC_MODE=stub（本机 mission 不加载 LinkCalc 插件），但 useRealEngine=true 仍将连接 ${linkEngineWsUrl}；如需本机插件推送请在 .env.local 设置 WRJ_LINK_CALC_MODE=auto。`)
+}
 const missionExecution = lan?.webOnly
   ? { start: async () => { throw new Error('当前是仅网页部署，仿真引擎尚未部署。') } }
   : lan && linkEngineWsUrl

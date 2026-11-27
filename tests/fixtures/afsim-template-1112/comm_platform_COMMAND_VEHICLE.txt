@@ -194,7 +194,7 @@ platform_type COMMAND_VEHICLE_PLATFORM WSF_PLATFORM
           writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
           string dest = MESSAGE.AuxDataString("destination");
           string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_platform_name");
-          if (nxts != "") {
+          if (nxts != "" && nxts != "interrupted") {
             string fw_sit_nexts_Change = nxts;
             string fw_sit_outs_Change  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_out_port_name");
             string fw_sit_ins_Change   = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_in_port_name");
@@ -213,7 +213,7 @@ platform_type COMMAND_VEHICLE_PLATFORM WSF_PLATFORM
           string dest = MESSAGE.AuxDataString("destination");
           string nxts = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_platform_name");
 
-          if (nxts != "") {
+          if (nxts != "" && nxts != "interrupted") {
             string fw_tgt_nexts_Change = nxts;
             string fw_tgt_outs_Change  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_out_port_name");
             string fw_tgt_ins_Change   = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name");
@@ -232,7 +232,7 @@ platform_type COMMAND_VEHICLE_PLATFORM WSF_PLATFORM
           writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
           string dest = MESSAGE.AuxDataString("destination");
           string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_platform_name");
-          if (nxts != "") {
+          if (nxts != "" && nxts != "interrupted") {
             string rt_video_nexts_Change = nxts;
             string rt_video_outs_Change  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_out_port_name");
             string rt_video_ins_Change   = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name");
@@ -250,7 +250,7 @@ platform_type COMMAND_VEHICLE_PLATFORM WSF_PLATFORM
           writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
           string dest = MESSAGE.AuxDataString("destination");
           string nxts = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_platform_name");
-          if (nxts != "") {
+          if (nxts != "" && nxts != "interrupted") {
             string rt_status_nexts_Change = nxts;
             string rt_status_outs_Change  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_out_port_name");
             string rt_status_ins_Change   = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name");

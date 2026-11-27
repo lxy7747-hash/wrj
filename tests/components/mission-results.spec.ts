@@ -5,6 +5,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import MissionResults from '../../src/components/situation/MissionResults.vue'
 import { useAuthStore } from '../../src/stores/auth'
+import { useSimulationStore } from '../../src/stores/simulation'
 
 const record = {
   resultId: 'RESULT-11111111-1111-4111-8111-111111111111',
@@ -40,6 +41,22 @@ describe('运行结果导航入口', () => {
       await flushPromises()
       expect(router.currentRoute.value.path).toBe('/reports')
       expect(router.currentRoute.value.query.resultId).toBe(record.resultId)
+    } finally { wrapper.unmount() }
+  })
+
+  it('未选场景时从导航打开最新结果，保留显式文件归档', async () => {
+    const { wrapper, router } = await mountResults('replay')
+    try {
+      const simulation = useSimulationStore()
+      simulation.run = {
+        runId: 'RUN-BOOT', taskId: 'TASK-001', scenarioId: 'SCN-BOOT', uiStatus: 'IDLE', configLocked: false,
+        canonical: { status: 'IDLE', currentTime: 0, totalDuration: 60, processId: null, progress: 0 },
+      }
+      await router.push('/replays')
+      await vi.waitFor(() => expect(router.currentRoute.value.query.resultId).toBe(record.resultId))
+      await router.push('/replays?archiveId=ARCH-LOCAL-ONLY')
+      await flushPromises()
+      expect(router.currentRoute.value.query).toEqual({ archiveId: 'ARCH-LOCAL-ONLY' })
     } finally { wrapper.unmount() }
   })
 

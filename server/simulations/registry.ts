@@ -76,6 +76,7 @@ export class SimulationRegistry {
   startMission(runId: string, pid: number, startedAt: string): SimulationRun {
     return this.requiredOwner(runId).startMission(pid, startedAt)
   }
+  markMissionExited(runId: string): SimulationRun { return this.requiredOwner(runId).markMissionExited() }
   finishMission(runId: string, outcome: MissionOutcome, explicitlyStopped = false): SimulationRun { return this.requiredOwner(runId).finishMission(outcome, explicitlyStopped) }
   startRemote(runId: string, startedAt: string): SimulationRun { return this.requiredOwner(runId).startRemote(startedAt) }
   updateRemoteTime(runId: string, time: number): SimulationRun { return this.requiredOwner(runId).updateRemoteTime(time) }

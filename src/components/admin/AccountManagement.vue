@@ -43,7 +43,7 @@ function beforeCloseRoleProfiles(done: () => void): void {
   })
 }
 onMounted(() => { void admin.refreshUsers(); void refreshRoleConfig() })
-const { users, panelState, resultCode, resultMessage } = storeToRefs(admin)
+const { users, panelState, resultMessage } = storeToRefs(admin)
 const roleConfig = ref<AccessControlConfig | null>(null)
 const roleError = ref('')
 let roleEpoch = 0
@@ -241,6 +241,7 @@ async function confirmDelete(): Promise<void> {
   if (user === null || pending.value || user.userId === auth.principal?.userId) return
   const deleted = await admin.mutateUser(user, 'DELETE', user)
   if (deleted) { void refreshRoleConfig(); ElMessage.success(resultMessage.value) }
+  else if (resultMessage.value) ElMessage.error(resultMessage.value)
   pendingDelete.value = null
 }
 
@@ -265,6 +266,7 @@ async function confirmResetPassword(): Promise<void> {
   if (user === null || pending.value || user.userId === auth.principal?.userId) return
   const reset = await admin.resetUserPassword(user)
   if (reset) ElMessage.success(resultMessage.value)
+  else if (resultMessage.value) ElMessage.error(resultMessage.value)
   pendingResetPassword.value = null
 }
 </script>
@@ -512,16 +514,6 @@ async function confirmResetPassword(): Promise<void> {
     >
       <RoleProfiles v-if="showRoleProfiles" ref="roleProfilesRef" :users="users" @saved="refreshRoleConfig" />
     </el-dialog>
-    <section v-if="panelState === 'ERROR'" class="result-section" aria-label="操作结果">
-      <div class="result-section__label">最近操作结果</div>
-      <el-alert
-        class="panel-result"
-        :closable="false"
-        :type="panelState === 'ERROR' ? 'error' : 'info'"
-        :title="`结果代码：${resultCode}`"
-        :description="resultMessage"
-      />
-    </section>
   </div>
 </template>
 
@@ -675,34 +667,6 @@ async function confirmResetPassword(): Promise<void> {
   min-width: 46rem;
 }
 
-.result-section {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: stretch;
-  border: 1px solid var(--console-border);
-  border-radius: var(--console-radius);
-  overflow: hidden;
-  background: var(--console-bg-elevated);
-}
-
-.result-section__label {
-  display: grid;
-  padding: var(--space-3, 0.75rem) var(--space-4, 1rem);
-  place-items: center;
-  border-right: 1px solid var(--console-border);
-  color: var(--console-text-muted);
-  font-size: var(--console-font-size-min);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.panel-result {
-  min-width: 0;
-  border: 0;
-  border-radius: 0;
-}
-
 @media (max-width: 560px) {
   .account-management {
     gap: var(--space-2, 0.5rem);
@@ -745,16 +709,6 @@ async function confirmResetPassword(): Promise<void> {
   .panel-toolbar {
     width: 100%;
     justify-content: flex-end;
-  }
-
-  .result-section {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .result-section__label {
-    justify-content: start;
-    border-right: 0;
-    border-bottom: 1px solid var(--console-border);
   }
 }
 </style>

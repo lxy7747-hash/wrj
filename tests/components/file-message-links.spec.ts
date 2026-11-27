@@ -209,6 +209,9 @@ describe('文件消息链路投影', () => {
     expect(atLast).toMatchObject({ messageCount: 3, firstTimeS: 1.001, lastTimeS: 9.001 })
     // 末次投递之后必须消失，否则地图会把已经停用的链路一直画到结束。
     expect(selectFileMessageLinks(links, 9.002)).toEqual([])
+    expect(selectFileMessageLinks(links, 0, 'received')).toEqual([])
+    expect(selectFileMessageLinks(links, 5.25, 'received')[0]).toMatchObject({ messageCount: 2, lastTimeS: 5.001 })
+    expect(selectFileMessageLinks(links, 9.002, 'received')[0]).toEqual(links[0])
     expect(selectFileMessageLinks(links, 5400)).toEqual([])
     expect(selectFileMessageLinks([], 100)).toEqual([])
     expect(links).toEqual(before)

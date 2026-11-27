@@ -93,7 +93,7 @@ const templateExport = ref<{ title: string; filename: string; json: string } | n
  */
 async function loadTemplateMaintenance(): Promise<void> {
   const requests: Promise<boolean>[] = []
-  if (templateState.value === 'EMPTY' && templates.value.length === 0) requests.push(scenarioStore.loadTemplates())
+  if (!scenarioStore.templatesLoaded) requests.push(scenarioStore.loadTemplates())
   await Promise.all(requests)
 }
 

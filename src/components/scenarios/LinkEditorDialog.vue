@@ -8,7 +8,7 @@ import { prepareLinkMasterData } from '../../features/scenarios/link-master-para
 import { isPlatformPortLinkField, type LinkPortEditorProjection } from '../../features/scenarios/link-port-parameters'
 import { LINK_PARAMETER_DEFAULTS } from '../../features/scenarios/link-settings'
 import {
-  datalinkRateTiers, FIBER_DATA_RATE_MBPS, fixedLinkDataRate, formatDataRate, LASER_LINK_MODULATION, linkPowerMaxW, linkTypeDefaults,
+  datalinkRateTiers, FIBER_DATA_RATE_MBPS, fixedLinkDataRate, formatDataRate, linkPowerMaxW, linkTypeDefaults,
 } from '../../features/scenarios/link-calc-defaults'
 import { changeBusinessDirection } from '../../features/scenarios/business-defaults'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
@@ -289,40 +289,10 @@ const laserWavelengthNm = computed(() => {
     : null
 })
 
-function setLaserNumber(key: 'txApertureDiameterM' | 'rxApertureDiameterM' | 'pulseWidthS', value: number | null | undefined): void {
-  if (!editor.value) return
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    editor.value.laser = { ...editor.value.laser, [key]: value }
-  } else if (editor.value.laser) {
-    delete editor.value.laser[key]
-    clearEmptyLaser()
-  }
-}
-
-function setLaserPulseWidthNs(value: number | null | undefined): void {
-  // 界面采用 ns，合同中稳定存储为 s。
-  setLaserNumber('pulseWidthS', typeof value === 'number' && Number.isFinite(value) ? value * 1e-9 : value)
-}
-
-function setLaserModulation(value: string | null | undefined): void {
-  if (!editor.value) return
-  if (value === 'OOK') editor.value.laser = { ...editor.value.laser, modulation: 'OOK' }
-  else if (editor.value.laser) {
-    delete editor.value.laser.modulation
-    clearEmptyLaser()
-  }
-}
-
 function setReceiveCarrierNumber(key: 'rxFrequency' | 'rxBandwidth', value: number | null | undefined): void {
   if (!editor.value) return
   if (typeof value === 'number' && Number.isFinite(value)) editor.value[key] = value
   else delete editor.value[key]
-}
-
-function clearEmptyLaser(): void {
-  if (!editor.value?.laser) return
-  const { txApertureDiameterM, rxApertureDiameterM, pulseWidthS, modulation } = editor.value.laser
-  if (txApertureDiameterM === undefined && rxApertureDiameterM === undefined && pulseWidthS === undefined && modulation === undefined) delete editor.value.laser
 }
 
 /** 清空噪声系数时恢复设备缺省（3 dB）。 */
@@ -396,7 +366,15 @@ function changeDirection(): void {
   if (editor.value?.type === 'DATALINK') applyTypeDefaults()
 }
 
-/** 可选方向速率清空后必须删除属性，才能回退到历史 dataRate 而不是留下 undefined。 */
+/** 未填写单链方向速率时的占位提示，展示当前沿用的端口/默认速率。 */
+const directionalRatePlaceholder = computed(() => {
+  const fallback = portParameters.value?.values.dataRate ?? fixedDataRate.value ?? editor.value?.dataRate
+  return typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0
+    ? `默认 ${formatDataRate(fallback)}`
+    : '留空沿用端口/默认速率'
+})
+
+/** 可选方向速率清空后必须删除属性，才能回退到端口/默认速率而不是留下 undefined。 */
 function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: number | null | undefined): void {
   if (!editor.value) return
   if (typeof value === 'number' && Number.isFinite(value)) editor.value[key] = value
@@ -451,12 +429,12 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
       <section class="link-editor-section" aria-labelledby="link-endpoint-title">
         <h4 id="link-endpoint-title" class="link-editor-section__title">端点配置</h4>
         <div class="link-editor-grid">
-          <el-form-item required label="源节点" :error="fieldError('sourcePlatformId')">
+          <el-form-item required label="发送端" :error="fieldError('sourcePlatformId')">
             <el-select v-model="editor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source" @change="revealEndpointConstraint = true">
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
           </el-form-item>
-          <el-form-item required label="目标节点" :error="fieldError('targetPlatformId')">
+          <el-form-item required label="接收端" :error="fieldError('targetPlatformId')">
             <el-select v-model="editor.targetPlatformId" filterable style="width: 100%" data-testid="link-target" @change="revealEndpointConstraint = true">
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
@@ -476,8 +454,8 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
           <template v-if="usePlatformPorts">
             <p>端口参数统一在「端口参数设置」中配置。</p>
             <div v-if="portParameters" data-testid="link-port-parameters">
-              <p>源节点端口：{{ scenarioPlatformLabel(platforms, editor.sourcePlatformId, showIds) }} · {{ portParameters.source.portName }}</p>
-              <p>目标节点端口：{{ scenarioPlatformLabel(platforms, editor.targetPlatformId, showIds) }} · {{ portParameters.target.portName }}</p>
+              <p>发送端端口：{{ scenarioPlatformLabel(platforms, editor.sourcePlatformId, showIds) }} · {{ portParameters.source.portName }}</p>
+              <p>接收端端口：{{ scenarioPlatformLabel(platforms, editor.targetPlatformId, showIds) }} · {{ portParameters.target.portName }}</p>
             </div>
             <p v-else>请选择可匹配端口的节点和链路类型。</p>
             <p v-for="message in portValidationMessages" :key="message" class="link-port-conflict" role="alert" data-testid="link-port-validation">{{ message }}</p>
@@ -520,7 +498,23 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
           </div>
           <p v-if="parameterMismatch" role="alert" data-testid="link-parameter-mismatch">{{ parameterMismatch }}</p>
         </div>
-        <div v-if="!usePlatformPorts || !fiber" class="link-editor-grid">
+        <div class="link-editor-grid">
+          <el-form-item v-if="editor.direction === 'FORWARD' || Boolean(fieldError('forwardDataRate'))" label="前向速率（Mbps）" :error="fieldError('forwardDataRate')">
+            <el-input-number :model-value="editor.forwardDataRate" :min="validate ? undefined : editor.type === 'SAT' ? 0.128 : 0.001"
+              :max="validate ? undefined : editor.type === 'SAT' ? 8 : undefined" :step="0.001" :placeholder="directionalRatePlaceholder"
+              controls-position="right" data-testid="link-forward-data-rate" @update:model-value="setDirectionalRate('forwardDataRate', $event)" />
+            <small :class="{ 'link-editor-hint--hidden': !!fieldError('forwardDataRate') }" class="link-editor-hint">
+              {{ editor.type === 'SAT' ? '0.128～8 Mbps；留空沿用端口/默认速率。' : '大于 0 Mbps；留空沿用端口/默认速率。' }}
+            </small>
+          </el-form-item>
+          <el-form-item v-if="editor.direction === 'REVERSE' || Boolean(fieldError('reverseDataRate'))" label="返向速率（Mbps）" :error="fieldError('reverseDataRate')">
+            <el-input-number :model-value="editor.reverseDataRate" :min="validate ? undefined : editor.type === 'SAT' ? 0.064 : 0.001"
+              :max="validate ? undefined : editor.type === 'SAT' ? 2 : undefined" :step="0.001" :placeholder="directionalRatePlaceholder"
+              controls-position="right" data-testid="link-reverse-data-rate" @update:model-value="setDirectionalRate('reverseDataRate', $event)" />
+            <small :class="{ 'link-editor-hint--hidden': !!fieldError('reverseDataRate') }" class="link-editor-hint">
+              {{ editor.type === 'SAT' ? '0.064～2 Mbps；留空沿用端口/默认速率。' : '大于 0 Mbps；留空沿用端口/默认速率。' }}
+            </small>
+          </el-form-item>
           <el-form-item v-if="!usePlatformPorts" required :label="laser ? '介质传输速率（Mbps）' : '数据速率'" :error="fieldError('dataRate')">
             <el-input v-if="fixedDataRate !== null" :model-value="formatDataRate(fixedDataRate)" disabled data-testid="link-data-rate" />
             <el-select v-else-if="editor.type === 'DATALINK'" v-model="editor.dataRate" style="width: 100%" data-testid="link-data-rate">
@@ -531,18 +525,6 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
               controls-position="right" data-testid="link-data-rate" />
             <small v-if="fixedDataRate === null && !laser" :class="{ 'link-editor-hint--hidden': !!fieldError('dataRate') }" class="link-editor-hint">{{ editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : '单位 Mbps' }}</small>
           </el-form-item>
-          <template v-if="editor.type === 'SAT'">
-            <el-form-item label="前向速率（Mbps）" :error="fieldError('forwardDataRate')">
-              <el-input-number :model-value="editor.forwardDataRate" :min="0.128" :max="8" :step="0.001" placeholder="兼容旧速率" controls-position="right"
-                data-testid="link-forward-data-rate" @update:model-value="setDirectionalRate('forwardDataRate', $event)" />
-              <small :class="{ 'link-editor-hint--hidden': !!fieldError('forwardDataRate') }" class="link-editor-hint">0.128～8 Mbps；清空后兼容历史速率。</small>
-            </el-form-item>
-            <el-form-item label="返向速率（Mbps）" :error="fieldError('reverseDataRate')">
-              <el-input-number :model-value="editor.reverseDataRate" :min="0.064" :max="2" :step="0.001" placeholder="兼容旧速率" controls-position="right"
-                data-testid="link-reverse-data-rate" @update:model-value="setDirectionalRate('reverseDataRate', $event)" />
-              <small :class="{ 'link-editor-hint--hidden': !!fieldError('reverseDataRate') }" class="link-editor-hint">0.064～2 Mbps；清空后兼容历史速率。</small>
-            </el-form-item>
-          </template>
           <el-form-item v-if="!usePlatformPorts" required :label="fiber ? '发送频率（MHz）' : laser ? '激光频率（MHz）' : '发射频率（MHz）'" :error="fieldError('frequency')">
             <el-input-number v-model="editor.frequency" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-frequency" @input="emit('frequency-input', $event)" />
             <small v-if="laser" :class="{ 'link-editor-hint--hidden': !!fieldError('frequency') }" class="link-editor-hint" data-testid="laser-wavelength">
@@ -558,24 +540,19 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             </el-form-item>
           </template>
           <template v-if="!fiber && !laser">
-            <el-form-item required label="发射天线增益（dBi）" :error="fieldError('antennaGain.tx')"><el-input-number v-model="editor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
-            <el-form-item required label="接收天线增益（dBi）" :error="fieldError('antennaGain.rx')"><el-input-number v-model="editor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
+            <el-form-item v-if="Boolean(fieldError('antennaGain.tx'))" required label="发射天线增益（dBi）" :error="fieldError('antennaGain.tx')"><el-input-number v-model="editor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
+            <el-form-item v-if="Boolean(fieldError('antennaGain.rx'))" required label="接收天线增益（dBi）" :error="fieldError('antennaGain.rx')"><el-input-number v-model="editor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
           </template>
         </div>
-        <section class="link-editor-section" aria-labelledby="link-quality-title" data-testid="link-quality-advanced">
+        <section v-if="!laser" class="link-editor-section" aria-labelledby="link-quality-title" data-testid="link-quality-advanced">
           <h5 id="link-quality-title" class="link-editor-section__title">质量参数</h5>
           <div class="link-editor-grid">
-            <el-form-item v-if="!laser" required label="调制方式" :error="fieldError('modulation')">
+            <el-form-item required label="调制方式" :error="fieldError('modulation')">
               <el-select v-model="editor.modulation" clearable value-on-clear="" style="width: 100%" data-testid="link-modulation">
                 <el-option v-for="value in LINK_MODULATIONS" :key="value" :label="value" :value="value" />
               </el-select>
             </el-form-item>
-            <el-form-item v-else label="调制方式" :error="fieldError('laser.modulation')">
-              <el-select :model-value="editor.laser?.modulation" clearable value-on-clear="" placeholder="可选：OOK" style="width: 100%" data-testid="laser-modulation" @update:model-value="setLaserModulation">
-                <el-option :label="LASER_LINK_MODULATION" :value="LASER_LINK_MODULATION" />
-              </el-select>
-            </el-form-item>
-            <el-form-item required label="误码率阈值" :error="fieldError('berThreshold')">
+            <el-form-item v-if="Boolean(fieldError('berThreshold'))" required label="误码率阈值" :error="fieldError('berThreshold')">
               <div class="link-editor-threshold">
                 <el-input-number v-model="editor.berThreshold" :min="validate ? undefined : 0" :max="validate ? undefined : 1" :step="0.000001" controls-position="right" data-testid="link-ber-threshold" />
                 <span :class="{ 'link-editor-hint--hidden': !!fieldError('berThreshold') }">取值范围 0–1</span>
@@ -584,7 +561,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
           </div>
         </section>
         <details v-if="!fiber && !usePlatformPorts" ref="receiveDetails" class="scenario-advanced" data-testid="link-receive-advanced">
-          <summary>接收与极化</summary>
+          <summary>{{ laser ? '接收参数' : '接收与极化' }}</summary>
           <div class="link-editor-grid">
             <el-form-item v-if="!usePlatformPorts" :required="!laser" :label="laser ? '接收激光频率（MHz）' : '接收频率（MHz）'" :error="fieldError('rxFrequency')">
               <el-input-number :model-value="editor.rxFrequency" :placeholder="laser ? '留空时与发射相同' : undefined" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-rx-frequency" @update:model-value="setReceiveCarrierNumber('rxFrequency', $event)" />
@@ -610,7 +587,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             </template>
           </div>
         </details>
-        <details class="scenario-advanced" data-testid="link-gain-advanced" :open="['antennaGainCorrectionDb', 'antiJammingGainDb', 'spatialIsolationDb'].some(key => fieldError(key))">
+        <details v-if="!laser" class="scenario-advanced" data-testid="link-gain-advanced" :open="['antennaGainCorrectionDb', 'antiJammingGainDb', 'spatialIsolationDb'].some(key => fieldError(key))">
           <summary>增益修正与抗干扰参数</summary>
           <div class="link-editor-grid">
           <el-form-item v-if="!usePlatformPorts" label="天线增益修正值（dB）" :error="fieldError('antennaGainCorrectionDb')"><el-input-number v-model="editor.antennaGainCorrectionDb" controls-position="right" data-testid="link-gain-correction" /></el-form-item>
@@ -621,8 +598,8 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
       </section>
 
       <details v-if="laser" class="link-editor-section scenario-advanced" data-testid="link-laser-advanced"
-        :open="validationIssues.some(issue => issue.fieldPath.startsWith('laser.') || ['eirpDbw', 'gtDbk', 'noiseFigureDb'].includes(issue.fieldPath))">
-        <summary>激光专业参数与可选扩展</summary>
+        :open="validationIssues.some(issue => ['eirpDbw', 'gtDbk', 'noiseFigureDb'].includes(issue.fieldPath))">
+        <summary>激光增益与噪声参数</summary>
         <div class="link-editor-grid">
           <el-form-item label="EIRP（dBW）" :error="fieldError('eirpDbw')">
             <el-input-number :model-value="editor.eirpDbw" :step="0.1" controls-position="right" data-testid="laser-eirp" @update:model-value="setLaserNumberField('eirpDbw', $event)" />
@@ -632,18 +609,6 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
           </el-form-item>
           <el-form-item label="噪声系数（dB）" :error="fieldError('noiseFigureDb')">
             <el-input-number :model-value="editor.noiseFigureDb" :min="validate ? undefined : 0" :step="0.1" controls-position="right" data-testid="laser-noise" @update:model-value="setLaserNumberField('noiseFigureDb', $event)" />
-          </el-form-item>
-          <el-form-item label="发射光学口径（m）" :error="fieldError('laser.txApertureDiameterM')">
-            <el-input-number :model-value="editor.laser?.txApertureDiameterM" :min="validate ? undefined : Number.MIN_VALUE" controls-position="right"
-              data-testid="laser-tx-aperture" @update:model-value="setLaserNumber('txApertureDiameterM', $event)" />
-          </el-form-item>
-          <el-form-item label="接收光学口径（m）" :error="fieldError('laser.rxApertureDiameterM')">
-            <el-input-number :model-value="editor.laser?.rxApertureDiameterM" :min="validate ? undefined : Number.MIN_VALUE" controls-position="right"
-              data-testid="laser-rx-aperture" @update:model-value="setLaserNumber('rxApertureDiameterM', $event)" />
-          </el-form-item>
-          <el-form-item label="激光脉宽（ns）" :error="fieldError('laser.pulseWidthS')">
-            <el-input-number :model-value="editor.laser?.pulseWidthS === undefined ? undefined : editor.laser.pulseWidthS * 1e9" :min="validate ? undefined : Number.MIN_VALUE" controls-position="right"
-              data-testid="laser-pulse-width" @update:model-value="setLaserPulseWidthNs" />
           </el-form-item>
         </div>
       </details>

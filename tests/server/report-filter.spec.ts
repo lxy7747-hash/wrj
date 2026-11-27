@@ -22,6 +22,10 @@ const { default: request } = await import('super' + 'test')
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 
+async function canonicalEvents(path: string) {
+  return { path, taskId: 'TASK-FILTER', sha256: createHash('sha256').update(await readFile(path)).digest('hex') }
+}
+
 async function fixture(canonical = false, eventCsv = REPORT_EVENT_CSV) {
   const root = await mkdtemp(join(tmpdir(), 'wrj-report-filter-')); roots.push(root)
   const events = join(root, 'scenario_events.csv'), positions = join(root, 'position.csv'), resultDir = join(root, 'results')
@@ -37,7 +41,7 @@ async function fixture(canonical = false, eventCsv = REPORT_EVENT_CSV) {
   await publishReportFilterIndex(resultDir, record, indexReport, replay, log, {
     // Native REPORT_EVENT_CSV has tx/rx but no link_id. Mapping is the authoritative link binding.
     devices: [{ linkId: 'L-RELAY', source: { platformId: 'A', deviceId: 'tx' }, target: { platformId: 'B', deviceId: 'rx' }, relay: { platformId: 'R', ingressDeviceId: 'relay-in', egressDeviceId: 'relay-out' } }],
-    ...(canonical ? { canonicalEventsPath: canonicalPath } : {}),
+    ...(canonical ? { canonicalEvents: await canonicalEvents(canonicalPath) } : {}),
   })
   return { root, resultDir, record, snapshot }
 }
@@ -113,7 +117,7 @@ describe('结果报表筛选索引', () => {
     await writeFile(path, ' '.repeat(1024 * 1024 + 1))
     await expect(filterMissionReport(resultDir, snapshot, {})).rejects.toThrow('FILTER_UNSUPPORTED')
     for (const patch of [{ reportId: 'OTHER' }, { sourceSha256: 'f'.repeat(64) }, { positionSha256: 'e'.repeat(64) },
-      { rowCount: -1 }, { links: [null] }, { links: [{ id: 'BAD', nodes: [null] }] }, { bindingsSha256: 'd'.repeat(64) }]) {
+      { rowCount: -1 }, { rowCount: 8 }, { links: [null] }, { links: [{ id: 'BAD', nodes: [null] }] }, { bindingsSha256: 'd'.repeat(64) }]) {
       await writeFile(path, JSON.stringify({ ...manifest, ...patch }))
       await expect(filterMissionReport(resultDir, snapshot, {})).rejects.toThrow('FILTER_UNSUPPORTED')
     }
@@ -132,7 +136,7 @@ describe('结果报表筛选索引', () => {
       await writeFile(canonicalPath, input)
       const next = { ...record, resultId: `RESULT-00000000-0000-0000-0000-${String(++suffix).padStart(12, '0')}` }
       await expect(publishReportFilterIndex(resultDir, next, snapshot.report, snapshot.replay,
-        { ...source, messageDetailsComplete: false }, { devices: [], canonicalEventsPath: canonicalPath })).rejects.toThrow()
+        { ...source, messageDetailsComplete: false }, { devices: [], canonicalEvents: await canonicalEvents(canonicalPath) })).rejects.toThrow()
     }
     await expect(publishReportFilterIndex(resultDir, { ...record, resultId: 'RESULT-00000000-0000-0000-0000-000000000300' }, snapshot.report, snapshot.replay,
       { ...source, messageDetailsComplete: false }, { devices: [] })).rejects.toThrow('缺少')
@@ -143,7 +147,7 @@ describe('结果报表筛选索引', () => {
     await mkdir(join(resultDir, `${record.resultId}.report-index.ndjson.pending`))
     const source = await readAfsimLogFile(join(root, 'scenario_events.csv'))
     await expect(publishReportFilterIndex(resultDir, record, snapshot.report, snapshot.replay,
-      { ...source, messageDetailsComplete: false }, { devices: [], canonicalEventsPath: join(root, 'events.csv') })).rejects.toThrow()
+      { ...source, messageDetailsComplete: false }, { devices: [], canonicalEvents: await canonicalEvents(join(root, 'events.csv')) })).rejects.toThrow()
     expect((await filterMissionReport(resultDir, snapshot, {})).timelineTotal).toBe(9)
   })
   it('以原生设备字段绑定中继链路；节点、链路、空范围与阶段拒绝均不伪造统计', async () => {
@@ -161,15 +165,10 @@ describe('结果报表筛选索引', () => {
   })
 
   it('限制详情为 500 条但保留全量聚合和时间线总数', async () => {
-    const { resultDir, record, snapshot } = await fixture()
-    const row = JSON.stringify({ time: 5, type: 'LINK_ADDED_TO_MANAGER', id: 'IDX', subject: 'A', target: 'B', sourceDeviceId: 'tx', targetDeviceId: 'rx', linkId: 'L-RELAY', scope: 'INTER_PLATFORM' })
-    const text = Array.from({ length: 501 }, (_, index) => row.replace('"IDX"', `"IDX-${index}"`)).join('\n') + '\n'
-    const index = join(resultDir, `${record.resultId}.report-index.ndjson`), manifestPath = join(resultDir, `${record.resultId}.report-index.json`)
-    await writeFile(index, text)
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
-    manifest.rowCount = 501; manifest.sha256 = createHash('sha256').update(text).digest('hex')
-    await writeFile(manifestPath, JSON.stringify(manifest))
-    const filtered = await filterMissionReport(resultDir, snapshot, { linkId: 'L-RELAY' })
+    const csv = REPORT_EVENT_CSV.replace(/^5,LINK_ADDED_TO_MANAGER,.*$/m, line => Array(501).fill(line).join('\n'))
+      .replace('5,MESSAGE_RECEIVED', '6,MESSAGE_RECEIVED')
+    const { resultDir, snapshot } = await fixture(false, csv)
+    const filtered = await filterMissionReport(resultDir, snapshot, { linkId: 'L-RELAY', from: 5, to: 5 })
     expect(filtered.timelineTotal).toBe(501)
     expect(filtered.timeline).toHaveLength(500)
     expect(filtered.report.localEvidence?.eventCount).toBe(501)

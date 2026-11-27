@@ -914,6 +914,127 @@ describe('P3-2 遥测 Store', () => {
     }
   })
 
+  it('本机控制页在 WS 故障期间经 HTTP 确认仍在，重新订阅和关页均停止确认', async () => {
+    vi.useFakeTimers()
+    const store = useTelemetryStore(), simulation = useSimulationStore()
+    useAuthStore().runtimeMode = 'LOCAL'
+    simulation.run = structuredClone(fixtureSource.run) as SimulationRun
+    const runId = simulation.run.runId
+    const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ data: { configLocked: true } })))
+    vi.stubGlobal('fetch', fetcher)
+    const acknowledge = (socket: TestWebSocket) => {
+      socket.emit('open')
+      const { topics, taskId } = JSON.parse(socket.sent[0]!)
+      socket.emit('message', JSON.stringify({ type: 'subscribed', schemaVersion: '1.0', runId, taskId, topics, lastSequence: 0, nextSequence: 1 }))
+    }
+    store.connect(runId)
+    const first = TestWebSocket.instances[0]!
+    acknowledge(first)
+    first.emit('close')
+    await vi.advanceTimersByTimeAsync(6500)
+    expect(fetcher).toHaveBeenCalledTimes(4)
+    expect(fetcher.mock.calls[0]?.[0]).toContain(`/simulations/${runId}?pageOwner=1`)
+    const resumed = TestWebSocket.instances[1]!
+    acknowledge(resumed)
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(fetcher).toHaveBeenCalledTimes(4)
+    resumed.emit('close')
+    store.disconnectAndReset()
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(fetcher).toHaveBeenCalledTimes(5)
+  })
+
+  it('启动时连续三条运行通知只补查最后一次状态，不回退游标或重连', async () => {
+    const store = useTelemetryStore(), simulation = useSimulationStore()
+    simulation.run = structuredClone(fixtureSource.run) as SimulationRun
+    let release!: () => void
+    const first = new Promise<void>(resolve => { release = resolve })
+    const sync = vi.spyOn(simulation, 'synchronizeRuntimeState').mockImplementationOnce(async () => {
+      simulation.runtimeSyncing = true
+      await first
+      simulation.runtimeSyncing = false
+      return true
+    }).mockResolvedValue(true)
+    const recover = vi.spyOn(store, 'recoverFromGap')
+    for (const sequence of [1, 2, 3]) {
+      expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: simulation.run.taskId,
+        sequence, simulationTime: simulation.run.canonical.currentTime, payload: simulation.run.canonical })).toBe(true)
+    }
+    expect(sync).toHaveBeenCalledTimes(1)
+    release()
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(2))
+    expect(recover).not.toHaveBeenCalled()
+    expect(store.topicSequences['runtime.state']).toBe(3)
+  })
+
+  it('收到某主题跳号时以各自游标续传，乱序和重复消息不重复投影', async () => {
+    vi.useFakeTimers()
+    const store = useTelemetryStore(), simulation = useSimulationStore()
+    simulation.run = structuredClone(fixtureSource.run) as SimulationRun
+    const { runId, taskId } = simulation.run
+    store.connect(runId)
+    const first = TestWebSocket.instances[0]!
+    first.emit('open')
+    const { topics } = JSON.parse(first.sent[0]!)
+    first.emit('message', JSON.stringify({ type: 'subscribed', schemaVersion: '1.0', taskId, runId, topics, lastSequence: 0, nextSequence: 1 }))
+    const tick = (sequence: number) => ({
+      type: 'event', schemaVersion: '1.0', topic: 'simulation.frame', taskId, sequence,
+      simulationTime: sequence / 4, frameId: `F-ENGINE-${sequence / 4}`,
+      payload: { kind: 'ENGINE_FRAME_TICK', runId, engineEpoch: 0, sourceFrameId: sequence / 4, simulationTime: sequence / 4 },
+    })
+    store.topicSequences['link.metric'] = 19
+    first.emit('message', JSON.stringify(tick(41)))
+    first.emit('message', JSON.stringify(tick(43)))
+    await vi.advanceTimersByTimeAsync(100)
+    expect(store.topicSequences['simulation.frame']).toBe(41)
+    expect(store.engineFrameTick?.sourceFrameId).toBe(10.25)
+    await vi.advanceTimersByTimeAsync(250)
+    const recovered = TestWebSocket.instances[1]!
+    recovered.emit('open')
+    expect(recovered.url).toContain(`missionRunId=${runId}`)
+    expect(JSON.parse(recovered.sent[0]!)).toMatchObject({ resumeRunId: runId, lastSequences: { 'simulation.frame': 41, 'link.metric': 19 } })
+    const projected: number[] = []
+    const unwatch = watch(() => store.engineFrameTick, item => { if (item) projected.push(item.sourceFrameId) }, { flush: 'sync' })
+    for (const i of [41, 42, 42, 43]) recovered.emit('message', JSON.stringify(tick(i)))
+    await vi.advanceTimersByTimeAsync(100)
+    expect(projected).toEqual([10.5, 10.75])
+    expect(store.resultCode).toBe('SUCCESS')
+    expect(store.topicSequences).toMatchObject({ 'simulation.frame': 43, 'link.metric': 19 })
+    const next = tick(44)
+    for (const invalid of [{ ...next, frameId: 'F-ENGINE-48' }, { ...next, simulationTime: 0 }, { ...next, taskId: 'TASK-OTHER' },
+      { ...next, payload: { ...next.payload, engineEpoch: -1 } }, { ...next, payload: { ...next.payload, runId: 'RUN-OTHER' } }]) {
+      expect(store.acceptEnvelope(invalid)).toBe(false)
+    }
+    expect(store.topicSequences['simulation.frame']).toBe(43)
+    expect(store.frame).toBeNull()
+    expect(useRuntimeQualityStore().engineFrame).toBeNull()
+    unwatch(); store.disconnectAndReset()
+    expect(store.engineFrameTick).toBeNull()
+  })
+
+  it('确认只有一个主题超出窗口时记明缺失范围并保留其他主题进度', async () => {
+    vi.useFakeTimers()
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    store.topicSequences['link.metric'] = 14
+    store.topicSequences['switch.event'] = 5
+    store.connect()
+    const socket = TestWebSocket.instances[0]!
+    socket.emit('open')
+    const { topics } = JSON.parse(socket.sent[0]!)
+    socket.emit('message', JSON.stringify({ type: 'subscribed', schemaVersion: '1.0', taskId: frame.taskId, runId: frame.runId, topics, lastSequence: 0, nextSequence: 1 }))
+    socket.emit('message', JSON.stringify({ type: 'rejected', code: 'SEQUENCE_GAP', gap: { runId: frame.runId, topic: 'switch.event', missingFrom: 6, missingThrough: 8 } }))
+    await vi.advanceTimersByTimeAsync(250)
+    const retry = TestWebSocket.instances[1]!
+    retry.emit('open')
+    expect(JSON.parse(retry.sent[0]!)).toMatchObject({ resumeRunId: frame.runId, lastSequences: { 'link.metric': 14, 'switch.event': 8 } })
+    expect(store.resultMessage).toContain('6 至 8')
+    retry.emit('message', JSON.stringify({ type: 'rejected', code: 'SEQUENCE_GAP', message: 'journal unavailable' }))
+    expect(store.topicSequences).toMatchObject({ 'link.metric': 14, 'switch.event': 8 })
+    expect(store.resultMessage).toContain('journal unavailable')
+    store.disconnectAndReset()
+  })
+
   it('校验实时信封、忽略重复消息并在序号断档时补偿', () => {
     const store = useTelemetryStore()
     const recover = vi.spyOn(store, 'recoverFromGap').mockResolvedValue()
@@ -1477,7 +1598,7 @@ describe('P3-2 遥测 Store', () => {
     store.connect()
     const stale = TestWebSocket.instances[0]
     stale?.emit('open')
-    stale?.emit('message', JSON.stringify({ type: 'rejected', code: 'SEQUENCE_GAP' }))
+    stale?.emit('message', JSON.stringify({ type: 'rejected', code: 'SEQUENCE_GAP', runChanged: true }))
 
     await vi.waitFor(() => expect(TestWebSocket.instances).toHaveLength(2))
     const recovered = TestWebSocket.instances[1]

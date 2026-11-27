@@ -2,8 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, nodeIconUrl, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
-import type { EngineFrameSnapshot, Environment, Link, TelemetryFrame } from '../../contracts/domain-models'
+import type { EngineFrameSnapshot, Environment, Link, ScenarioConfig, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
+import { buildNodeLinkParameterRows } from '../../features/situation/node-comm-params'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
 import {
   FILE_MESSAGE_DIRECTION_LABELS,
@@ -16,7 +17,18 @@ import type { LiveMessageFlowLane } from '../../features/situation/live-message-
 import { RAIN_TIER_RATES, readNaturalEnvironment } from '../../features/scenarios/link-calc-defaults'
 import { fileJammerRadiusMeters, selectFileDeviceStates, type FileDeviceEvent } from '../../features/situation/file-device-events'
 import { engineJammerNodes, interferenceRangeSource, selectDetectionRanges, selectInterferenceRanges, type ConfiguredJammerRange } from '../../features/situation/interference-ranges'
-import { extractEngineMapStoryBanner, type MapStoryItem } from '../../features/situation/engine-narrative'
+import {
+  extractEngineMapStoryBanner,
+  hasActiveFrameInterferenceOrDetection,
+  selectActiveSwitchBatch,
+  SWITCH_BANNER_RETENTION_SECONDS,
+  switchEntryKey,
+  type LinkCalcThresholds,
+  type MapStoryItem,
+  type MapStoryKind,
+  type MapStoryTargetDetail,
+} from '../../features/situation/engine-narrative'
+import type { EngineSwitchEntry } from '../../features/situation/engine-route-highlights'
 import { createNodeTrailTracker, replayNodeTrails, type NodeTrail } from '../../features/situation/node-trails'
 import type { LocalReplaySnapshot } from '../../features/replays/local-replay'
 import { reportTime } from '../../features/reports/local-report'
@@ -36,6 +48,7 @@ import ScenarioMapEnvironment from './ScenarioMapEnvironment.vue'
 
 const props = defineProps<{  /** 数据源更换只清理业务选择与详情，不销毁底图。 */
   sourceKey?: string
+  viewportKey?: string
   frame: TelemetryFrame | null
   engineFrame?: EngineFrameSnapshot | null
   engineSourceLabel?: string
@@ -53,14 +66,20 @@ const props = defineProps<{  /** 数据源更换只清理业务选择与详情�
   fileSeekRevision?: number
   configuredLinks?: SituationMapLink[]
   focusLinks?: Link[]
+  configuredScenario?: Pick<ScenarioConfig, 'platforms' | 'deviceParameters'> | null
   configuredLinkStatuses?: ReadonlyMap<string, 'UP' | 'DEGRADED' | 'DOWN'>
   configuredLinkSwitches?: ReadonlyMap<string, ConfiguredLinkSwitchState>
+  latestSwitch?: EngineSwitchEntry | null
+  recentSwitches?: readonly EngineSwitchEntry[]
   configuredJammers?: ConfiguredJammerRange[]
   configuredEnvironment?: Environment
+  linkCalcThresholds?: LinkCalcThresholds
   liveMessageFlows?: LiveMessageFlowLane[]
   liveFlowPlaying?: boolean
   liveFlowKey?: string
   links: SituationLinkView[]
+  selectNearbyLinks?: boolean
+  separateLinkDirections?: boolean
   selectedNodeId: string
   focusTarget: SituationMapFocusTarget | null
 }>()
@@ -88,7 +107,7 @@ const rainIndicator = computed(() => {
 const emit = defineEmits<{
   'select-node': [platformId: string]
   'select-link': [link: SituationLinkView]
-  'select-configured-link': [link: Link]
+  'select-configured-link': [link: Link, paired?: Link]
   'fullscreen-change': [value: boolean]
 }>()
 
@@ -152,7 +171,104 @@ watch([nodes, () => props.frame?.simulationTime, () => JSON.stringify([props.sou
 const nodeTrails = computed(() => props.positionReplay
   ? [...replayNodeTrails(props.positionReplay, props.fileTime ?? 0, nodes.value.filter(node => node.positionSource !== 'ENGINE')), ...liveTrails.value] : liveTrails.value)
 const hasInterference = computed(() => props.frame !== null || configuredRanges.value.length > 0 || !!hasFileInterference.value)
-const mapStoryItems = computed<MapStoryItem[]>(() => extractEngineMapStoryBanner(props.engineFrame, nodes.value, props.configuredLinks))
+const switchEvidenceByFrame = new Map<string, { links: EngineFrameSnapshot['links']; alarms: EngineFrameSnapshot['routing']['alarms']; events: EngineFrameSnapshot['events'] }>()
+const retiredSwitchKeys = ref(new Set<string>())
+let previousFrameLinks: EngineFrameSnapshot['links'] = []
+let previousEngineTime: number | null = null
+let hadActiveInterferenceOrDetection = false
+watch([() => props.sourceKey, () => props.engineFrame?.runId, () => props.engineFrame?.engineEpoch, () => props.fileSeekRevision], () => {
+  switchEvidenceByFrame.clear()
+  retiredSwitchKeys.value = new Set()
+  previousFrameLinks = []
+  previousEngineTime = null
+  hadActiveInterferenceOrDetection = false
+})
+watch(() => props.engineFrame, frame => {
+  if (!frame) {
+    previousEngineTime = null
+    hadActiveInterferenceOrDetection = false
+    return
+  }
+  if (previousEngineTime !== null && frame.simulationTime < previousEngineTime) {
+    retiredSwitchKeys.value = new Set()
+    hadActiveInterferenceOrDetection = false
+  }
+  if (frame.routing.switches.length) {
+    // 切链帧有时不再包含已断开的旧链路，保留上一帧链路段作为补充，以便读取旧链路的实测距离与误码率。
+    const seenIds = new Set(frame.links.map(seg => seg.linkId))
+    const mergedLinks = [...frame.links, ...previousFrameLinks.filter(seg => !seenIds.has(seg.linkId))]
+    for (const sw of frame.routing.switches) {
+      switchEvidenceByFrame.set(`${frame.frameId}:${sw.pathId}`, {
+        links: mergedLinks,
+        alarms: frame.routing.alarms,
+        events: frame.events,
+      })
+    }
+    if (switchEvidenceByFrame.size > 40) {
+      const firstKey = switchEvidenceByFrame.keys().next().value
+      if (firstKey) switchEvidenceByFrame.delete(firstKey)
+    }
+  }
+  const activeNow = hasActiveFrameInterferenceOrDetection(frame)
+  const sourceSwitches = props.recentSwitches?.length
+    ? props.recentSwitches
+    : (props.latestSwitch ? [props.latestSwitch] : [])
+  if (!activeNow && sourceSwitches.length) {
+    const activeBatch = selectActiveSwitchBatch(sourceSwitches, frame.simulationTime, retiredSwitchKeys.value)
+    const latest = activeBatch.at(-1) ?? null
+    if (latest && latest.frameId !== frame.frameId) {
+      const ageS = frame.simulationTime - latest.simulationTime
+      if (hadActiveInterferenceOrDetection || ageS > SWITCH_BANNER_RETENTION_SECONDS) {
+        const next = new Set(retiredSwitchKeys.value)
+        let changed = false
+        for (const entry of activeBatch) {
+          const key = switchEntryKey(entry)
+          if (!next.has(key)) {
+            next.add(key)
+            changed = true
+          }
+        }
+        if (changed) retiredSwitchKeys.value = next
+      }
+    }
+  }
+  hadActiveInterferenceOrDetection = activeNow
+  previousEngineTime = frame.simulationTime
+  previousFrameLinks = frame.links
+}, { immediate: true })
+const mapStoryItems = computed<MapStoryItem[]>(() => {
+  const frame = props.engineFrame
+  const sourceSwitches = props.recentSwitches?.length
+    ? props.recentSwitches
+    : (props.latestSwitch ? [props.latestSwitch] : [])
+  const activeBatch = frame ? selectActiveSwitchBatch(sourceSwitches, frame.simulationTime, retiredSwitchKeys.value) : []
+  const latest = activeBatch.at(-1) ?? null
+  const cachedEvidence = latest ? switchEvidenceByFrame.get(switchEntryKey(latest)) ?? null : null
+  return extractEngineMapStoryBanner(
+    frame,
+    nodes.value,
+    props.configuredLinks,
+    props.linkCalcThresholds,
+    latest,
+    cachedEvidence,
+    activeBatch,
+    switchEvidenceByFrame,
+  )
+})
+const storyBannerContainer = ref<HTMLElement | null>(null)
+const expandedStoryKind = ref<MapStoryKind | null>(null)
+function storyThresholdList(item: MapStoryItem): string[] {
+  if (item.thresholds?.length) return item.thresholds
+  return item.threshold ? [item.threshold] : []
+}
+function hasStoryDetails(item: MapStoryItem): boolean {
+  return Boolean(item.targets?.length || storyThresholdList(item).length)
+}
+watch(mapStoryItems, items => {
+  if (!expandedStoryKind.value) return
+  const stillExpandable = items.some(item => item.kind === expandedStoryKind.value && hasStoryDetails(item))
+  if (!stillExpandable) expandedStoryKind.value = null
+})
 function formatStoryTime(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds))
   const minutes = Math.floor(total / 60)
@@ -160,7 +276,19 @@ function formatStoryTime(seconds: number): string {
   return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
 }
 function handleStoryClick(item: MapStoryItem): void {
+  if (hasStoryDetails(item)) {
+    expandedStoryKind.value = expandedStoryKind.value === item.kind ? null : item.kind
+    return
+  }
   if (item.focusTarget) focusTargetOnMap(item.focusTarget)
+}
+function handleStoryTargetClick(target: MapStoryTargetDetail): void {
+  if (target.focusTarget) focusTargetOnMap(target.focusTarget)
+  expandedStoryKind.value = null
+}
+function handleStoryLocateClick(item: MapStoryItem): void {
+  if (item.focusTarget) focusTargetOnMap(item.focusTarget)
+  expandedStoryKind.value = null
 }
 const detectionRanges = computed(() => selectDetectionRanges(nodes.value, props.frame, props.configuredJammers, props.engineFrame, props.configuredLinks))
 const hasDetection = computed(() => detectionRanges.value.length > 0)
@@ -218,6 +346,16 @@ const selectedNodeFileLinks = computed(() => props.fileLinks?.filter(link =>
   link.sourcePlatformId === selectedNode.value?.platformId || link.targetPlatformId === selectedNode.value?.platformId) ?? [])
 const selectedNodeMessageLinks = computed(() => visibleMessageLinks.value.filter(link =>
   link.sourcePlatformId === selectedNode.value?.platformId || link.targetPlatformId === selectedNode.value?.platformId))
+const selectedNodeCommLinks = computed(() => selectedNode.value
+  ? buildNodeLinkParameterRows({
+      platformId: selectedNode.value.platformId,
+      nodes: nodes.value,
+      configuredLinks: props.configuredLinks,
+      focusLinks: props.focusLinks,
+      engineFrame: props.engineFrame,
+      configuredScenario: props.configuredScenario,
+    })
+  : [])
 
 function openFileLink(link: FileCommunicationLink): void {
   selectedFileLinkId.value = link.id
@@ -232,6 +370,16 @@ function openMessageLink(link: FileMessageLink): void {
 /** 以毫秒为主、秒为辅展示投递时延；秒值保留原始精度，不做四舍五入后改写。 */
 function formatDelay(seconds: number): string {
   return `${(seconds * 1000).toFixed(3)} 毫秒（${seconds} 秒）`
+}
+
+/** 将米换算为公里并消除浮点尾差（如 14.999999999999998 -> 15）。 */
+function formatRangeKm(meters: number): string {
+  const km = Number((meters / 1000).toFixed(3))
+  return String(Object.is(km, -0) ? 0 : km)
+}
+
+function rangeFieldLabel(kind: '干扰范围（半径）' | '探测范围（半径）', index: number, total: number): string {
+  return total > 1 ? `干扰设备 ${index + 1} ${kind}` : kind
 }
 
 /**
@@ -417,15 +565,19 @@ function resetView(): void {
 }
 
 function handleDocumentOutsideClick(event: Event): void {
-  if (!moreLayersOpen.value) return
   const target = event.target
-  if (target instanceof Node && moreLayersContainer.value?.contains(target)) return
-  moreLayersOpen.value = false
+  if (moreLayersOpen.value && !(target instanceof Node && moreLayersContainer.value?.contains(target))) {
+    moreLayersOpen.value = false
+  }
+  if (expandedStoryKind.value && !(target instanceof Node && storyBannerContainer.value?.contains(target))) {
+    expandedStoryKind.value = null
+  }
 }
 
 function handleDocumentKeyDown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     moreLayersOpen.value = false
+    expandedStoryKind.value = null
     if (isFullscreen.value) {
       isFullscreen.value = false
       emit('fullscreen-change', false)
@@ -448,6 +600,7 @@ onMounted(() => {
 
   mapController.value = createSituationMapController({
     container: mapContainer.value,
+    viewportKey: props.viewportKey,
     frame: props.frame,
     engineFrame: props.engineFrame,
     nodeTrails: nodeTrails.value,
@@ -464,9 +617,11 @@ onMounted(() => {
     liveMessageFlows: props.liveMessageFlows,
     liveFlowPlaying: props.liveFlowPlaying,
     liveFlowKey: props.liveFlowKey,
-    onSelectConfiguredLink: link => emit('select-configured-link', link),
+    onSelectConfiguredLink: (...selection) => emit('select-configured-link', ...selection),
     onSelectFileLink: openFileLink,
     onSelectFileMessageLink: openMessageLink,
+    selectNearbyLinks: props.selectNearbyLinks,
+    separateLinkDirections: props.separateLinkDirections,
     links: props.links,
     selectedNodeId: props.selectedNodeId,
     onSelectNode: handleSelectNode,
@@ -521,6 +676,8 @@ watch([filePlayback, visibleMessageLinks], () => {
 watch(fileDeviceStates, states => {
   mapController.value?.setFileDeviceStates(states)
 })
+
+watch(() => props.viewportKey, key => mapController.value?.setViewportKey(key))
 
 watch(() => props.configuredLinks, links => {
   mapController.value?.setConfiguredLinks(links)
@@ -607,6 +764,7 @@ onBeforeUnmount(() => {
     <div
       ref="mapContainer"
       class="offline-map__canvas"
+      :class="{ 'offline-map__canvas--nearby-links': selectNearbyLinks }"
       data-testid="leaflet-situation-map"
       role="application"
       :aria-label="frame ? `固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图` : configuredLinks ? '所选场景初始位置与配置链路图' : '真实日志节点位置与通信关联图'"
@@ -674,31 +832,111 @@ onBeforeUnmount(() => {
           <span v-else-if="engineFrame" role="status" data-testid="engine-map-source">{{ engineSourceLabel ?? '引擎数据（状态未确认）' }} · 帧 {{ engineFrame.frameId }}</span>
         </div>
       </div>
-    </div>
 
-    <div
-      v-if="mapStoryItems.length"
-      class="offline-map__story-banner"
-      role="status"
-      aria-live="polite"
-      data-testid="map-story-banner"
-    >
-      <template v-for="(item, index) in mapStoryItems" :key="item.id">
-        <span v-if="index > 0" class="offline-map__story-arrow" aria-hidden="true">→</span>
-        <button
-          type="button"
-          class="offline-map__story-pill"
-          :class="`offline-map__story-pill--${item.kind.toLowerCase()}`"
-          :disabled="!item.focusTarget"
-          :title="item.detail || item.summary"
-          @click="handleStoryClick(item)"
-        >
-          <span class="offline-map__story-time">{{ formatStoryTime(item.timeS) }}</span>
-          <strong class="offline-map__story-tag">{{ item.tag }}</strong>
-          <span class="offline-map__story-summary">{{ item.summary }}</span>
-          <span v-if="item.detail" class="offline-map__story-detail">{{ item.detail }}</span>
-        </button>
-      </template>
+      <div
+        v-if="mapStoryItems.length"
+        ref="storyBannerContainer"
+        class="offline-map__story-banner"
+        role="status"
+        aria-live="polite"
+        data-testid="map-story-banner"
+      >
+        <template v-for="(item, index) in mapStoryItems" :key="item.id">
+          <span v-if="index > 0 && item.timeS >= mapStoryItems[index - 1]!.timeS" class="offline-map__story-arrow" aria-hidden="true">→</span>
+          <div class="offline-map__story-item">
+            <button
+              type="button"
+              class="offline-map__story-pill"
+              :class="[`offline-map__story-pill--${item.kind.toLowerCase()}`, { 'offline-map__story-pill--stacked': Boolean(item.stacked || (item.kind === 'SWITCH' && item.detail)) }]"
+              :disabled="!item.focusTarget && !hasStoryDetails(item)"
+              :aria-expanded="hasStoryDetails(item) ? expandedStoryKind === item.kind : undefined"
+              :title="[item.summary, item.threshold ?? '', item.detail].filter(Boolean).join(' · ')"
+              @click="handleStoryClick(item)"
+            >
+              <span class="offline-map__story-main">
+                <span class="offline-map__story-time">{{ formatStoryTime(item.timeS) }}</span>
+                <strong class="offline-map__story-tag">{{ item.tag }}</strong>
+                <span class="offline-map__story-summary">{{ item.summary }}</span>
+                <span
+                  v-if="hasStoryDetails(item)"
+                  class="offline-map__story-more"
+                  data-testid="map-story-more"
+                >{{ expandedStoryKind === item.kind ? '收起 ▴' : '明细 ▾' }}</span>
+              </span>
+              <span v-if="item.detail" class="offline-map__story-detail">{{ item.detail }}</span>
+            </button>
+            <div
+              v-if="hasStoryDetails(item) && expandedStoryKind === item.kind"
+              class="offline-map__story-popover"
+              :class="`offline-map__story-popover--${item.kind.toLowerCase()}`"
+              role="region"
+              :aria-label="`${item.tag}明细`"
+              data-testid="map-story-popover"
+            >
+              <div class="offline-map__story-popover-head">
+                <span>{{ item.tag }}明细<template v-if="item.targets?.length">（共 {{ item.targets.length }} 项）</template></span>
+                <span class="offline-map__story-popover-actions">
+                  <button
+                    v-if="!item.targets?.length && item.focusTarget"
+                    type="button"
+                    class="offline-map__story-popover-locate"
+                    @click.stop="handleStoryLocateClick(item)"
+                  >定位</button>
+                  <button
+                    type="button"
+                    class="offline-map__story-popover-close"
+                    aria-label="收起明细"
+                    @click.stop="expandedStoryKind = null"
+                  >×</button>
+                </span>
+              </div>
+              <div
+                v-if="!item.targets?.length && storyThresholdList(item).length"
+                class="offline-map__story-popover-section"
+                data-testid="map-story-thresholds"
+              >
+                <span class="offline-map__story-popover-label">触发条件</span>
+                <div class="offline-map__story-popover-thresholds">
+                  <span
+                    v-for="badge in storyThresholdList(item)"
+                    :key="badge"
+                    class="offline-map__story-threshold"
+                    data-testid="map-story-threshold"
+                  >{{ badge }}</span>
+                </div>
+              </div>
+              <ul v-if="item.targets?.length" class="offline-map__story-popover-list">
+                <li v-for="target in item.targets" :key="target.key">
+                  <button
+                    type="button"
+                    class="offline-map__story-popover-row"
+                    :disabled="!target.focusTarget"
+                    @click.stop="handleStoryTargetClick(target)"
+                  >
+                    <span class="offline-map__story-popover-row-head">
+                      <strong class="offline-map__story-popover-name">{{ target.name }}</strong>
+                      <span v-if="target.badge" class="offline-map__story-popover-badge">{{ target.badge }}</span>
+                    </span>
+                    <span v-if="target.meta" class="offline-map__story-popover-meta">{{ target.meta }}</span>
+                    <span
+                      v-if="target.thresholds?.length"
+                      class="offline-map__story-popover-row-thresholds"
+                      data-testid="map-story-row-thresholds"
+                    >
+                      <span
+                        v-for="badge in target.thresholds"
+                        :key="badge"
+                        class="offline-map__story-threshold"
+                        data-testid="map-story-threshold"
+                      >{{ badge }}</span>
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </template>
+      </div>
     </div>
 
     <div class="offline-map__view-controls" aria-label="态势图视图控制">
@@ -820,7 +1058,7 @@ onBeforeUnmount(() => {
 
     <el-dialog
       v-model="selectedNodeDialogVisible"
-      width="min(38rem, calc(100vw - 2rem))"
+      :width="selectedNodeCommLinks.length ? 'min(58rem, calc(100vw - 2rem))' : 'min(38rem, calc(100vw - 2rem))'"
       top="5vh"
       class="selected-node-dialog"
       :close-on-click-modal="false"
@@ -848,10 +1086,28 @@ onBeforeUnmount(() => {
             <div><dt>位置仿真时刻</dt><dd>{{ selectedNodePositionMetadata.time === undefined ? '暂无数据' : reportTime(selectedNodePositionMetadata.time) }}</dd></div>
             <div v-if="selectedNodePositionMetadata.frameId !== undefined"><dt>位置来源帧</dt><dd>{{ selectedNodePositionMetadata.frameId }}</dd></div>
           </template>
-          <div v-for="range in selectedConfiguredRanges" :key="range.id" data-testid="configured-jammer-range"><dt>{{ range.jammerId ?? selectedNode.name }} 干扰范围（半径）</dt><dd>{{ range.radiusMeters / 1000 }} 公里（{{ interferenceRangeSource(range) }}）</dd></div>
-          <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ selectedFileInterferenceRadius / 1000 }} 公里（示意范围，缺少设备配置）</dd></div>
-          <div v-for="range in selectedDetectionRanges" :key="range.id" data-testid="configured-detection-range"><dt>{{ range.jammerId ? `${range.jammerId} 探测范围（半径）` : '探测范围（半径）' }}</dt><dd>{{ range.radiusMeters / 1000 }} 公里（{{ range.sourceLabel }}）</dd></div>
+          <div v-for="(range, index) in selectedConfiguredRanges" :key="range.id" data-testid="configured-jammer-range"><dt>{{ rangeFieldLabel('干扰范围（半径）', index, selectedConfiguredRanges.length) }}</dt><dd>{{ formatRangeKm(range.radiusMeters) }} 公里（{{ interferenceRangeSource(range) }}）</dd></div>
+          <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ formatRangeKm(selectedFileInterferenceRadius) }} 公里（示意范围，缺少设备配置）</dd></div>
+          <div v-for="(range, index) in selectedDetectionRanges" :key="range.id" data-testid="configured-detection-range"><dt>{{ rangeFieldLabel('探测范围（半径）', index, selectedDetectionRanges.length) }}</dt><dd>{{ formatRangeKm(range.radiusMeters) }} 公里（{{ range.sourceLabel }}）</dd></div>
         </dl>
+        <section v-if="selectedNodeCommLinks.length" class="selected-node-dialog__section" data-testid="node-comm-params">
+          <h4 class="selected-node-dialog__section-title">通信节点参数</h4>
+          <el-table :data="selectedNodeCommLinks" max-height="260" size="small">
+            <el-table-column label="链路 / 对端" min-width="200">
+              <template #default="{ row }">
+                <div class="node-comm-link-cell">
+                  <strong>{{ row.typeLabel }}（{{ row.directionLabel }} · {{ row.roleLabel }}）</strong>
+                  <span>{{ row.peerLabel }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="txPowerText" label="功率" min-width="84" />
+            <el-table-column prop="antennaGainText" label="天线增益" min-width="140" />
+            <el-table-column prop="distanceText" label="通信距离" min-width="136" />
+            <el-table-column prop="antiJammingGainText" label="波形抗干扰增益" min-width="116" />
+            <el-table-column prop="spatialIsolationText" label="空域隔离大小" min-width="106" />
+          </el-table>
+        </section>
         <template v-if="!frame && !configuredLinks">
           <el-table v-if="selectedFileDevices.length" :data="selectedFileDevices" data-testid="file-device-states" max-height="260">
             <el-table-column prop="deviceId" label="设备标识" min-width="150" />
@@ -1243,6 +1499,35 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.selected-node-dialog__section {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.selected-node-dialog__section-title {
+  margin: 0;
+  color: var(--console-text);
+  font-size: var(--console-font-size-min);
+  font-weight: 600;
+}
+
+.node-comm-link-cell {
+  display: grid;
+  gap: 0.1rem;
+  line-height: 1.35;
+}
+
+.node-comm-link-cell strong {
+  color: var(--console-text);
+  font-weight: 600;
+}
+
+.node-comm-link-cell span {
+  color: var(--console-text-muted);
+  font-size: 0.75rem;
+}
+
 .file-association-evidence {
   margin: 0.5rem 1rem;
   overflow-wrap: anywhere;
@@ -1434,6 +1719,16 @@ onBeforeUnmount(() => {
   border: 0;
 }
 
+.offline-map__canvas--nearby-links :deep(.situation-map-node-marker) {
+  pointer-events: none;
+}
+
+.offline-map__canvas--nearby-links :deep(.situation-map-node__glyph),
+.offline-map__canvas--nearby-links :deep(.situation-map-node__name),
+.offline-map__canvas--nearby-links :deep(.situation-map-node__id) {
+  pointer-events: auto;
+}
+
 :deep(.situation-map-node-marker--selected) {
   z-index: 700;
 }
@@ -1457,6 +1752,10 @@ onBeforeUnmount(() => {
   animation: situation-jam-circle-pulse 2s ease-in-out infinite;
 }
 
+:deep(.situation-map-detection--active) {
+  filter: drop-shadow(0 0 5px rgba(245, 197, 66, 0.72));
+}
+
 :deep(.situation-map-jammer-pulse) {
   pointer-events: none;
 }
@@ -1478,11 +1777,16 @@ onBeforeUnmount(() => {
   animation-delay: 1.05s;
 }
 
+:deep(.situation-map-jammer-pulse__ring--detect) {
+  border-color: #f5c542;
+  animation-duration: 2.6s;
+}
+
 :deep(.situation-map-jammer-pulse__tag) {
   position: absolute;
   top: -32px;
   left: 0;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border: 1px solid rgba(255, 120, 140, 0.9);
   border-radius: 999px;
   color: #fff;
@@ -1495,29 +1799,30 @@ onBeforeUnmount(() => {
   box-shadow: 0 2px 8px rgba(196, 29, 58, 0.5);
 }
 
+:deep(.situation-map-jammer-pulse__tag--detect) {
+  border-color: rgba(245, 197, 66, 0.92);
+  color: #fff8e6;
+  background: rgba(176, 110, 12, 0.94);
+  box-shadow: 0 2px 8px rgba(176, 110, 12, 0.45);
+}
+
+:deep(.situation-map-jammer-pulse__tag--off) {
+  border-color: rgba(155, 184, 206, 0.78);
+  color: #e3eef6;
+  background: rgba(34, 52, 68, 0.92);
+  box-shadow: 0 2px 8px rgba(9, 18, 28, 0.45);
+}
+
 :deep(.situation-map-jamming-beam) {
   filter: drop-shadow(0 0 4px rgba(255, 59, 92, 0.85));
   animation: situation-jam-beam-flow 1.1s linear infinite;
 }
 
-/* 光晕跟随当前链路颜色，线芯稍调浅；区分切换前（切出虚线弱化）与切换后（高光流动接管）。 */
+/* 用户主动选中的链路保留独立的选中效果。 */
 :deep(.situation-map-link--selected) {
   stroke: color-mix(in srgb, var(--situation-link-color) 75%, white);
   filter: drop-shadow(0 0 3px color-mix(in srgb, var(--situation-link-color) 65%, transparent))
     drop-shadow(0 0 7px color-mix(in srgb, var(--situation-link-color) 35%, transparent));
-}
-
-:deep(.situation-map-link--switch-before) {
-  stroke: #f56c6c;
-  filter: drop-shadow(0 0 3px rgba(245, 108, 108, 0.45));
-}
-
-:deep(.situation-map-link--switch-after),
-:deep(.situation-map-link--switch-both) {
-  stroke: color-mix(in srgb, var(--situation-link-color) 62%, #ffffff);
-  filter: drop-shadow(0 0 4px #38e8ff)
-    drop-shadow(0 0 10px color-mix(in srgb, var(--situation-link-color) 85%, #38e8ff));
-  animation: situation-switch-after-glow 1.6s ease-in-out infinite;
 }
 
 :deep(.situation-map-link-badge-wrap) {
@@ -1545,15 +1850,15 @@ onBeforeUnmount(() => {
 }
 
 :deep(.situation-map-link-badge--degraded) {
-  color: #fff;
-  background: rgba(217, 72, 72, 0.92);
-  border: 1px solid #ffccc7;
+  color: #ffda91;
+  background: #47351d;
+  border: 1px solid #bf914e;
 }
 
 :deep(.situation-map-link-badge--switch-before) {
-  color: #ffd6d6;
-  background: rgba(74, 28, 34, 0.88);
-  border: 1px dashed rgba(245, 108, 108, 0.85);
+  color: #d8e4ec;
+  background: #223342;
+  border: 1px solid #8196a5;
 }
 
 :deep(.situation-map-link-badge--switch-after) {
@@ -1563,18 +1868,20 @@ onBeforeUnmount(() => {
 }
 
 .offline-map__story-banner {
-  position: absolute;
-  top: 3.45rem;
-  left: var(--scene-panel-clearance, 0.75rem);
-  right: var(--telemetry-panel-clearance, 0.75rem);
-  z-index: 1001;
+  flex: 1 0 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: 6px;
   pointer-events: none;
-  transition: right 0.18s ease, left 0.18s ease;
+}
+
+.offline-map__story-item {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+  pointer-events: auto;
 }
 
 .offline-map__story-arrow {
@@ -1585,19 +1892,34 @@ onBeforeUnmount(() => {
 
 .offline-map__story-pill {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px 6px;
   max-width: 100%;
-  padding: 4px 10px;
+  padding: 5px 11px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: 12px;
   color: #f4f9ff;
   font-size: 12px;
   line-height: 1.35;
+  text-align: left;
   cursor: pointer;
   pointer-events: auto;
   backdrop-filter: blur(6px);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.offline-map__story-pill--stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.offline-map__story-main {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
 }
 
 .offline-map__story-pill:disabled {
@@ -1612,6 +1934,11 @@ onBeforeUnmount(() => {
 .offline-map__story-pill--jammed {
   background: rgba(145, 22, 42, 0.92);
   border-color: rgba(255, 99, 122, 0.9);
+}
+
+.offline-map__story-pill--jam_off {
+  background: rgba(34, 52, 68, 0.92);
+  border-color: rgba(155, 184, 206, 0.8);
 }
 
 .offline-map__story-pill--switch {
@@ -1631,9 +1958,204 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 
+.offline-map__story-threshold {
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 216, 138, 0.55);
+  border-radius: 4px;
+  background: rgba(255, 196, 61, 0.22);
+  color: #ffe39b;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .offline-map__story-detail {
   opacity: 0.85;
   font-size: 11px;
+}
+
+.offline-map__story-more {
+  margin-left: 2px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.offline-map__story-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1020;
+  width: max-content;
+  min-width: 240px;
+  max-width: min(440px, 82vw);
+  border: 1px solid rgba(155, 184, 206, 0.55);
+  border-radius: 10px;
+  background: rgba(11, 22, 34, 0.96);
+  color: #eef6ff;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.offline-map__story-popover--jammed {
+  border-color: rgba(255, 99, 122, 0.78);
+}
+
+.offline-map__story-popover--detect {
+  border-color: rgba(245, 185, 66, 0.78);
+}
+
+.offline-map__story-popover--switch {
+  border-color: rgba(72, 236, 255, 0.78);
+}
+
+.offline-map__story-popover--jam_off {
+  border-color: rgba(155, 184, 206, 0.72);
+}
+
+.offline-map__story-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  font-weight: 600;
+  color: #cfe4f7;
+}
+
+.offline-map__story-popover-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.offline-map__story-popover-locate {
+  border: 1px solid rgba(140, 236, 255, 0.45);
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: rgba(72, 236, 255, 0.12);
+  color: #9beeff;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.offline-map__story-popover-locate:hover {
+  background: rgba(72, 236, 255, 0.22);
+}
+
+.offline-map__story-popover-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.offline-map__story-popover-label {
+  font-size: 11px;
+  color: rgba(207, 228, 247, 0.78);
+}
+
+.offline-map__story-popover-thresholds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.offline-map__story-popover-close {
+  border: 0;
+  padding: 0 4px;
+  background: transparent;
+  color: #cfe4f7;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.offline-map__story-popover-close:hover {
+  color: #fff;
+}
+
+.offline-map__story-popover-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.offline-map__story-popover-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.offline-map__story-popover-list > li + li {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 2px;
+  padding-top: 2px;
+}
+
+.offline-map__story-popover-row-thresholds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.offline-map__story-popover-row:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.offline-map__story-popover-row:disabled {
+  cursor: default;
+}
+
+.offline-map__story-popover-row-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.offline-map__story-popover-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.offline-map__story-popover-badge {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 11px;
+  color: #ffe39b;
+  white-space: nowrap;
+}
+
+.offline-map__story-popover-meta {
+  font-size: 11px;
+  color: rgba(226, 240, 252, 0.8);
+  font-family: Consolas, "Microsoft YaHei", monospace;
 }
 
 @keyframes situation-jam-ripple {
@@ -1657,21 +2179,10 @@ onBeforeUnmount(() => {
   to { stroke-dashoffset: 0; }
 }
 
-@keyframes situation-switch-after-glow {
-  0%, 100% {
-    filter: drop-shadow(0 0 3px #38e8ff) drop-shadow(0 0 8px color-mix(in srgb, var(--situation-link-color) 80%, #38e8ff));
-  }
-  50% {
-    filter: drop-shadow(0 0 6px #7cf4ff) drop-shadow(0 0 14px color-mix(in srgb, var(--situation-link-color) 95%, #ffffff));
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   :deep(.situation-map-interference--active),
   :deep(.situation-map-jammer-pulse__ring),
-  :deep(.situation-map-jamming-beam),
-  :deep(.situation-map-link--switch-after),
-  :deep(.situation-map-link--switch-both) {
+  :deep(.situation-map-jamming-beam) {
     animation: none;
   }
 }

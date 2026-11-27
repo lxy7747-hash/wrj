@@ -137,15 +137,15 @@ platform_type REAR_COMM_PLATFORM WSF_PLATFORM
   processor script_proc WSF_SCRIPT_PROCESSOR
 
     script_variables
-      Array<string> fw_sit_dst  = { "mission_uav_02", "mission_uav_03" };\\
-      Array<string> fw_tgt_dst  = { "mission_uav_02", "mission_uav_03" };\\
+      Array<string> fw_sit_dst  = { "mission_uav_02", "mission_uav_03" };
+      Array<string> fw_tgt_dst  = { "mission_uav_02", "mission_uav_03" };
     end_script_variables
 
     execute at_interval_of 5 sec
       // ── 前向态势：按目的地逐个读取动态路由，读不到回退写死热链 ──
       foreach (int i : string dst in fw_sit_dst) {
         string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_next_platform_name");
-        if (nxts != "") 
+        if (nxts != "" && nxts != "interrupted") 
         {
           string nexts = nxts;
           string outs  = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_out_port_name");
@@ -165,7 +165,7 @@ platform_type REAR_COMM_PLATFORM WSF_PLATFORM
       // ── 前向目标：按目的地逐个读取动态路由，读不到回退写死热链 ──
       foreach (int i : string dst in fw_tgt_dst) {
         string nxts2 = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_next_platform_name");
-        if (nxts2 != "") {
+        if (nxts2 != "" && nxts2 != "interrupted") {
           string nexts2 = nxts2;
           string outs2  = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_out_port_name");
           string ins2   = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_next_in_port_name");
@@ -200,6 +200,7 @@ platform_type REAR_COMM_PLATFORM WSF_PLATFORM
     channel_encoding_scheme 0
 
     traffic_type            [{"mission_uav_02":{"forward":[{"traffice_type":"kForwardSituation","data_volume_bits":256,"trans_freq":5},{"traffice_type":"kForwardTarget","data_volume_bits":512,"trans_freq":10}],"return":[{"traffice_type":"kReturnReconVideo","data_volume_bits":8192,"trans_freq":3},{"traffice_type":"kReturnReconStatus","data_volume_bits":512,"trans_freq":10}]}},{"mission_uav_03":{"forward":[{"traffice_type":"kForwardSituation","data_volume_bits":256,"trans_freq":5},{"traffice_type":"kForwardTarget","data_volume_bits":128,"trans_freq":10}],"return":[{"traffice_type":"kReturnReconVideo","data_volume_bits":4096,"trans_freq":5},{"traffice_type":"kReturnReconStatus","data_volume_bits":256,"trans_freq":10}]}}]
+    traffic_distance        [{"link_type":"cl_link","distance_set":[{"dist_seg" : "relay-uav","distance" : 60},{"dist_seg" : "relay-relay","distance" : 200 }, {"dist_seg" : "relay-comand","distance" : 240},{"dist_seg" : "uav-comand","distance" : 240}]},{"link_type":"microwave_link","distance" : 200},{"link_type":"lazer_link","distance" : 40}]
     relay_uav_names         ["mission_uav_01"]
     hot_link_ret            {"link1":[{"platform":"mission_uav_02","inPort":"","outPort":"c_band_downlink"},{"platform":"command_vehicle","inPort":"c_band_downlink","outPort":"fiber_link"},{"platform":"rear_comm_vehicle","inPort":"fiber_link","outPort":""}],"link2":[{"platform":"mission_uav_03","inPort":"","outPort":"c_band_downlink"},{"platform":"command_vehicle","inPort":"c_band_downlink","outPort":"fiber_link"},{"platform":"rear_comm_vehicle","inPort":"fiber_link","outPort":""}]}
     hot_link_fw             {"link1":[{"platform":"rear_comm_vehicle","inPort":"","outPort":"fiber_link"},{"platform":"command_vehicle","inPort":"fiber_link","outPort":"c_band_uplink"},{"platform":"mission_uav_02","inPort":"c_band_uplink","outPort":""}],"link2":[{"platform":"rear_comm_vehicle","inPort":"","outPort":"fiber_link"},{"platform":"command_vehicle","inPort":"fiber_link","outPort":"c_band_uplink"},{"platform":"mission_uav_03","inPort":"c_band_uplink","outPort":""}]}

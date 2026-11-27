@@ -14,7 +14,6 @@ export function scenarioPlatformLabel(platforms: readonly Pick<Platform, 'id' | 
 export const SCENARIO_BASIC_DEFAULTS = {
   duration: 20 * 60,
   simClockSpeed: 2,
-  transmissionDistance: 300,
   rainCloudAttenuation: 'lightRain',
   // 对接示例 comm_PerDefinition.txt 的云层典型值。
   cloudAltitudeMinM: 500,
@@ -60,7 +59,6 @@ export function withScenarioBasicDefaults(config: ScenarioConfig): ScenarioConfi
       ...config.scenario,
       environment: {
         simClockSpeed: SCENARIO_BASIC_DEFAULTS.simClockSpeed,
-        transmissionDistance: SCENARIO_BASIC_DEFAULTS.transmissionDistance,
         rainCloudAttenuation: SCENARIO_BASIC_DEFAULTS.rainCloudAttenuation,
         cloudAltitudeMinM: SCENARIO_BASIC_DEFAULTS.cloudAltitudeMinM,
         cloudAltitudeMaxM: SCENARIO_BASIC_DEFAULTS.cloudAltitudeMaxM,

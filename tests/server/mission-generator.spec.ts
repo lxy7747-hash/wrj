@@ -194,6 +194,8 @@ describe('1112 固定模板 + 受控替换生成器', () => {
     changed.config.jammers[0]!.jammingRange = 20 * 1852
     changed.config.informationDemand[0]!.volumeMb = 999 / 8_000_000
     changed.config.informationDemand[0]!.frequencyHz = 7
+    changed.config.links.find(link => link.id === 'c_forward_uav2')!.forwardDataRate = 4
+    changed.config.links.find(link => link.id === 'c_return_uav2')!.reverseDataRate = 1.5
     changed.config.scenario.realtime = false
     changed.config.scenario.environment.simClockSpeed = 32
     const modified = buildMissionPackage(changed)
@@ -223,11 +225,28 @@ describe('1112 固定模板 + 受控替换生成器', () => {
     })
     expect(ground).not.toHaveProperty('weapon_frequency_ghz')
     expect(ground).not.toHaveProperty('weapon_bandwidth_mhz')
-    const traffic = directive<Array<Record<string, { forward: Array<{ data_volume_bits: number; trans_freq: number }> }>>>(modified, 'traffic_type')
-    expect(traffic[0]!.mission_uav_02!.forward[0]).toMatchObject({ data_volume_bits: 999, trans_freq: 7 })
+    const traffic = directive<Array<Record<string, { forward: Array<{ data_volume_bits: number; trans_freq: number; rate_bps: number }>; return: Array<{ data_volume_bits: number; trans_freq: number; rate_bps: number }> }>>>(modified, 'traffic_type')
+    expect(traffic[0]!.mission_uav_02!.forward[0]).toMatchObject({ data_volume_bits: 999, trans_freq: 7, rate_bps: 4_000_000 })
+    expect(traffic[0]!.mission_uav_02!.return[0]).toMatchObject({ rate_bps: 1_500_000 })
+    expect(traffic[1]!.mission_uav_03!.forward[0]).toMatchObject({ rate_bps: 16_000_000 })
+    // 端口 port_params 保持冷链/端口默认速率，不被热链前向/返向速率覆盖。
+    expect(portParam(modified, 'MISSION_UAV_PLATFORM', 'c_band_uplink').transmitter['information_rate_bit/s']).toBe(2_000_000)
+    expect(portParam(modified, 'MISSION_UAV_PLATFORM', 'c_band_downlink').transmitter['information_rate_bit/s']).toBe(8_000_000)
     const natural = directive<Record<string, Json>>(modified, 'natural_environment')
     expect(natural.rain).toMatchObject({ rain_rate_mm_hr: 50 })
     expect(natural.sea_state).toMatchObject({ sea_state_level: 5 })
+  })
+
+  it('旧链路排序不会出现在新运行包，已保存热链的执行脚本相同', () => {
+    const draft = createTemplateScenario()
+    const runtime = { linkCalc: 'PRESERVE' } as const
+    const canonical = buildMissionPackage(draft, undefined, runtime)
+    const legacy = { ...draft.config.linkSettings!, priority: ['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'] }
+    draft.config.linkSettings = legacy
+    const fromLegacy = buildMissionPackage(draft, undefined, runtime)
+    expect(JSON.parse(fromLegacy.files['input.json']!).config.linkSettings).not.toHaveProperty('priority')
+    expect(fromLegacy.files).toEqual(canonical.files)
+    expect(legacy.priority).toHaveLength(5)
   })
 
   it('热链显式变化进入 hot_link_fw / hot_link_ret，固定区域不变', () => {
@@ -314,15 +333,15 @@ describe('1112 固定模板 + 受控替换生成器', () => {
     expect(scalarDirective(pkg, 'warning_threshold')).toBe('1e-6')
     expect(scalarDirective(pkg, 'value_threshold_ber')).toBe('1e-7')
     expect(scalarDirective(pkg, 'channel_encoding_scheme')).toBe('0')
-    const traffic = directive<Array<Record<string, { forward: Array<{ traffice_type: string; data_volume_bits: number; trans_freq: number }>; return: Array<{ traffice_type: string; data_volume_bits: number; trans_freq: number }> }>>>(pkg, 'traffic_type')
+    const traffic = directive<Array<Record<string, { forward: Array<{ traffice_type: string; data_volume_bits: number; trans_freq: number; rate_bps: number }>; return: Array<{ traffice_type: string; data_volume_bits: number; trans_freq: number; rate_bps: number }> }>>>(pkg, 'traffic_type')
     expect(traffic.map(item => Object.keys(item)[0])).toEqual(['mission_uav_02', 'mission_uav_03'])
     expect(traffic[0]!.mission_uav_02!.forward).toEqual([
-      { traffice_type: 'kForwardSituation', data_volume_bits: 256, trans_freq: 5 },
-      { traffice_type: 'kForwardTarget', data_volume_bits: 512, trans_freq: 10 },
+      { traffice_type: 'kForwardSituation', data_volume_bits: 256, trans_freq: 5, rate_bps: 16_000_000 },
+      { traffice_type: 'kForwardTarget', data_volume_bits: 512, trans_freq: 10, rate_bps: 16_000_000 },
     ])
     expect(traffic[0]!.mission_uav_02!.return).toEqual([
-      { traffice_type: 'kReturnReconVideo', data_volume_bits: 8192, trans_freq: 3 },
-      { traffice_type: 'kReturnReconStatus', data_volume_bits: 512, trans_freq: 10 },
+      { traffice_type: 'kReturnReconVideo', data_volume_bits: 8192, trans_freq: 3, rate_bps: 16_000_000 },
+      { traffice_type: 'kReturnReconStatus', data_volume_bits: 512, trans_freq: 10, rate_bps: 16_000_000 },
     ])
     expect(traffic[1]!.mission_uav_03!.forward[1]!.data_volume_bits).toBe(128)
     expect(directive(pkg, 'relay_uav_names')).toEqual(['mission_uav_01'])
@@ -338,8 +357,8 @@ describe('1112 固定模板 + 受控替换生成器', () => {
     expect(natural.atmosphere).toMatchObject({ model: 'itu', simplified_attenuation_db_per_km: 0.02 })
     const jammers = directive<{ jammers: Array<Record<string, Json>> }>(pkg, 'jammer_param').jammers
     expect(jammers.map(item => item.platform_name)).toEqual(['jammer_station_01', 'jammer_airborne_01'])
-    expect(jammers[0]).toMatchObject({ weapon_name: 'prophet_jammer', jammer_type: 'ground', G_T_dBK: 0, frequency_ghz: 2.4, bandwidth_mhz: 1, power_w: 1000, weapon_eirp_dBW: 50, weapon_antenna_gain_dbi: 30 })
-    expect(jammers[1]).toMatchObject({ weapon_name: 'alq99_jammer', jammer_type: 'airborne', G_T_dBK: 0, weapon_eirp_dBW: 40, weapon_antenna_gain_dbi: 25, trigger_radius_nm: 10, release_radius_nm: 15 })
+    expect(jammers[0]).toMatchObject({ weapon_name: 'prophet_jammer', jammer_type: 'ground', G_T_dBK: -12, frequency_ghz: 2.4, bandwidth_mhz: 1, power_w: 1000, weapon_eirp_dBW: 0, weapon_antenna_gain_dbi: 20 })
+    expect(jammers[1]).toMatchObject({ weapon_name: 'alq99_jammer', jammer_type: 'airborne', G_T_dBK: -10, weapon_eirp_dBW: 0, weapon_antenna_gain_dbi: 25, trigger_radius_nm: 10, release_radius_nm: 15 })
   })
 
   it('干扰设备的频段数组/模式/瞄准带宽/扫频占空比及功率均来自配置并写入 jammer_param', () => {
@@ -476,10 +495,11 @@ describe('1112 固定模板 + 受控替换生成器', () => {
     })
 
     const pkg = buildMissionPackage(draft)
-    expect(portParam(pkg, 'REAR_COMM_PLATFORM', 'sat_link_a').transmitter).toMatchObject({ frequency_ghz: 30, bandwidth_mhz: 54, power_w: 100 })
-    expect(portParam(pkg, 'MISSION_UAV_PLATFORM', 'sat_link').receiver).toMatchObject({ frequency_ghz: 20, bandwidth_mhz: 20 })
+    expect(portParam(pkg, 'REAR_COMM_PLATFORM', 'sat_link_a').transmitter).toMatchObject({ frequency_ghz: 20, bandwidth_mhz: 10, power_w: 300, eirp_dBW: 64 })
+    expect(portParam(pkg, 'MISSION_UAV_PLATFORM', 'sat_link').receiver).toMatchObject({ frequency_ghz: 20, bandwidth_mhz: 10, peak_gain_dB: 60, G_T_dBK: 12 })
     expect(portParam(pkg, 'TIAN_TONG_SAT', 'sat_link')).toMatchObject({
-      transmitter: { frequency_ghz: 20, power_w: 40 }, receiver: { frequency_ghz: 30 },
+      transmitter: { frequency_ghz: 20, power_w: 300, 'information_rate_kbits/sec': 16000 },
+      receiver: { frequency_ghz: 20, peak_gain_dB: 60, G_T_dBK: 12 },
     })
   })
 
@@ -604,6 +624,8 @@ describe('1112 固定模板 + 受控替换生成器', () => {
     const pkg = buildMissionPackage(draft)
     const emitted = pkg.manifest.executionStatus.emitted as Array<{ fieldPath: string; detail: string }>
     const retained = pkg.manifest.executionStatus.retainedSnapshot as Array<{ fieldPath: string; detail: string }>
+    const dependencyUnconfirmed = pkg.manifest.executionStatus.dependencyUnconfirmed as Array<{ fieldPath: string; detail: string }>
+    expect(dependencyUnconfirmed.some(item => item.fieldPath === 'linkSettings.linkCalc')).toBe(false)
     const uavIndex = draft.config.platforms.findIndex(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER')
     const groundJammerIndex = draft.config.platforms.findIndex(platform => platform.type === 'GROUND_JAMMER_DETECTION_STATION')
     const airborneJammerIndex = draft.config.platforms.findIndex(platform => platform.type === 'AIRBORNE_JAMMER_PLATFORM')
@@ -743,5 +765,30 @@ describe('1112 固定模板 + 受控替换生成器', () => {
     } catch (error) {
       expect((error as Error).message).toContain('TIAN_TONG_SAT')
     }
+  })
+
+  it('波形抗干扰增益为 0 时保留原天线峰值增益，非 0 时取共享端口最大值覆盖收发 peak_gain_dB', () => {
+    const readCBandUplinkPeakGain = (text: string) => {
+      const match = /port_params (\[\{[^\n]+\}\])/.exec(text)
+      expect(match).not.toBeNull()
+      const entries = JSON.parse(match![1]!) as Array<{ platform_type: string; comm_params: Array<{ comm_name: string; transmitter: { peak_gain_dB: number }; receiver: { peak_gain_dB: number } }> }>
+      const uav = entries.find(item => item.platform_type === 'MISSION_UAV_PLATFORM')!
+      return uav.comm_params.find(item => item.comm_name === 'c_band_uplink')!
+    }
+
+    const baseline = createTemplateScenario()
+    baseline.config.deviceParameters = { antennaGains: { C_BAND_DIRECTIONAL_UAV_ANTENNA: 19 } }
+    const cForwardLinks = baseline.config.links.filter(link => link.id === 'c_forward_uav2' || link.id === 'c_forward_uav3')
+    expect(cForwardLinks).toHaveLength(2)
+    cForwardLinks[0]!.antiJammingGainDb = 0
+    const zeroResult = readCBandUplinkPeakGain(buildMissionPackage(baseline).files['comm_platform_REAR.txt']!)
+    expect(zeroResult.transmitter.peak_gain_dB).toBe(19)
+    expect(zeroResult.receiver.peak_gain_dB).toBe(19)
+
+    cForwardLinks[0]!.antiJammingGainDb = 12
+    cForwardLinks[1]!.antiJammingGainDb = 18.5
+    const overridden = readCBandUplinkPeakGain(buildMissionPackage(baseline).files['comm_platform_REAR.txt']!)
+    expect(overridden.transmitter.peak_gain_dB).toBe(18.5)
+    expect(overridden.receiver.peak_gain_dB).toBe(18.5)
   })
 })

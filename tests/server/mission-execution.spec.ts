@@ -332,8 +332,13 @@ describe('本机 mission 执行器', () => {
       child.emit('spawn')
       const process = await pending
       expect(JSON.parse(await readFile(marker, 'utf8'))).toMatchObject({ pid: 8765, startedAt: process.startedAt, runDirectory: dirname(process.entryPath) })
+      const startupPath = join(dirname(process.entryPath), 'mission-startup.log')
+      await expect.poll(() => readFile(startupPath, 'utf8')).toContain('"event":"进程已启动","pid":8765')
+      expect(await process.readConsoleLog()).toMatchObject({ bytes: 0, text: '' })
+      child.emit('exit', 1, null)
       child.emit('close', 1)
       await process.completed
+      expect(await readFile(startupPath, 'utf8')).toContain('"event":"进程已退出","pid":8765,"code":1')
       expect(runner.safetyStatus()).toBeNull()
     } finally { await rm(root, { recursive: true, force: true }) }
   })
@@ -1066,6 +1071,42 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it.each([false, true])('进程已退出，慢盘归档超过两次停止超时仍等待实际写盘结果（写入失败=%s）', async writeFails => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-stop-slow-archive-'))
+    const child = Object.assign(new EventEmitter(), { pid: 0, kill: vi.fn(() => {
+      queueMicrotask(() => { child.emit('exit', 1); child.emit('close', 1) })
+      return true
+    }) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    const { ContinuousTimeSeriesWriter } = await import('../../server/local/' + 'continuous-time-series.js')
+    const entered = deferred<void>(), release = deferred<void>()
+    const realClose = ContinuousTimeSeriesWriter.prototype.close
+    vi.spyOn(ContinuousTimeSeriesWriter.prototype, 'close').mockImplementation(async function (this: unknown, ...args) {
+      entered.resolve()
+      await release.promise
+      const path = await realClose.apply(this, args)
+      if (writeFails) throw new Error('测试磁盘写入失败')
+      return path
+    })
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
+      const process = await runner.start(draftForMission())
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const stopping = process.stop()
+      await Promise.all([process.exited, entered.promise])
+      await vi.advanceTimersByTimeAsync(12_000)
+      expect(child.kill).toHaveBeenCalledTimes(1)
+      expect(runner.safetyStatus()).not.toBeNull()
+      release.resolve()
+      if (writeFails) await expect(stopping).rejects.toThrow('测试磁盘写入失败')
+      else {
+        await expect(stopping).resolves.toBeUndefined()
+        expect(await process.completed).not.toHaveProperty('errorMessage')
+      }
+      expect(runner.safetyStatus()).toBeNull()
+    } finally { release.resolve(); vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
+  })
+
   it('Windows runner STOP 终止本次父子进程树，close 后才解除 guard', async () => {
     if (nodeProcess.platform !== 'win32') return
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-stop-tree-'))
@@ -1104,7 +1145,7 @@ describe('本机 mission 执行器', () => {
     }
   })
 
-  it('正常终止信号被忽略时限时强制终止，失败写入运行记录', async () => {
+  it('正常终止信号被忽略后升级终止，确认退出且归档成功就完成停止', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-stop-timeout-'))
     const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn((signal?: string) => {
       if (signal === 'SIGKILL') queueMicrotask(() => child.emit('close', null))
@@ -1126,17 +1167,16 @@ describe('本机 mission 执行器', () => {
       taskkill.mockClear()
       vi.useFakeTimers()
       const stopping = process.stop()
-      const rejection = expect(stopping).rejects.toThrow('停止超时')
       await vi.advanceTimersByTimeAsync(5_001)
-      await rejection
+      await expect(stopping).resolves.toBeUndefined()
       expect(child.kill).toHaveBeenNthCalledWith(1)
       if (nodeProcess.platform === 'win32') {
         expect(taskkill).toHaveBeenCalledTimes(2)
         expect(taskkill).toHaveBeenCalledWith('taskkill', ['/PID', '8765', '/T', '/F'], { windowsHide: true, timeout: 1_000 }, expect.any(Function))
         expect(child.kill).toHaveBeenCalledTimes(1)
       } else expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
-      expect((await process.completed).errorMessage).toContain('停止超时')
-      expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')).errorMessage).toContain('停止超时')
+      expect((await process.completed).errorMessage).toBeUndefined()
+      expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')).errorMessage).toBeUndefined()
     } finally { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
   })
 

@@ -122,10 +122,12 @@ for (const reference of [false, true]) test(`报告统一筛选经真实HTTP刷�
     const form = page.getByRole('form', { name: '报告统一筛选' })
     if (reference) {
       await expect(page.getByTestId('report-reference-parameters')).toContainText('未确认引擎实际执行版本')
-      await form.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '任务阶段', exact: true }) }).click()
-      await page.getByRole('option', { name: 'PH-1', exact: true }).click()
-      await form.getByRole('button', { name: '应用精确筛选' }).click()
-      await expect(page.getByTestId('report-applied-filter')).toContainText('阶段 PH-1')
+      const current = (await results.get(record.resultId))!
+      const phase = await page.request.get(`${origin}/api/v1/reports/${current.report.reportId}/filter?resultId=${record.resultId}&stage=PH-1`, {
+        headers: { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' },
+      })
+      expect(phase.ok()).toBe(true)
+      expect((await phase.json()).data).toMatchObject({ filter: { stage: 'PH-1' }, report: { localEvidence: { startTimeS: 0, endTimeS: 5 } } })
     } else {
       const linkLabel = 'C 波段数传链路 · 前向 · 中继节点与任务无人机 02'
       await form.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '链路', exact: true }) }).click()
@@ -157,12 +159,24 @@ for (const reference of [false, true]) test(`报告统一筛选经真实HTTP刷�
       await file.saveAs(testInfo.outputPath(`filtered.${format.toLowerCase()}`))
       const bytes = await readFile((await file.path())!)
       if (format === 'HTML') {
-        expect(bytes.toString()).toContain('同场景已完成运行参数对比')
-        if (reference) expect(bytes.toString()).toContain('未确认引擎实际执行版本')
-        expect(bytes.toString()).toContain('节点=A； 时间=1～3 秒')
-        expect(bytes.toString().match(/<svg /g)).toHaveLength(2)
+        const html = bytes.toString('utf8')
+        expect(html).toContain('五项评估指标')
+        if (reference) expect(html).toContain('未确认引擎实际执行版本')
+        expect(html).toContain('已应用筛选')
+        expect(html).toContain('节点=A')
+        expect(html).toContain('1～3 秒')
+        expect(html).not.toContain('同场景已完成运行参数对比')
+        expect(html).not.toContain('节点位置记录数柱状图')
       } else expect(bytes.subarray(0, 5).toString()).toBe('%PDF-')
     }
+    await page.getByTestId('report-data-export').click()
+    const pendingCsv = page.waitForEvent('download')
+    await page.getByTestId('export-summary-csv').click()
+    const csvDownload = await pendingCsv
+    const csv = await readFile((await csvDownload.path())!, 'utf8')
+    expect(csv).toContain('同场景已完成运行参数对比')
+    expect(csv).toContain('节点=A； 时间=1～3 秒')
+    if (!reference) expect(csv).toContain(records[1]!.resultId)
     expect(errors).toEqual([])
   } finally {
     await page.close(); await server.close(); await rm(root, { recursive: true, force: true })

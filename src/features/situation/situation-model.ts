@@ -359,15 +359,19 @@ export const SITUATION_METRICS_F00042 = selectSituationMetrics()
 /**
  * 将秒数格式化为仿真时钟文本。
  * @param seconds 非负秒数。
- * @returns T+ HH:MM:SS 格式文本。
+ * @returns 时钟或分秒文本，有小数时保留到毫秒。
  * @sideeffect 无副作用。
  */
-export function formatSimulationTime(seconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(seconds))
+export function formatSimulationTime(seconds: number, style: 'clock' | 'minutes' = 'clock'): string {
+  const millis = Math.round(Math.max(0, seconds) * 1_000)
+  const safeSeconds = Math.floor(millis / 1_000)
+  const decimals = String(millis % 1_000).padStart(3, '0').replace(/0+$/, '')
+  const fraction = decimals ? `.${decimals}` : ''
+  if (style === 'minutes') return `${Math.floor(safeSeconds / 60)}分${safeSeconds % 60}${fraction}秒`
   const hours = Math.floor(safeSeconds / 3600).toString().padStart(2, '0')
   const minutes = Math.floor((safeSeconds % 3600) / 60).toString().padStart(2, '0')
   const remainingSeconds = (safeSeconds % 60).toString().padStart(2, '0')
-  return `T+ ${hours}:${minutes}:${remainingSeconds}`
+  return `T+ ${hours}:${minutes}:${remainingSeconds}${fraction}`
 }
 
 /**

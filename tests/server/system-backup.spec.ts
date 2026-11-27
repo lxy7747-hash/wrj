@@ -486,7 +486,7 @@ it('恢复保留当前装备引用并恢复账号角色分配，拒绝孤立角�
   expect(existsSync(join(f.backup.directory, 'ORPHAN.system.db'))).toBe(false)
 })
 
-it('恢复会使现有装备引用失去目标时拒绝恢复并保留当前数据', () => {
+it('恢复回滚备份后新增的场景时自动清理失效装备引用，并保留装备库定义', () => {
   const f = setup()
   expect(f.backup.backup('BEFORE-REFERENCE').ok).toBe(true)
   const draft = f.scenario.load('SCN-001')!
@@ -499,10 +499,48 @@ it('恢复会使现有装备引用失去目标时拒绝恢复并保留当前数�
   const admin = f.auth.list()[0]!
   f.auth.save({ ...admin, displayName: '当前显示名' })
 
-  expect(f.backup.restore('BEFORE-REFERENCE')).toMatchObject({ ok: false, code: 'CONFLICT', status: 409, fieldPath: 'backupId', message: expect.stringContaining(scenarioId) })
+  expect(f.backup.restore('BEFORE-REFERENCE')).toMatchObject({ ok: true, data: { result: 'SUCCESS', integrityValid: true, progress: 100 } })
+  expect(f.equipment.details(equipment.equipmentId).references).not.toContainEqual(reference)
+  expect(f.equipment.load()).toHaveLength(1)
+  expect(f.scenario.load(scenarioId)).toBeUndefined()
+  expect(f.auth.list()[0]?.displayName).toBe(admin.displayName)
+})
+
+it('删除场景时同步清理其装备引用，不残留孤立引用记录', () => {
+  const f = setup()
+  const draft = f.scenario.load('SCN-001')!
+  const scenarioId = 'SCN-DELETE-CLEANUP'
+  draft.config.scenario.id = scenarioId
+  expect(f.scenario.save(draft, undefined)).toBe(true)
+  const saved = f.scenario.load(scenarioId)!
+  const equipment = f.equipment.load()[0]!
+  const reference = { equipmentId: equipment.equipmentId, equipmentVersion: equipment.version, scenarioId, linkId: saved.config.links[0]!.id }
+  f.equipment.setReference(reference, false)
   expect(f.equipment.details(equipment.equipmentId).references).toContainEqual(reference)
-  expect(f.scenario.load(scenarioId)?.config.scenario.id).toBe(scenarioId)
-  expect(f.auth.list()[0]?.displayName).toBe('当前显示名')
+
+  expect(f.scenario.delete(scenarioId, saved.revision)).toBe(true)
+  expect(f.equipment.details(equipment.equipmentId).references).not.toContainEqual(reference)
+})
+
+it('装备库已清空时，含旧装备来源的场景备份仍可正常恢复且清理失效引用', () => {
+  const f = setup()
+  const draft = f.scenario.load('SCN-001')!
+  const link = draft.config.links[0]!
+  const equipment = f.equipment.load()[0]!
+  link.parameterSource = { kind: 'EQUIPMENT', sourceId: equipment.equipmentId, sourceVersion: equipment.version, fields: ['bandwidth'] }
+  const db = new DatabaseSync(f.path)
+  try {
+    db.prepare('UPDATE scenarios SET config_json = ? WHERE id = ?').run(JSON.stringify(draft.config), 'SCN-001')
+  } finally { db.close() }
+  expect(f.backup.backup('LEGACY-EQUIPMENT-SOURCE').ok).toBe(true)
+
+  const eqDb = new DatabaseSync(join(f.directory, 'equipment.db'))
+  try {
+    eqDb.exec('DELETE FROM equipment_references; DELETE FROM equipment_history; DELETE FROM equipment_parameters;')
+  } finally { eqDb.close() }
+
+  expect(f.backup.restore('LEGACY-EQUIPMENT-SOURCE')).toMatchObject({ ok: true, data: { result: 'SUCCESS', integrityValid: true, progress: 100 } })
+  expect(f.equipment.load()).toEqual([])
 })
 
 it('计划默认关闭，启用后按间隔执行，重启补一次、失败可见、停用不删除历史', () => {

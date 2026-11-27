@@ -168,13 +168,26 @@ describe('独立生成脚本文件入口', () => {
     const file = t.file()
     pending.resolve(success(file))
     await flushPromises()
-    const result = t.wrapper.get(receipt)
+    const previewDialog = t.wrapper.get('[data-testid="script-preview-dialog"]')
+    expect(previewDialog.get('[data-testid="standalone-script-preview"]').element.textContent).toBe('# synthetic')
+    await previewDialog.get('[data-testid="script-file-mapping.json"]').trigger('click')
+    await flushPromises()
+    expect(previewDialog.get('[data-testid="standalone-script-preview"]').element.textContent).toContain('"fieldPath": "scenario.duration"')
+    const result = previewDialog.get(receipt)
     expect(result.text()).toContain('脚本生成成功')
     expect(result.text()).toContain('脚本路径')
     expect(result.text()).toContain(file.path)
     expect(result.text()).toContain('场景版本号')
     expect(result.text()).toContain(file.configVersion)
     expect(result.text()).toContain('生成日志')
+    expect(result.get('[data-testid="script-generation-receipt-log"]').text()).toContain(logDetail)
+    expect(result.get('[data-testid="script-generation-receipt-log"]').text()).not.toContain('预览未执行引擎校验')
+    expect(result.get('[data-testid="script-generation-receipt-log"]').text()).not.toContain('WSF_LINK_CALC_PROCESSOR')
+    await result.get('[data-testid="toggle-generation-log"]').trigger('click')
+    await flushPromises()
+    expect(result.find('[data-testid="script-generation-receipt-log"]').exists()).toBe(false)
+    await result.get('[data-testid="toggle-generation-log"]').trigger('click')
+    await flushPromises()
     expect(result.get('[data-testid="script-generation-receipt-log"]').text()).toContain(logDetail)
     expect(t.store.draft?.revision).toBe(revision)
     expect(t.wrapper.emitted('saved')).toBeUndefined()
@@ -322,7 +335,9 @@ describe('独立脚本预览入口', () => {
     const text = '// ===== sample.txt =====\r\n  first line <&>\r\n\r\n  last line'
     t.override.mockImplementation(path => path === '/api/v1/scripts/preview' ? success({ ...t.script(), preview: text }) : undefined)
     await t.preview()
-    const code = t.wrapper.get('[data-testid="standalone-script-preview"]')
+    const dialog = t.wrapper.get('[data-testid="script-preview-dialog"]')
+    expect(dialog.find('[data-testid="script-generation-receipt"]').exists()).toBe(false)
+    const code = dialog.get('[data-testid="standalone-script-preview"]')
     expect(code.element.textContent).toBe(text)
     expect(code.get('.script-preview-section').text()).toBe('// ===== sample.txt =====')
     expect(t.wrapper.get('.script-preview-gutter').element.textContent).toBe('1\n2\n3\n4')
@@ -331,7 +346,7 @@ describe('独立脚本预览入口', () => {
     expect(t.wrapper.emitted('saved')).toBeUndefined()
   })
 
-  it('验收核对可切换五类，定位原文后保留分类和原始文本', async () => {
+  it('验收核对可切换六类，定位原文后保留分类和原始文本', async () => {
     const t = await setup()
     const duplicatedPath = 'platforms[0].name'
     const dependencyPath = 'uiExtensions.jammers[0]'
@@ -341,6 +356,7 @@ describe('独立脚本预览入口', () => {
     const mappingLines = JSON.stringify({ entry: 'sample.txt', executionStatus: {
       emitted: [
         { fieldPath: duplicatedPath, detail: '样例平台记录' },
+        { fieldPath: 'platforms[0].waypoints', detail: '样例运动记录' },
         { fieldPath: 'links[0]', detail: '样例通信记录' },
         { fieldPath: 'jammers[0]', detail: '样例干扰定义' },
         { fieldPath: 'scenario.duration', detail: '样例时序记录' },
@@ -353,9 +369,10 @@ describe('独立脚本预览入口', () => {
         { fieldPath: dependencyPath, detail: '样例干扰记录' },
       ],
     } }, null, 2).split('\n')
-    const text = ['// ===== sample.txt =====', '  # synthetic <&>  ', '', durationLine, '',
-      '// ===== comm_platform_REAR.txt =====', ...communicationBlock, '', '// ===== mapping.json =====',
-      ...mappingLines.map(line => '// ' + line), ''].join('\n')
+    const sampleSection = ['// ===== sample.txt =====', '  # synthetic <&>  ', '', durationLine, ''].join('\n')
+    const rearSection = ['// ===== comm_platform_REAR.txt =====', ...communicationBlock, ''].join('\n')
+    const mappingSection = ['// ===== mapping.json =====', ...mappingLines.map(line => '// ' + line), ''].join('\n')
+    const text = [sampleSection, rearSection, mappingSection].join('\n')
     t.override.mockImplementation(path => path === '/api/v1/scripts/preview'
       ? success({ ...t.script(), preview: text }) : undefined)
     await t.preview()
@@ -364,7 +381,10 @@ describe('独立脚本预览入口', () => {
     const tabs = (name: string) => dialog.findAll('[role="tab"]').find(tab => tab.text() === name)!
     const original = () => dialog.get('[data-testid="standalone-script-preview"]')
     expect(tabs('脚本原文').attributes('aria-selected')).toBe('true')
-    expect(original().element.textContent).toBe(text)
+    expect(original().element.textContent).toBe(sampleSection)
+    expect(dialog.find('[data-testid="script-file-sample.txt"]').exists()).toBe(true)
+    expect(dialog.find('[data-testid="script-file-comm_platform_REAR.txt"]').exists()).toBe(true)
+    expect(dialog.find('[data-testid="script-file-mapping.json"]').exists()).toBe(true)
     const showAcceptance = async () => {
       await tabs('验收核对').trigger('click')
       await flushPromises()
@@ -382,6 +402,7 @@ describe('独立脚本预览入口', () => {
     }
     const groups = [
       ['platform', '平台定义', '样例平台记录', '已写入脚本'],
+      ['motion', '运动定义', '样例运动记录', '已写入脚本'],
       ['communication', '通信定义', '样例通信记录', '已写入脚本'],
       ['sensor', '传感器定义', '样例传感器记录', '依赖待确认'],
       ['jammer', '干扰定义', '样例干扰记录', '依赖待确认'],
@@ -404,30 +425,30 @@ describe('独立脚本预览入口', () => {
     expect(group('platform').findAll(sourceSelector).map(item => item.text()))
       .toEqual(expect.arrayContaining(duplicateLocations.map(value => '清单 ' + value)))
 
-    const jumpToSource = async (key: string, label: string, expectedText: string) => {
+    const jumpToSource = async (key: string, label: string, expectedText: string, expectedSectionText: string) => {
       const source = group(key).findAll(sourceSelector).find(button => button.text() === label)
       expect(source).toBeDefined()
       await source!.trigger('click')
       await flushPromises()
       expect(tabs('脚本原文').attributes('aria-selected')).toBe('true')
       expect(dialog.get('[data-testid="script-preview-target-line"]').element.textContent).toBe(expectedText)
-      expect(original().element.textContent).toBe(text)
+      expect(original().element.textContent).toBe(expectedSectionText)
       await showAcceptance()
     }
 
     await openGroup('通信定义')
-    await jumpToSource('communication', 'comm_platform_REAR.txt:1–4', communicationBlock.join('\n'))
+    await jumpToSource('communication', 'comm_platform_REAR.txt:1–4', communicationBlock.join('\n'), rearSection)
 
     await openGroup('干扰定义')
     const jammerDefinition = group('jammer').findAll('li').find(item => item.text().includes('样例干扰定义'))
     expect(jammerDefinition?.text()).toContain('已写入脚本')
     expect(jammerDefinition?.get(sourceSelector).text()).toBe('comm_platform_REAR.txt:3')
-    await jumpToSource('jammer', 'comm_platform_REAR.txt:3', deviceLine)
+    await jumpToSource('jammer', 'comm_platform_REAR.txt:3', deviceLine, rearSection)
     const dependencyIndex = mappingLines.findIndex(line => line.includes(fieldJson(dependencyPath)))
-    await jumpToSource('jammer', '清单 ' + location(dependencyIndex), '// ' + mappingLines[dependencyIndex])
+    await jumpToSource('jammer', '清单 ' + location(dependencyIndex), '// ' + mappingLines[dependencyIndex], mappingSection)
 
     await openGroup('时序定义')
-    await jumpToSource('timeline', 'sample.txt:3', durationLine)
+    await jumpToSource('timeline', 'sample.txt:3', durationLine, sampleSection)
     expect(groupTab('时序定义').attributes('aria-selected')).toBe('true')
     expect(group('timeline').text()).toContain('样例时序记录')
   })

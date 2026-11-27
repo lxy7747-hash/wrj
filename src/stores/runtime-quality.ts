@@ -5,7 +5,7 @@ import { isEngineFrameSnapshot } from '../features/data-exchange/engine-frame-sn
 import { adaptRuntimeLinkQuality, type RuntimeLinkQualityData } from '../features/data-exchange/runtime-link-quality'
 import { RuntimeLinkDecisionTracker, type RuntimeLinkStatus, type RuntimeRouteCandidate, type RuntimeRouteDecision } from '../features/data-exchange/runtime-link-decisions'
 import { consecutiveQualitySamples, isQualityDataset } from '../features/data-exchange/quality-records'
-import { buildFrameRouteEvidence, resolveEngineSwitchHighlightsWithEvidence, type EngineRouteEvidenceFrame, type EngineSwitchHighlights } from '../features/situation/engine-route-highlights'
+import { buildFrameRouteEvidence, resolveEngineSwitchHighlightsWithEvidence, ROUTE_EVIDENCE_FRAME_LIMIT, type EngineRouteEvidenceFrame, type EngineSwitchEntry } from '../features/situation/engine-route-highlights'
 import { useAuthStore } from './auth'
 import { useSimulationStore } from './simulation'
 
@@ -163,7 +163,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   let presentationTimes: readonly number[] | null = null
   let pendingEngineFrames: Array<{ frame: EngineFrameSnapshot; receivedAt: number }> = []
   const engineEvents = ref<{ frameId: number; simulationTime: number; event: EngineFrameSnapshot['events'][number] }[]>([])
-  const engineSwitches = ref<{ frameId: number; simulationTime: number; route: EngineFrameSnapshot['routing']['switches'][number]; resolution?: EngineSwitchHighlights }[]>([])
+  const engineSwitches = ref<EngineSwitchEntry[]>([])
   const engineAlarms = ref<{ frameId: number; simulationTime: number; alarm: EngineFrameSnapshot['routing']['alarms'][number]; context?: EngineAlarmContext }[]>([])
   const source = computed(() => engineFrame.value ? 'ENGINE_FRAME' : snapshot.value?.source ?? null)
   /** Events recorded by the imported source; never populated from local route decisions. */
@@ -486,7 +486,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
       return context ? { ...meta, alarm, context } : { ...meta, alarm }
     })
     engineAlarms.value = [...engineAlarms.value, ...frozenAlarms].slice(-200)
-    routeEvidenceHistory = [...routeEvidenceHistory, { runId: frame.runId, engineEpoch: frame.engineEpoch, frameId: frame.frameId, simulationTime: frame.simulationTime, hops: buildFrameRouteEvidence(frame) }].slice(-200)
+    routeEvidenceHistory = [...routeEvidenceHistory, { runId: frame.runId, engineEpoch: frame.engineEpoch, frameId: frame.frameId, simulationTime: frame.simulationTime, hops: buildFrameRouteEvidence(frame) }].slice(-ROUTE_EVIDENCE_FRAME_LIMIT)
     errors.value = []
     state.value = frame.links.length || frame.pathQuality?.length || frame.jammers.length || frame.events.length
       || frame.initRouting?.length || engineSwitches.value.length || engineAlarms.value.length ? 'SUCCESS' : 'EMPTY'

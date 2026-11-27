@@ -6,7 +6,7 @@ import type { BackupRecord, BackupPlan, BackupPlanStatus, BackupExecution, Resto
 import type { AdminResult, BackupStorage } from '../admin/projection.js'
 import { isBackupPlan, isBackupPlanStatus } from '../../src/features/admin/backup-plan.js'
 import { BackupSqliteStorage, legacyBackupColumn } from './backup-sqlite.js'
-import { SYSTEM_BACKUP_SCOPES, SYSTEM_SCOPES, SYSTEM_TABLES, retainedParameterConflict, validateSystemSnapshot, validateSystemSnapshotStructure, type BackupScope } from './system-backup-validation.js'
+import { SYSTEM_BACKUP_SCOPES, SYSTEM_SCOPES, SYSTEM_TABLES, reconcileEquipmentReferences, retainedParameterConflict, validateSystemSnapshot, validateSystemSnapshotStructure, type BackupScope } from './system-backup-validation.js'
 import { BackupValidationCache, fileFingerprint } from './backup-validation-cache.js'
 
 type TableSnapshot = { scope: BackupScope; table: string; sql: string; rows: Record<string, SQLInputValue>[] }
@@ -270,9 +270,10 @@ export class SystemBackupSqliteStorage implements BackupStorage {
       const templates = tables.find(table => table.scope === 'main' && table.table === 'scenario_templates')!.rows
       const conflict = retainedParameterConflict(this.db, scenes, templates)
       if (conflict) return { ok: false, status: 409, code: 'CONFLICT', fieldPath: 'backupId', message: conflict }
+      const currentScenes = this.db.prepare('SELECT id, config_json FROM main.scenarios').all() as Record<string, SQLInputValue>[]
       const environment = this.db.prepare('SELECT environment FROM settings.runtime_config WHERE id=1').get()?.environment
       try {
-        // 保留装备与通用基础数据；延迟到提交时检查备份范围内的外键。
+        // 保留装备与通用基础数据；同步失效或回滚的装备引用索引，延迟到提交时检查备份范围内的外键。
         this.db.exec('PRAGMA defer_foreign_keys=ON')
         for (const table of tables) {
           if (!SYSTEM_BACKUP_SCOPES.some(scope => scope === table.scope) || (table.scope === 'main' && table.table === 'audit_logs')) continue
@@ -280,6 +281,7 @@ export class SystemBackupSqliteStorage implements BackupStorage {
           this.db.exec(`DELETE FROM ${key}`)
           this.insertRows(this.db, key, table.rows)
         }
+        reconcileEquipmentReferences(this.db, currentScenes, scenes)
         // 保留当前部署的环境基线，恢复值立即生效且不会在下次同配置启动时被覆盖。
         this.db.prepare('UPDATE settings.runtime_config SET environment=? WHERE id=1').run(environment as string)
         validateSystemSnapshot(this.db, SYSTEM_BACKUP_SCOPES)

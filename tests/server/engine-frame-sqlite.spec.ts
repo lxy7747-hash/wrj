@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import latest from '../fixtures/engine-frame/websocket-latest.json'
 import alarmSample from '../fixtures/engine-frame/websocket-new/fream_chenge3.json'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
+import { latestMapSwitches } from '../../src/features/situation/engine-route-highlights'
 const { EngineFrameSqliteStorage } = await import('../../server/local/' + 'engine-frame-sqlite.js')
 const { createEngineFrameArchive } = await import('../../server/local/' + 'engine-frame-archive.js')
 const { mkdtemp, rm, readFile, writeFile, readdir } = await import('node:fs/' + 'promises')
@@ -98,6 +99,42 @@ it('一个数据库隔离同场景多次运行、不同场景和引擎轮次，�
   const replay = await reopened.replay(scope, 10)
   expect(replay.engineFrame!.links[1]!.quality.ber).toBe(latest[0]!.link_calc.links[1]!.quality.ber)
   expect(replay.epochs).toEqual([{ engineEpoch: 0, frameCount: 2, firstTime: 5, lastTime: 10 }, { engineEpoch: 1, frameCount: 1, firstTime: 0, lastTime: 0 }])
+})
+
+it('直接定位、后续普通帧和倒放均按事件帧证据标注，只保留游标以前最近一次切换', async () => {
+  const { database } = await setup()
+  await database.begin(scope, {})
+  const digest = createHash('sha256')
+  const routeNodes = (port: string) => [
+    { platformId: 'A', platformName: 'A', outPort: port, inPort: null },
+    { platformId: 'B', platformName: 'B', outPort: null, inPort: port },
+  ]
+  const write = async (time: number, port: string, id: string, oldPort?: string, epoch = 0) => {
+    const value = frame(time, scope.runId, epoch)
+    value.simulationTime = time
+    value.links = [{ ...value.links[0]!, linkId: id, linkIds: [id], sourcePlatformId: 'A', targetPlatformId: 'B', sourcePort: port, targetPort: port }]
+    value.routing.switches = oldPort ? [{
+      pathId: id, oldPathId: oldPort, direction: 'FORWARD', sourceName: 'A', targetName: 'B',
+      sourcePlatformId: 'A', targetPlatformId: 'B', transTypes: [], reasons: [], oldNodes: routeNodes(oldPort), nodes: routeNodes(port),
+    }] : []
+    digest.update(JSON.stringify(value) + '\n')
+    await database.append(scope, value)
+  }
+  await write(1, 'one', 'L1')
+  await write(2, 'two', 'L2', 'one')
+  await write(3, 'one', 'DIFFERENT-AT-THREE')
+  await write(4, 'three', 'L3', 'two')
+  await write(1, 'one', 'OTHER-EPOCH', undefined, 1)
+  await database.complete(scope, digest.digest('hex'), 5)
+  const map = async (time: number, epoch = 0) => {
+    const history = await database.replay(scope, time, epoch)
+    return Object.fromEntries(latestMapSwitches(history.engineFrame, history.engineSwitches.at(-1)))
+  }
+  expect(await map(3)).toEqual({ L1: 'BEFORE', L2: 'AFTER' })
+  expect(await map(4)).toEqual({ L2: 'BEFORE', L3: 'AFTER' })
+  expect(await map(1)).toEqual({})
+  expect(await map(2)).toEqual({ L1: 'BEFORE', L2: 'AFTER' })
+  expect(await map(3, 1)).toEqual({})
 })
 
 it.each(['append', 'complete'] as const)('数据库 %s 失败保留文件与待写帧，停止重试后只存一份', async method => {

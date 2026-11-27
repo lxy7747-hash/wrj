@@ -2,7 +2,18 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、10 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为“2026-11-07 引擎链路整帧”；下方其余记录均为历史，旧哈希保持原样。
+当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。合同冻结以“2026-11-07 引擎链路整帧”及后续兼容补充为准。历史记录保留原哈希。
+
+## 场景 JSON 导入版本扩展
+
+`POST /api/v1/scenarios/import` 接受纯配置或带 `wrj.scenario.snapshot` 外壳的快照。外层 `version` 接受非负 JSON 整数，包括 0。内层 `schemaVersion` 接受 `X.Y` 格式字符串，点号两侧各有至少一位 ASCII 数字。两处版本值分别校验，可以不同。导入沿用现有写入字段规则，校验通过后映射为内部 `ScenarioConfig 1.0` 保存。导出仍使用快照外壳版本 1 和配置版本 1.0。
+
+| 文件 | 更新后工作区 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与源码镜像一致） | `921D1F1E8E511DD6D4D40D877C151ECC32CBA54946A24BA8F522EFF3F69A5ABC` |
+| `contracts/mock-api.openapi.yaml` | `2087C8072DA9B31DF4D0BBED1B7FF72FBFFFE22EB13247BD5040BDD9A6257A50` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `114BBAD76F5E54C497A139F887BB3CE366CDEFD4E590382E7958BEBE07E33893` |
+| `../scripts/contracts/contract-documents.ts` | `C85A98F5AB50CF5B2D3B13BF37412FFBC83969B96AE9348C2BCE1A36B6C620D6` |
 
 ## 链路 CSV 缺测口径（2026-11-15 用户确认）
 

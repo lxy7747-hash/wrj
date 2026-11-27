@@ -25,7 +25,7 @@ const { reports, selectedReport, capabilityState, resultMessage, exportResult, r
 const exportFormat = ref<ReportExportRequest['format']>('HTML')
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(capabilityState.value))
 const localFilterPending = computed(() => capabilityState.value === 'LOADING' && !!resultSource.value && !!localFilterResult.value)
-const filterNode = ref(''), filterLink = ref(''), filterStage = ref(''), filterFrom = ref<number | null>(null), filterTo = ref<number | null>(null)
+const filterNode = ref(''), filterLink = ref(''), filterFrom = ref<number | null>(null), filterTo = ref<number | null>(null)
 const evidenceSeriesId = ref('')
 const filterRangeError = computed(() => filterFrom.value !== null && filterTo.value !== null && filterFrom.value > filterTo.value)
 const localEvidence = computed(() => localFilterResult.value?.report.localEvidence ?? selectedReport.value?.localEvidence)
@@ -54,10 +54,9 @@ const filterLinkOptions = computed(() => {
 const appliedFilterLabel = computed(() => {
   const filter = localFilterResult.value?.filter
   return filter && Object.keys(filter).length ? [filter.nodeId && `节点 ${filter.nodeId}`, filter.linkId && (filterLinkOptions.value.find(link => link.value === filter.linkId)?.label ?? '指定链路'),
-    filter.stage && `阶段 ${filter.stage}`,
     (filter.from !== undefined || filter.to !== undefined) && `${filter.from ?? selectedReport.value?.localEvidence?.startTimeS}～${filter.to ?? selectedReport.value?.localEvidence?.endTimeS} 秒`].filter(Boolean).join('；') : '全部数据'
 })
-function clearFilterInputs(): void { filterNode.value = ''; filterLink.value = ''; filterStage.value = ''; filterFrom.value = null; filterTo.value = null }
+function clearFilterInputs(): void { filterNode.value = ''; filterLink.value = ''; filterFrom.value = null; filterTo.value = null }
 
 /** 证据一律使用“已应用筛选”（localFilterResult.filter），不使用未提交表单。 */
 const appliedEvidenceFilter = (): LocalReportFilter | undefined => localFilterResult.value?.filter
@@ -160,7 +159,7 @@ async function requestExport(format = exportFormat.value): Promise<void> {
 async function applyLocalFilter(reset = false): Promise<void> {
   if (!resultSource.value || (!reset && filterRangeError.value)) return
   if (reset) clearFilterInputs()
-  const filter: LocalReportFilter = { ...(filterNode.value ? { nodeId: filterNode.value } : {}), ...(filterLink.value ? { linkId: filterLink.value } : {}), ...(filterStage.value ? { stage: filterStage.value } : {}), ...(filterFrom.value === null ? {} : { from: filterFrom.value }), ...(filterTo.value === null ? {} : { to: filterTo.value }) }
+  const filter: LocalReportFilter = { ...(filterNode.value ? { nodeId: filterNode.value } : {}), ...(filterLink.value ? { linkId: filterLink.value } : {}), ...(filterFrom.value === null ? {} : { from: filterFrom.value }), ...(filterTo.value === null ? {} : { to: filterTo.value }) }
   if (await reportStore.applyLocalFilter(filter) && reportStore.evidenceOverview?.selectedSourceSha256) {
     // 已应用筛选变化：失效旧请求并清旧游标/段，按新筛选刷新当前来源/kind/曲线。
     if (evidenceSeriesId.value) void reportStore.loadEvidenceSeries(evidenceSeriesId.value, { filter: appliedEvidenceFilter() })
@@ -235,7 +234,8 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
                     :command="`csv:${file.fileName}`"
                     data-testid="engine-csv-download"
                     :disabled="pending || engineCsvDownloading !== null"
-                  >下载 {{ file.fileName }}{{ file.status === 'PARTIAL' ? '（部分）' : '' }}</el-dropdown-item>
+                    :title="file.reason || undefined"
+                  >下载 {{ file.fileName }}</el-dropdown-item>
                 </template>
               </el-dropdown-menu>
             </template>
@@ -272,18 +272,17 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
     </header>
 
     <main class="reports-page__content">
-      <p v-if="archiveId" data-testid="report-archive-source">归档：{{ archiveId }} · 未绑定场景或运行</p>
-      <p v-if="selectedReport?.localEvidence">报告编号：{{ selectedReport.reportId }} · 统计生成：{{ formatDateTime(selectedReport.generatedTime) }}</p>
+      <p style="margin: 0;" v-if="archiveId" data-testid="report-archive-source">归档：{{ archiveId }} · 未绑定场景或运行</p>
+      <p style="margin: 0;" v-if="selectedReport?.localEvidence">报告编号：{{ selectedReport.reportId }} · 统计生成：{{ formatDateTime(selectedReport.generatedTime) }}</p>
       <el-skeleton v-if="!localFilterPending && (capabilityState === 'LOADING' || capabilityState === 'VALIDATING')" :rows="8" animated />
       <template v-else-if="selectedReport?.localEvidence">
         <p v-if="resultSource?.executionSource === 'REMOTE_WS'">数据接收已结束，未确认引擎已停止。指标来自归档，事件和轨迹来自回放文件。</p>
-        <p v-if="resultComparisons.some(item => item.record.resultId === resultSource?.resultId && item.parameters.source === 'PROJECT_REFERENCE')" data-testid="report-reference-parameters">参数和阶段筛选以项目参考配置为准，未确认引擎实际执行版本。</p>
+        <p v-if="resultComparisons.some(item => item.record.resultId === resultSource?.resultId && item.parameters.source === 'PROJECT_REFERENCE')" data-testid="report-reference-parameters">参数以项目参考配置为准，未确认引擎实际执行版本。</p>
         <el-alert v-if="resultSource && (capabilityState === 'ERROR' || !localFilterResult)" type="warning" :closable="false" :title="resultMessage || '该历史结果无法筛选，请重新生成结果。'" />
-        <p v-if="resultSource" data-testid="report-applied-filter">当前图表与导出范围：{{ appliedFilterLabel }}</p>
+        <p tyle="margin: 0;" v-if="resultSource" data-testid="report-applied-filter">当前图表与导出范围：{{ appliedFilterLabel }}</p>
         <el-form v-if="resultSource" inline class="local-report-filter" aria-label="报告统一筛选">
           <el-form-item label="节点"><el-select v-model="filterNode" clearable style="width: 160px" placeholder="全部节点"><el-option v-for="node in selectedReport.localEvidence.nodes" :key="node.platformId" :value="node.platformId" :label="node.name" /></el-select></el-form-item>
           <el-form-item label="链路"><el-select v-model="filterLink" clearable style="width: 180px" :disabled="!localFilterResult" placeholder="全部链路"><el-option v-for="link in filterLinkOptions" :key="link.value" :value="link.value" :label="link.label" /></el-select></el-form-item>
-          <el-form-item label="任务阶段"><el-select v-model="filterStage" clearable :disabled="!localFilterResult?.stages.length" style="width: 220px" :placeholder="localFilterResult?.stages.length ? '全部阶段' : '本次运行未设置任务阶段'"><el-option v-for="stage in localFilterResult?.stages ?? []" :key="stage" :label="stage" :value="stage" /></el-select></el-form-item>
           <el-form-item label="开始时刻（秒）"><el-input-number v-model="filterFrom" :min="0" :max="selectedReport.localEvidence.endTimeS" /></el-form-item><el-form-item label="结束时刻（秒）"><el-input-number v-model="filterTo" :min="0" :max="selectedReport.localEvidence.endTimeS" /></el-form-item>
           <el-form-item><el-button type="primary" :loading="localFilterPending" :disabled="filterRangeError || !localFilterResult" @click="applyLocalFilter()">应用精确筛选</el-button><el-button :disabled="!localFilterResult || localFilterPending" @click="applyLocalFilter(true)">重置</el-button></el-form-item>
         </el-form>

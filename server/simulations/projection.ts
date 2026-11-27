@@ -243,6 +243,11 @@ export class SimulationProjection {
     return structuredClone(this.run)
   }
 
+  markMissionExited(): SimulationRun {
+    this.run.canonical.processId = null
+    return structuredClone(this.run)
+  }
+
   finishMission(outcome: MissionOutcome, explicitlyStopped = false): SimulationRun {
     const failed = outcome.code !== 0 || Boolean(outcome.errorMessage)
     const stopped = !failed && (explicitlyStopped || this.run.engineControl?.action === 'stop')

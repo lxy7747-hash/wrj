@@ -1,4 +1,5 @@
 import type { Report, ScenarioDraft, TaskPhase } from '../../contracts/domain-models'
+import { isReplayMapConfig, type ReplayMapConfig } from '../replays/replay-map-config'
 import { isLocalReplaySnapshot, type LocalReplaySnapshot } from '../replays/local-replay'
 import { isLocalReport } from '../reports/local-report'
 import { taskPhaseIssue } from '../scenarios/task-phases'
@@ -43,8 +44,19 @@ export interface MissionResultParameterComparison {
 export interface MissionResultSnapshot {
   record: MissionResultRecord
   replay: LocalReplaySnapshot
+  replayMap?: ReplayMapConfig
   report: Report
   parameters?: MissionResultParameters
+}
+
+export type MissionResultReplayView = Pick<MissionResultSnapshot, 'record' | 'replay' | 'replayMap'>
+
+export function isMissionResultReplayView(value: unknown): value is MissionResultReplayView {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !Object.keys(value).every(key => ['record', 'replay', 'replayMap'].includes(key))) return false
+  const { record, replay, replayMap } = value as MissionResultReplayView
+  return isMissionResultRecord(record) && replay != null && isLocalReplaySnapshot(replay) && !replay.waitingForLine
+    && (replayMap === undefined || isReplayMapConfig(replayMap, record.scenarioId))
 }
 
 /** 历史对比的轻量响应；旧结果可能未留存参数。 */
@@ -132,10 +144,12 @@ export function normalizeMissionResultSnapshot(value: unknown): unknown {
   return { ...snapshot, replay: { ...(replay as object), initial: normalizedInitial } }
 }
 
-export function isMissionResultSnapshot(value: unknown): value is MissionResultSnapshot {  if (!value || typeof value !== 'object' || Array.isArray(value)
-    || ![3, 4].includes(Object.keys(value).length) || !Object.keys(value).every(key => ['record', 'replay', 'report', 'parameters'].includes(key))) return false
-  const { record, replay, report, parameters } = value as MissionResultSnapshot
-  if (!isMissionResultRecord(record) || !isLocalReplaySnapshot(replay) || !isLocalReport(report)) return false
+export function isMissionResultSnapshot(value: unknown): value is MissionResultSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !Object.keys(value).every(key => ['record', 'replay', 'report', 'parameters', 'replayMap'].includes(key))) return false
+  const { record, replay, report, parameters, replayMap } = value as MissionResultSnapshot
+  if (!isMissionResultRecord(record) || !replay || !isLocalReplaySnapshot(replay) || !isLocalReport(report)) return false
+  if (replayMap !== undefined && !isReplayMapConfig(replayMap, record.scenarioId)) return false
   if (parameters !== undefined) {
     if (!isMissionResultParameters(parameters)) return false
     if (parameters.source === 'PROJECT_REFERENCE') {

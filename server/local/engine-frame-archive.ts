@@ -10,6 +10,7 @@ import { ENGINE_CSV_PROJECTION_VERSION, createEngineCsvSession, CSV_CAPACITY_MES
 import type { LinkType } from '../../src/contracts/domain-models.js'
 import type { EngineFrameSqliteStorage } from './engine-frame-sqlite.js'
 import type { EngineReplaySnapshot } from '../../src/features/replays/engine-replay.js'
+import { EXPORT_CURVE_MAX_POINTS, StreamingCurveReservoir } from './report-curve-downsample.js'
 
 const safeRunId = (value: string) => /^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(value)
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -22,6 +23,8 @@ const SYNC_EVERY_FRAMES = 32
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
 /** Browser report evidence is bounded; the complete JSONL generation remains hash-addressable on disk. */
 const MAX_REPORT_ROWS = 50_000
+/** 50,000 行明细摘要与全量 CSV 证据源占用堆内存较高，限制驻留份数防止长时间运行 OOM。 */
+const LARGE_OBJECT_CACHE_LIMIT = 2
 
 export interface EngineFrameArchiveScope {
   taskId: string
@@ -72,6 +75,8 @@ export interface EngineFrameArchive {
   querySeriesCatalog(runId: string, expectedScope?: EngineFrameArchiveScope, selection?: NativeSelection, sourceSha256?: string): Promise<NativeSeriesMetaOut[] | null>
   /** D3 有界：单条原生命中曲线，两遍扫描只保留有界展示点。 */
   querySeriesPoints(runId: string, expectedScope: EngineFrameArchiveScope | undefined, seriesId: string, selection: NativeSelection | undefined, maxPoints: number, sourceSha256?: string, cursorOffset?: number): Promise<NativeSeriesPoints | null>
+  /** D3 导出优化：单遍流式扫描全部命中曲线并按极值保真降采样，避免多曲线反复全量扫盘与 OOM。 */
+  queryAllSeriesDownsampled?(runId: string, expectedScope: EngineFrameArchiveScope | undefined, selection: NativeSelection | undefined, maxPointsPerSeries?: number, sourceSha256?: string): Promise<Array<{ meta: NativeSeriesMetaOut; rawCount: number; sampling: 'FULL' | 'DOWNSAMPLED'; points: Array<{ time: number; value: number; breakBefore?: boolean }> }> | null>
 }
 
 export type NativeKind = 'segments' | 'switches' | 'events'
@@ -585,11 +590,11 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       const cacheKey = `${runRoot}\0${manifest.fileName}\0${manifest.sourceSha256}\0${maxReportRows}\0${selectionCacheKey(selection)}`
       const cached = summaryCache.get(cacheKey)
       if (cached?.fileSig === fileSig) {
-        lruCacheSet(summaryCache, cacheKey, cached)
+        lruCacheSet(summaryCache, cacheKey, cached, LARGE_OBJECT_CACHE_LIMIT)
         return cached.result
       }
       const result = await readSummary(runRoot, manifest, selection, maxReportRows)
-      lruCacheSet(summaryCache, cacheKey, { fileSig, result })
+      lruCacheSet(summaryCache, cacheKey, { fileSig, result }, LARGE_OBJECT_CACHE_LIMIT)
       return result
     },
     async loadWithAggregate(runId, expectedScope, selection) {
@@ -607,7 +612,7 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       const cachedSum = summaryCache.get(sumKey)
       const cachedAgg = aggregateCache.get(aggKey)
       if (cachedSum?.fileSig === fileSig && cachedAgg?.fileSig === fileSig) {
-        lruCacheSet(summaryCache, sumKey, cachedSum)
+        lruCacheSet(summaryCache, sumKey, cachedSum, LARGE_OBJECT_CACHE_LIMIT)
         lruCacheSet(aggregateCache, aggKey, cachedAgg)
         return { summary: cachedSum.result, aggregate: cachedAgg.result }
       }
@@ -654,7 +659,7 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       for (const identity of [...nativeIdentities.values()].sort((left, right) => seriesKey(left).localeCompare(seriesKey(right)))) {
         catalogMetas.push({ seriesId: seriesIdOf(identity, 'gxb'), unit: 'dB', identity }, { seriesId: seriesIdOf(identity, 'ber'), unit: 'BER', identity })
       }
-      lruCacheSet(summaryCache, sumKey, { fileSig, result: summary })
+      lruCacheSet(summaryCache, sumKey, { fileSig, result: summary }, LARGE_OBJECT_CACHE_LIMIT)
       lruCacheSet(aggregateCache, aggKey, { fileSig, result: aggregate })
       const nativeBaseKey = `${runRoot}\0${manifest.fileName}\0${manifest.sourceSha256}\0`
       lruCacheSet(countsCache, nativeBaseKey, { fileSig, result: nativeCounts })
@@ -709,6 +714,12 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       if (cursorOffset !== undefined && (!Number.isSafeInteger(cursorOffset) || cursorOffset < 0)) throw new Error('EVIDENCE_CURSOR_INVALID')
       const resolved = await resolveEvidenceFile(runRoot, runId, expectedScope, sourceSha256); if (!resolved) return null
       return pointsNative(runRoot, resolved.fileName, seriesId, selection, maxPoints, resolved.expectedSha, cursorOffset ?? 0)
+    },
+    async queryAllSeriesDownsampled(runId, expectedScope, selection, maxPointsPerSeries = EXPORT_CURVE_MAX_POINTS, sourceSha256) {
+      const runRoot = runDirectory(runId); if (!runRoot) return null
+      if (!Number.isSafeInteger(maxPointsPerSeries) || maxPointsPerSeries < 16) throw new Error('引擎帧归档曲线点数无效。')
+      const resolved = await resolveEvidenceFile(runRoot, runId, expectedScope, sourceSha256); if (!resolved) return null
+      return allSeriesDownsampledNative(runRoot, resolved.fileName, selection, maxPointsPerSeries, resolved.expectedSha)
     },
     async replay(runId, expectedScope, time, engineEpoch) {
       if (!Number.isFinite(time) || time < 0 || (engineEpoch !== undefined && (!Number.isSafeInteger(engineEpoch) || engineEpoch < 0))) throw new Error('引擎回放时间或轮次无效。')
@@ -782,12 +793,12 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
           const fileSigs = await Promise.all([regularFileSig(join(csvRoot, 'current.json')), ...resolvedPaths.map(p => regularFileSig(p))])
           const cached = csvSourceCache.get(cacheKey)
           if (cached && cached.fileSigs.length === fileSigs.length && cached.fileSigs.every((s, idx) => s === fileSigs[idx])) {
-            lruCacheSet(csvSourceCache, cacheKey, cached)
+            lruCacheSet(csvSourceCache, cacheKey, cached, LARGE_OBJECT_CACHE_LIMIT)
             return matchRequested(cached.result)
           }
           const result = await readEngineCsvSource(evidence, expectedScope.taskId, bindings,
             name => getEngineCsvFile(csvRoot, evidence.sourceSha256, name, { skipContentValidation: true }))
-          lruCacheSet(csvSourceCache, cacheKey, { fileSigs, result })
+          lruCacheSet(csvSourceCache, cacheKey, { fileSigs, result }, LARGE_OBJECT_CACHE_LIMIT)
           return matchRequested(result)
         } catch (error) {
           if (error instanceof Error && (error.message.includes('任务 CSV') || error.message.includes('引擎帧归档'))) throw error
@@ -1179,4 +1190,71 @@ async function emitNativePoints(runRoot: string, fileName: string, key: string, 
   }, MAX_ARCHIVE_BYTES, ENGINE_JSONL_LINE_LIMIT_BYTES)
   if (source.waitingForLine) throw new Error('引擎帧归档来源存在未完成尾行。')
   return points
+}
+
+/** 单遍流式扫描并按极值保真分桶输出所有曲线，内存 O(曲线数 × maxPointsPerSeries)。 */
+async function allSeriesDownsampledNative(
+  runRoot: string,
+  fileName: string,
+  selection: NativeSelection | undefined,
+  maxPointsPerSeries: number,
+  expectedSha256?: string,
+): Promise<Array<{ meta: NativeSeriesMetaOut; rawCount: number; sampling: 'FULL' | 'DOWNSAMPLED'; points: Array<{ time: number; value: number; breakBefore?: boolean }> }>> {
+  type MetricTrack = { prevFrameId: number | null; gap: boolean; reservoir: StreamingCurveReservoir }
+  type PairState = { key: string; identity: NativeSeriesIdentity; gxb: MetricTrack; ber: MetricTrack }
+  const states = new Map<string, PairState>()
+  const feed = (track: MetricTrack, frameId: number, time: number, value: number | null) => {
+    const isBreak = track.prevFrameId !== null && (frameId !== track.prevFrameId + ENGINE_FRAME_ID_STEP || track.gap)
+    if (value === null || !Number.isFinite(value)) {
+      track.gap = true
+      track.prevFrameId = frameId
+      return
+    }
+    track.reservoir.push(time, value, isBreak)
+    track.prevFrameId = frameId
+    track.gap = false
+  }
+  const source = await readStableUtf8Lines(join(runRoot, fileName), line => {
+    const frame: unknown = JSON.parse(line)
+    if (!isEngineFrameSnapshot(frame) || !inSelection(selection, frame.simulationTime)) return
+    for (const link of frame.links) {
+      if (!segmentMatches(link, selection)) continue
+      const identity = identityOf(frame, link)
+      const key = seriesKey(identity)
+      let state = states.get(key)
+      if (!state) {
+        state = {
+          key,
+          identity,
+          gxb: { prevFrameId: null, gap: false, reservoir: new StreamingCurveReservoir(maxPointsPerSeries) },
+          ber: { prevFrameId: null, gap: false, reservoir: new StreamingCurveReservoir(maxPointsPerSeries) },
+        }
+        states.set(key, state)
+      }
+      feed(state.gxb, frame.frameId, frame.simulationTime, link.quality.gxbDb)
+      feed(state.ber, frame.frameId, frame.simulationTime, link.quality.ber)
+    }
+  }, MAX_ARCHIVE_BYTES, ENGINE_JSONL_LINE_LIMIT_BYTES)
+  if (source.waitingForLine) throw new Error('引擎帧归档来源存在未完成尾行。')
+  if (expectedSha256 && source.source.sha256 !== expectedSha256) throw new Error('引擎帧归档来源摘要不一致。')
+
+  const ordered = [...states.values()].sort((left, right) => left.key.localeCompare(right.key))
+  const results: Array<{ meta: NativeSeriesMetaOut; rawCount: number; sampling: 'FULL' | 'DOWNSAMPLED'; points: Array<{ time: number; value: number; breakBefore?: boolean }> }> = []
+  for (const state of ordered) {
+    const gxbOut = state.gxb.reservoir.finalize()
+    if (gxbOut.points.length) {
+      results.push({
+        meta: { seriesId: seriesIdOf(state.identity, 'gxb'), unit: 'dB', identity: state.identity },
+        ...gxbOut,
+      })
+    }
+    const berOut = state.ber.reservoir.finalize()
+    if (berOut.points.length) {
+      results.push({
+        meta: { seriesId: seriesIdOf(state.identity, 'ber'), unit: 'BER', identity: state.identity },
+        ...berOut,
+      })
+    }
+  }
+  return results
 }

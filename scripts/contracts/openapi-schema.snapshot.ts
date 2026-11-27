@@ -2665,13 +2665,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "exclusiveMinimum": 0,
         "default": 2
       },
-      "transmissionDistance": {
-        "type": "number",
-        "minimum": 150,
-        "maximum": 410,
-        "default": 300,
-        "description": "海峡宽度，单位 km；不是各条链路的实际通信距离。"
-      },
       "rainCloudAttenuation": {
         "type": "string",
         "enum": [
@@ -2908,71 +2901,131 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ]
   },
   "ScenarioConfigWrite": {
-    "description": "写入时每台干扰设备的 platformId 必须指向当前 platforms 中的地面干扰站或机载干扰平台；跨集合归属由共享运行时校验拒绝，ScenarioConfig 读取仍兼容旧归属。",
     "allOf": [
       {
         "$ref": "#/components/schemas/ScenarioConfig"
       },
       {
+        "$ref": "#/components/schemas/ScenarioConfigWriteConstraints"
+      }
+    ],
+    "description": "写入时每台干扰设备的 platformId 必须指向当前 platforms 中的地面干扰站或机载干扰平台；跨集合归属由共享运行时校验拒绝，ScenarioConfig 读取仍兼容旧归属。"
+  },
+  "ScenarioConfigWriteConstraints": {
+    "properties": {
+      "informationDemand": {
+        "items": {
+          "$ref": "#/components/schemas/InformationDemandWrite"
+        },
+        "type": "array"
+      },
+      "jammers": {
+        "items": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/Jammer"
+            },
+            {
+              "properties": {
+                "defaultPower": {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                }
+              }
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "linkSettings": {
+        "$ref": "#/components/schemas/ScenarioLinkSettingsWrite"
+      },
+      "links": {
+        "items": {
+          "$ref": "#/components/schemas/LinkWrite"
+        },
+        "type": "array"
+      },
+      "platforms": {
+        "items": {
+          "$ref": "#/components/schemas/PlatformWrite"
+        },
+        "type": "array"
+      },
+      "sensors": {
+        "items": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/Sensor"
+            },
+            {
+              "properties": {
+                "detectionRange": {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                }
+              }
+            }
+          ]
+        },
+        "type": "array"
+      }
+    }
+  },
+  "ScenarioImportConfig": {
+    "allOf": [
+      {
+        "additionalProperties": false,
         "properties": {
-          "platforms": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PlatformWrite"
-            }
-          },
-          "links": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/LinkWrite"
-            }
-          },
-          "jammers": {
-            "type": "array",
-            "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Jammer"
-                },
-                {
-                  "properties": {
-                    "defaultPower": {
-                      "type": "number",
-                      "exclusiveMinimum": 0
-                    }
-                  }
-                }
-              ]
-            }
-          },
-          "sensors": {
-            "type": "array",
-            "items": {
-              "allOf": [
-                {
-                  "$ref": "#/components/schemas/Sensor"
-                },
-                {
-                  "properties": {
-                    "detectionRange": {
-                      "type": "number",
-                      "exclusiveMinimum": 0
-                    }
-                  }
-                }
-              ]
-            }
+          "deviceParameters": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/deviceParameters"
           },
           "informationDemand": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/InformationDemandWrite"
-            }
+            "$ref": "#/components/schemas/ScenarioConfig/properties/informationDemand"
+          },
+          "jammers": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/jammers"
+          },
+          "jammingEnabled": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/jammingEnabled"
           },
           "linkSettings": {
-            "$ref": "#/components/schemas/ScenarioLinkSettingsWrite"
+            "$ref": "#/components/schemas/ScenarioConfig/properties/linkSettings"
+          },
+          "links": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/links"
+          },
+          "output": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/output"
+          },
+          "platforms": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/platforms"
+          },
+          "scenario": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/scenario"
+          },
+          "schemaVersion": {
+            "pattern": "^[0-9]+\\.[0-9]+(?![\\s\\S])",
+            "type": "string"
+          },
+          "sensors": {
+            "$ref": "#/components/schemas/ScenarioConfig/properties/sensors"
           }
-        }
+        },
+        "required": [
+          "schemaVersion",
+          "scenario",
+          "platforms",
+          "links",
+          "jammers",
+          "sensors",
+          "output",
+          "informationDemand"
+        ],
+        "type": "object"
+      },
+      {
+        "$ref": "#/components/schemas/ScenarioConfigWriteConstraints"
       }
     ]
   },
@@ -3027,11 +3080,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "NEUTRAL"
         ],
         "description": "所属阵营（蓝/红/中立）；旧场景缺省时按平台类型推断，不自动回写。"
-      },
-      "communicationRangeM": {
-        "type": "number",
-        "exclusiveMinimum": 0,
-        "description": "节点通信能力范围（m）；是通信能力范围，不是几何距离或海峡宽度。缺失表示未配置。"
       },
       "category": {
         "type": "string",
@@ -3978,22 +4026,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       {
         "properties": {
-          "priority": {
-            "type": "array",
-            "minItems": 5,
-            "maxItems": 5,
-            "uniqueItems": true,
-            "items": {
-              "type": "string",
-              "enum": [
-                "SAT",
-                "MICROWAVE",
-                "DATALINK",
-                "LASER",
-                "FIBER"
-              ]
-            }
-          },
           "enabledTypes": {
             "deprecated": true,
             "description": "仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。",
@@ -4123,8 +4155,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     "additionalProperties": false,
     "required": [
       "enabledSatellites",
-      "switchCooldownS",
-      "priority"
+      "switchCooldownS"
     ],
     "properties": {
       "enabledTypes": {
@@ -4278,6 +4309,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         }
       },
       "priority": {
+        "deprecated": true,
+        "writeOnly": true,
+        "description": "仅兼容旧场景输入；该字段在导入或保存时丢弃。",
         "type": "array",
         "minItems": 4,
         "maxItems": 5,
@@ -7821,49 +7855,51 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     }
   },
   "ScenarioImportRequest": {
-    "type": "object",
     "additionalProperties": false,
-    "required": [
-      "items"
-    ],
     "properties": {
       "items": {
-        "type": "array",
-        "minItems": 1,
-        "maxItems": 1,
         "items": {
           "oneOf": [
             {
-              "$ref": "#/components/schemas/ScenarioConfigWrite"
+              "$ref": "#/components/schemas/ScenarioImportConfig"
             },
             {
-              "type": "object",
               "additionalProperties": false,
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/ScenarioImportConfig"
+                },
+                "format": {
+                  "const": "wrj.scenario.snapshot"
+                },
+                "uiExtensions": {
+                  "$ref": "#/components/schemas/ScenarioUiExtensions"
+                },
+                "version": {
+                  "maximum": 1.7976931348623157e+308,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
               "required": [
                 "format",
                 "version",
                 "config",
                 "uiExtensions"
               ],
-              "properties": {
-                "format": {
-                  "const": "wrj.scenario.snapshot"
-                },
-                "version": {
-                  "const": 1
-                },
-                "config": {
-                  "$ref": "#/components/schemas/ScenarioConfigWrite"
-                },
-                "uiExtensions": {
-                  "$ref": "#/components/schemas/ScenarioUiExtensions"
-                }
-              }
+              "type": "object"
             }
           ]
-        }
+        },
+        "maxItems": 1,
+        "minItems": 1,
+        "type": "array"
       }
-    }
+    },
+    "required": [
+      "items"
+    ],
+    "type": "object"
   },
   "TemplateMutationRequest": {
     "type": "object",
@@ -12865,6 +12901,49 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "description": "Raw upstream clock value in ms; clock origin unconfirmed. Not a latency measurement."
       }
     }
+  },
+  "EngineFrameTick": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "kind",
+      "runId",
+      "engineEpoch",
+      "sourceFrameId",
+      "simulationTime"
+    ],
+    "properties": {
+      "kind": {
+        "const": "ENGINE_FRAME_TICK"
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-.+"
+      },
+      "engineEpoch": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "sourceFrameId": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "simulationTime": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "SimulationFramePayload": {
+    "oneOf": [
+      {
+        "$ref": "#/components/schemas/TelemetryFrame"
+      },
+      {
+        "$ref": "#/components/schemas/EngineFrameTick"
+      }
+    ]
   },
   "LinkMetricPayload": {
     "oneOf": [

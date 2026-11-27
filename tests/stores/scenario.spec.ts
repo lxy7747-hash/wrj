@@ -115,18 +115,17 @@ describe('链路新增参数边界', () => {
     expect(config.linkSettings.enabledSatellites.SHENTONG).toBe(true)
   })
 
-  it('兼容旧场景，拒绝非法数值、编码、卫星开关及重复优先级', () => {
+  it('兼容旧场景，拒绝非法数值、编码和卫星开关', () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
     expect(inspectScenarioConfig(config).result.valid).toBe(true)
     config.linkSettings = readLinkSettings(config)
     config.linkSettings.enabledSatellites.SHENTONG = true
     config.linkSettings.enabledTypes = { SAT: 'true' as never, MICROWAVE: true, DATALINK: true, LASER: true, FIBER: true }
     config.linkSettings.switchCooldownS = -1
-    config.linkSettings.priority = ['SAT', 'SAT', 'LASER', 'MICROWAVE', 'FIBER']
     Object.assign(config.links[0]!, { enabled: 'true', antennaGainCorrectionDb: NaN, antiJammingGainDb: -1, spatialIsolationDb: Infinity })
     const paths = inspectScenarioConfig(config).result.errors.map(e => e.fieldPath)
     expect(paths).toEqual(expect.arrayContaining([
-      'linkSettings.enabledSatellites.SHENTONG', 'linkSettings.enabledTypes.SAT', 'linkSettings.switchCooldownS', 'linkSettings.priority',
+      'linkSettings.enabledSatellites.SHENTONG', 'linkSettings.enabledTypes.SAT', 'linkSettings.switchCooldownS',
       'links[0].enabled', 'links[0].antennaGainCorrectionDb', 'links[0].antiJammingGainDb', 'links[0].spatialIsolationDb',
     ]))
     const retiredCoding = structuredClone(fixtureSource.scenario) as ScenarioConfig
@@ -499,7 +498,7 @@ describe('P2-1 场景 Store', () => {
     expect(scenario.draft?.config.scenario.duration).toBe(7200)
     expect(scenario.draft?.config.platforms).toEqual(scenarioDraft().config.platforms)
     expect(scenario.draft?.config.scenario.environment).toMatchObject({
-      simClockSpeed: 2, transmissionDistance: 300, rainCloudAttenuation: 'lightRain',
+      simClockSpeed: 2, rainCloudAttenuation: 'lightRain',
     })
     expect(scenario.panelState).toBe('SUCCESS')
     expect(scenario.dirty).toBe(false)
@@ -724,9 +723,13 @@ describe('P2-1 场景 Store', () => {
   })
 
   it('通过整体校验接口处理通过、警告、错误和配置锁', async () => {
+    // 基准场景启用了海面多径；框选海面区域，避免“未框选”提示干扰本用例的通过/警告分支。
+    const seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }, { longitude: 119, latitude: 25 }]
     const validDraft = scenarioDraft()
+    validDraft.config.scenario.environment.seaPolygon = structuredClone(seaPolygon)
     const validResult = inspectScenarioConfig(validDraft.config).result
     const warningDraft = scenarioDraft()
+    warningDraft.config.scenario.environment.seaPolygon = structuredClone(seaPolygon)
     warningDraft.config.scenario.environment.rainRateMmPerHour = 101
     const warningResult = inspectScenarioConfig(warningDraft.config).result
     const invalidDraft = scenarioDraft()
@@ -1565,20 +1568,16 @@ describe('P2-1 场景基础字段校验', () => {
     expect(normalized.scenario.duration).toBe(original.scenario.duration)
     expect(normalized.scenario.environment.rainRateMmPerHour).toBe(original.scenario.environment.rainRateMmPerHour)
     normalized.scenario.environment.simClockSpeed = 15
-    normalized.scenario.environment.transmissionDistance = 410
     normalized.scenario.environment.rainCloudAttenuation = 'none'
     normalized.scenario.environment.multipathEnabled = false
     expect(withScenarioBasicDefaults(normalized)).toEqual(normalized)
     expect(inspectScenarioConfig(normalized).result.valid).toBe(true)
     expect(inspectScenarioConfig(normalized).identity?.environment).toEqual(normalized.scenario.environment)
-    normalized.scenario.environment.transmissionDistance = 150
-    expect(inspectScenarioConfig(normalized).result.valid).toBe(true)
   })
 
-  it('按文档检查海峡宽度、倍速和气象档位，拒绝未知字段', () => {
+  it('按文档检查倍速和气象档位，拒绝未知字段', () => {
     const cases: Array<[string, unknown[]]> = [
       ['simClockSpeed', [0, -1, Number.NaN, Number.POSITIVE_INFINITY, null]],
-      ['transmissionDistance', [149, 411, Number.NaN, null]],
       ['rainCloudAttenuation', ['snow', '', null]],
     ]
     for (const [key, values] of cases) {

@@ -123,73 +123,91 @@ function parameterTargets(configJson: SQLInputValue): Map<string, LinkParameterS
   ])
 }
 
-/** The restore transaction preserves both external libraries and their live reference indexes. */
+/** The restore transaction preserves external master-data libraries; deprecated equipment sources never block restore. */
 export function retainedParameterConflict(
   db: DatabaseSync,
   scenes: readonly Record<string, SQLInputValue>[],
   templates: readonly Record<string, SQLInputValue>[],
 ): string | null {
-  const versionQueries = {
-    EQUIPMENT: db.prepare(`SELECT parameters_json AS content FROM equipment.equipment_parameters WHERE id = ? AND version = ?
-      UNION ALL SELECT parameters_json FROM equipment.equipment_history WHERE id = ? AND version = ? LIMIT 1`),
-    MASTER_DATA: db.prepare(`SELECT data_json AS content FROM master.master_data WHERE id = ? AND version = ?
-      UNION ALL SELECT data_json FROM master.master_data_history WHERE id = ? AND version = ? LIMIT 1`),
-  }
-  function hasVersion(source: LinkParameterSource): boolean {
+  const masterVersionQuery = db.prepare(`SELECT data_json AS content FROM master.master_data WHERE id = ? AND version = ?
+    UNION ALL SELECT data_json FROM master.master_data_history WHERE id = ? AND version = ? LIMIT 1`)
+  function hasMasterVersion(source: LinkParameterSource): boolean {
     const { sourceId, sourceVersion } = source
-    const row = versionQueries[source.kind].get(sourceId, sourceVersion, sourceId, sourceVersion)
+    const row = masterVersionQuery.get(sourceId, sourceVersion, sourceId, sourceVersion)
     if (typeof row?.content !== 'string') return false
     try {
       const record: unknown = JSON.parse(row.content)
-      return source.kind === 'EQUIPMENT'
-        ? isEquipmentParameter(record) && record.equipmentId === sourceId && record.version === sourceVersion
-        : isMasterData(record) && record.dataId === sourceId && record.version === sourceVersion
+      return isMasterData(record) && record.dataId === sourceId && record.version === sourceVersion
     } catch { return false }
   }
 
-  const refKey = (sceneId: string, targetId: string) => JSON.stringify([sceneId, targetId])
-  const references = db.prepare('SELECT scenario_id, link_id, equipment_id, equipment_version FROM equipment.equipment_references').all()
-  const referenceByTarget = new Map(references.map(row => [refKey(String(row.scenario_id), String(row.link_id)), row]))
-  const restoredScenes = new Map<string, Map<string, LinkParameterSource | undefined>>()
   for (const [label, rows] of [['场景', scenes], ['模板', templates]] as const) {
     for (const row of rows) {
       const id = String(row.id)
       const targets = parameterTargets(row.config_json!)
-      if (label === '场景') restoredScenes.set(id, targets)
       for (const [targetId, source] of targets) {
-        if (!source) continue
+        if (!source || source.kind === 'EQUIPMENT') continue
         const subject = `${label} ${id} 的链路或端口 ${targetId}`
-        if (!hasVersion(source)) return `${subject} 的参数来源 ${source.sourceId} v${source.sourceVersion} 在当前基础数据中缺失或无效，无法恢复。`
-        if (label === '场景' && source.kind === 'EQUIPMENT') {
-          const reference = referenceByTarget.get(refKey(id, targetId))
-          if (reference?.equipment_id !== source.sourceId || reference.equipment_version !== source.sourceVersion) {
-            return `${subject} 与当前装备引用不一致，无法恢复。`
-          }
-        }
+        if (!hasMasterVersion(source)) return `${subject} 的参数来源 ${source.sourceId} v${source.sourceVersion} 在当前基础数据中缺失或无效，无法恢复。`
       }
-    }
-  }
-
-  const currentScene = db.prepare('SELECT config_json FROM main.scenarios WHERE id = ?')
-  const currentTargets = new Map<string, Map<string, LinkParameterSource | undefined>>()
-  for (const reference of references) {
-    const sceneId = String(reference.scenario_id), targetId = String(reference.link_id)
-    const targets = restoredScenes.get(sceneId)
-    if (!targets?.has(targetId)) return `恢复会使场景 ${sceneId} 的链路或端口 ${targetId} 的现有装备引用失去目标。`
-    if (targets.get(targetId)?.kind === 'EQUIPMENT') continue
-
-    // An explicit equipment binding cannot become an unrelated manual reference.
-    try {
-      let before = currentTargets.get(sceneId)
-      if (!before) {
-        const row = currentScene.get(sceneId)
-        before = row ? parameterTargets(row.config_json!) : new Map()
-        currentTargets.set(sceneId, before)
-      }
-      if (before.get(targetId)?.kind === 'EQUIPMENT') return `恢复会解除场景 ${sceneId} 的链路或端口 ${targetId} 的现有装备绑定。`
-    } catch {
-      return `无法核对场景 ${sceneId} 的链路或端口 ${targetId} 的现有装备引用，无法恢复。`
     }
   }
   return null
+}
+
+/**
+ * 在恢复事务内同步 equipment.equipment_references 索引，使其与恢复后的场景集合保持一致：
+ * - 移除恢复后已不存在的场景/链路或端口的失效引用；
+ * - 移除由恢复前场景自身绑定、但备份中未绑定的装备引用；
+ * - 保留仍在恢复后场景中存在的纯手工引用；
+ * - 若恢复后场景带旧装备 parameterSource 且对应装备版本仍在库中，则对齐引用，否则移除失效引用而不阻断恢复。
+ */
+export function reconcileEquipmentReferences(
+  db: DatabaseSync,
+  beforeScenes: readonly Record<string, SQLInputValue>[],
+  restoredScenes: readonly Record<string, SQLInputValue>[],
+): void {
+  const beforeMap = new Map<string, Map<string, LinkParameterSource | undefined>>()
+  for (const row of beforeScenes) {
+    try { beforeMap.set(String(row.id), parameterTargets(row.config_json!)) }
+    catch { beforeMap.set(String(row.id), new Map()) }
+  }
+  const restoredMap = new Map<string, Map<string, LinkParameterSource | undefined>>()
+  for (const row of restoredScenes) {
+    restoredMap.set(String(row.id), parameterTargets(row.config_json!))
+  }
+
+  const hasEquipmentVersion = db.prepare(`SELECT 1 FROM equipment.equipment_parameters WHERE id = ? AND version = ?
+    UNION ALL SELECT 1 FROM equipment.equipment_history WHERE id = ? AND version = ? LIMIT 1`)
+  const removeReference = db.prepare('DELETE FROM equipment.equipment_references WHERE scenario_id = ? AND link_id = ?')
+  const upsertReference = db.prepare(`INSERT INTO equipment.equipment_references (scenario_id, link_id, equipment_id, equipment_version)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(scenario_id, link_id) DO UPDATE SET equipment_id = excluded.equipment_id, equipment_version = excluded.equipment_version`)
+
+  const existingReferences = db.prepare('SELECT scenario_id, link_id FROM equipment.equipment_references').all()
+  for (const reference of existingReferences) {
+    const sceneId = String(reference.scenario_id)
+    const targetId = String(reference.link_id)
+    const restoredTargets = restoredMap.get(sceneId)
+    if (!restoredTargets?.has(targetId)) {
+      removeReference.run(sceneId, targetId)
+      continue
+    }
+    const restoredSource = restoredTargets.get(targetId)
+    if (restoredSource?.kind === 'EQUIPMENT') continue
+    if (beforeMap.get(sceneId)?.get(targetId)?.kind === 'EQUIPMENT') {
+      removeReference.run(sceneId, targetId)
+    }
+  }
+
+  for (const [sceneId, targets] of restoredMap) {
+    for (const [targetId, source] of targets) {
+      if (source?.kind !== 'EQUIPMENT') continue
+      if (hasEquipmentVersion.get(source.sourceId, source.sourceVersion, source.sourceId, source.sourceVersion)) {
+        upsertReference.run(sceneId, targetId, source.sourceId, source.sourceVersion)
+      } else {
+        removeReference.run(sceneId, targetId)
+      }
+    }
+  }
 }

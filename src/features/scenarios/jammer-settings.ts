@@ -42,18 +42,24 @@ export function isControlledPowerWatts(watts: unknown): watts is number {
 export const BARRAGE_BANDWIDTH_OPTIONS_MHZ = [100, 200, 400] as const
 export const SPOT_BANDWIDTH_MHZ = 5
 
-/** V1.2 新增宽带干扰源默认参数：2.4 GHz、200 MHz、30 dBm（1 W），触发 30 海里、释放 35 海里。 */
+/** 地面干扰站默认三组宽带频段：20 GHz（卫通）、2.3 GHz（C 波段）、8.2 GHz（微波），带宽均为 10 MHz。 */
+export const JAMMER_DEFAULT_BANDS: readonly ResolvedJammerBandParam[] = [
+  { frequency: 20_000, bandwidth: 10, mode: 'BARRAGE', spotBandwidthMHz: 0, sweepDutyCycle: 0 },
+  { frequency: 2_300, bandwidth: 10, mode: 'BARRAGE', spotBandwidthMHz: 0, sweepDutyCycle: 0 },
+  { frequency: 8_200, bandwidth: 10, mode: 'BARRAGE', spotBandwidthMHz: 0, sweepDutyCycle: 0 },
+]
+
+/** 地面干扰站默认参数：1000 W（60 dBm）、20 GHz / 10 MHz，探测 20 / 干扰 15 / 释放 16 海里。 */
 export const JAMMER_DEFAULTS = {
-  defaultPower: 1, frequency: 2400, bandwidth: 200,
-  // 探测范围文档未给出，取与干扰范围相同的 30 海里，避免新建即出现“干扰范围大于探测范围”提示。
-  detectionRange: 30 * METERS_PER_NAUTICAL_MILE,
-  jammingRange: 30 * METERS_PER_NAUTICAL_MILE, releaseRange: 35 * METERS_PER_NAUTICAL_MILE,
+  defaultPower: 1000, frequency: 20_000, bandwidth: 10,
+  detectionRange: 20 * METERS_PER_NAUTICAL_MILE,
+  jammingRange: 15 * METERS_PER_NAUTICAL_MILE, releaseRange: 16 * METERS_PER_NAUTICAL_MILE,
 }
 
-/** 2026-11-06 模板新增字段；不改写旧场景中的已存值。 */
+/** 干扰设备链路计算默认字段；不改写旧场景中的已存值。weapon_eirp_dBW 默认 0（由插件按功率与增益自动计算）。 */
 export const JAMMER_CALC_DEFAULTS = {
   radarFrequency: 2400, radarBandwidth: 1, radarPower: 1000,
-  noiseFigureDb: 3, gtDbk: -12, eirpDbw: 40, antennaGainDbi: 0, txLossDb: 0, sweepDutyCycle: 0.1,
+  noiseFigureDb: 3, gtDbk: -12, eirpDbw: 0, antennaGainDbi: 20, txLossDb: 0, sweepDutyCycle: 0.1,
 } as const
 export type ResolvedJammerBandParam = Required<JammerBandParam>
 

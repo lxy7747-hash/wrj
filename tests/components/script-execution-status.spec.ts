@@ -66,27 +66,33 @@ describe('生成验收证据索引', () => {
   })
 
   it('已写入条目优先定位本次预览的 TXT 原文，其他状态保留清单行号', () => {
-    const paths = ['scenario.startTime', 'scenario.duration', 'platforms[0].id', 'platforms[0].initialPosition', 'platforms[0].waypoints', 'links[0]']
+    const paths = ['scenario.startTime', 'scenario.duration', 'platforms[0].id', 'platforms[0].initialPosition', 'platforms[0].waypoints', 'platforms[0].loiterWaypoints', 'links[0]']
     const data = {
       entry: 'sample.txt', platforms: [{ name: 'fixture', generatedType: 'SAMPLE_TYPE' }],
       executionStatus: {
         emitted: paths.map(fieldPath => ({ fieldPath, detail: '合成记录' })),
-        retainedSnapshot: [{ fieldPath: 'scenario.duration', detail: '合成快照' }],
+        retainedSnapshot: [{ fieldPath: 'scenario.duration', detail: '合成快照' }, { fieldPath: 'platforms[0].waypoints[0].arrivalTime', detail: '运动快照' }],
         dependencyUnconfirmed: [{ fieldPath: 'platforms[0].id', detail: '合成依赖' }],
       },
     }
     const sections = [
       '// ===== ignored.txt =====', 'end_time elsewhere',
       '// ===== sample.txt =====', 'start_date example', '  end_time example  ',
-      '// ===== entities.txt =====', 'platform fixture SAMPLE_TYPE', '  position example', '  route', 'end_platform', '',
+      '// ===== entities.txt =====', 'platform fixture SAMPLE_TYPE', '  position example', '  route', '    label LOITER', 'end_platform', '',
     ].join('\r\n')
     const input = sections + preview(JSON.stringify(data, null, 2), '\r\n')
     const rows = readScriptAcceptanceReview(input)!
-    expect(rows.map(row => [row.location?.fileName, row.location?.fileLine]).slice(0, 5)).toEqual([
-      ['sample.txt', 1], ['sample.txt', 2], ['entities.txt', 1], ['entities.txt', 2], ['entities.txt', 3],
+    expect(rows.map(row => [row.group, row.location?.fileName, row.location?.fileLine]).slice(0, 6)).toEqual([
+      ['timeline', 'sample.txt', 1], ['timeline', 'sample.txt', 2], ['platform', 'entities.txt', 1],
+      ['platform', 'entities.txt', 2], ['motion', 'entities.txt', 3], ['motion', 'entities.txt', 4],
     ])
     expect(input.split('\r\n')[rows[1]!.location!.previewLine - 1]).toBe('  end_time example  ')
-    expect(rows.slice(5).map(row => row.location?.fileName)).toEqual(['mapping.json', 'mapping.json', 'mapping.json'])
+    expect(rows.slice(6).map(row => [row.group, row.location?.fileName])).toEqual([
+      ['communication', 'mapping.json'],
+      ['timeline', 'mapping.json'],
+      ['motion', 'mapping.json'],
+      ['platform', 'mapping.json'],
+    ])
 
     const ambiguous = input.replace('  end_time example  ', '  end_time example  \r\nend_time duplicate')
     expect(readScriptAcceptanceReview(ambiguous)?.[1]?.location?.fileName).toBe('mapping.json')
@@ -95,7 +101,7 @@ describe('生成验收证据索引', () => {
   })
 
   it('通信和干扰条目定位唯一的实际定义段，快照、依赖和衍生项仍定位清单', () => {
-    const paths = ['links[0]', 'deviceParameters.ports.FIXTURE.port', 'informationDemand[0]', 'jammers[0]', 'linkSettings.priority']
+    const paths = ['links[0]', 'deviceParameters.ports.FIXTURE.port', 'informationDemand[0]', 'jammers[0]', 'linkSettings.switchCooldownS']
     const data = { executionStatus: {
       emitted: paths.map(fieldPath => ({ fieldPath, detail: '合成写入记录' })),
       retainedSnapshot: [{ fieldPath: 'jammers[0]', detail: '合成快照' }],

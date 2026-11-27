@@ -115,7 +115,7 @@ async function setup(
     await realtime.close()
     await new Promise<void>((resolve, reject) => http.close((error?: Error) => error ? reject(error) : resolve()))
   })
-  async function connect(topics: string[], cursor?: number | Record<string, number>) {
+  async function connect(topics: string[], cursor?: number | Record<string, number>, resumeRunId?: string) {
     const client = new WebSocket(`ws://127.0.0.1:${http.address().port}/ws/v1?role=OPERATOR`, { origin: 'http://127.0.0.1:5173' })
     clients.push(client)
     const messages: any[] = []
@@ -124,6 +124,7 @@ async function setup(
     client.send(JSON.stringify({
       type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics,
       ...(typeof cursor === 'number' ? { lastSequence: cursor } : cursor === undefined ? {} : { lastSequences: cursor }),
+      ...(resumeRunId && { resumeRunId }),
     }))
     return { client, messages }
   }
@@ -157,6 +158,40 @@ it.each(['memory', 'disk'])('%s 跨运行后的混合游标重连不读取旧日
   expect(resumed.messages[2]).toMatchObject({ topic: 'position.update', sequence: 2, payload: { runId: current.runId } })
   expect(resumed.client.readyState).toBe(WebSocket.OPEN)
   expect(resumed.messages.some(message => message.type === 'rejected')).toBe(false)
+})
+
+it('真实帧在不同主题分别续传，包括首次订阅后尚未收到任何事件就断线', async () => {
+  const { connect, realtime, projection, setRun } = await setup()
+  const run = { ...projection.snapshot().run!, runId: 'RUN-TICK', scenarioId: 'SCN-TICK' }
+  setRun(run); realtime.publishRuntimeState(run)
+  const topics = ['simulation.frame', 'link.metric', 'jammer.event', 'switch.event']
+  const zeros = Object.fromEntries(topics.map(topic => [topic, 0]))
+  const fresh = await connect(topics, zeros)
+  await vi.waitFor(() => expect(fresh.messages).toHaveLength(1))
+  expect(fresh.messages[0]).toMatchObject({ type: 'subscribed', runId: run.runId })
+  const closed = once(fresh.client, 'close'); fresh.client.close(); await closed
+  const payload = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId, engineEpoch: 2 }
+  for (const t of [3, 3.25, 4]) realtime.publishEngineFrame(run.runId, { ...payload, frameId: t, simulationTime: t })
+  const resumed = await connect(topics, zeros, run.runId)
+  await vi.waitFor(() => expect(resumed.messages).toHaveLength(13))
+  const ticks = resumed.messages.filter(message => message.topic === 'simulation.frame')
+  const metrics = resumed.messages.filter(message => message.topic === 'link.metric')
+  for (const [index, t] of [3, 3.25, 4].entries()) {
+    expect(ticks[index]).toEqual({
+      type: 'event', schemaVersion: '1.0', taskId: run.taskId, topic: 'simulation.frame', sequence: index + 1,
+      simulationTime: t, frameId: `F-ENGINE-${t}`,
+      payload: { kind: 'ENGINE_FRAME_TICK', runId: run.runId, engineEpoch: 2, sourceFrameId: t, simulationTime: t },
+    })
+    expect(metrics[index]).toMatchObject({ sequence: index + 1, frameId: ticks[index].frameId, simulationTime: t, payload: { kind: 'ENGINE_FRAME', links: payload.links } })
+  }
+  const mixed = await connect(topics, { 'simulation.frame': 1, 'link.metric': 2, 'jammer.event': 3, 'switch.event': 0 }, run.runId)
+  await vi.waitFor(() => expect(mixed.messages).toHaveLength(7))
+  expect(mixed.messages.filter(m => m.topic === 'simulation.frame').map(m => m.sequence)).toEqual([2, 3])
+  expect(mixed.messages.filter(m => m.topic === 'link.metric').map(m => m.sequence)).toEqual([3])
+  expect(mixed.messages.filter(m => m.topic === 'jammer.event')).toHaveLength(0)
+  expect(mixed.messages.filter(m => m.topic === 'switch.event').map(m => m.sequence)).toEqual([1, 2, 3])
+  const stale = await connect(topics, zeros, 'RUN-OTHER')
+  await vi.waitFor(() => expect(stale.messages).toEqual([expect.objectContaining({ code: 'SEQUENCE_GAP', runChanged: true })]))
 })
 
 it('缺失运行与事件时不伪造信封，仍返回可用的链路摘要；新订阅重放缓存快照', async () => {
@@ -279,6 +314,7 @@ it('混合重连的零游标事件主题越出保留窗口时明确拒绝', asyn
   const stale = await connect(['runtime.state', 'jammer.event'], { 'runtime.state': 1, 'jammer.event': 0 })
   await vi.waitFor(() => expect(stale.messages).toEqual([expect.objectContaining({
     type: 'rejected', code: 'SEQUENCE_GAP', message: expect.stringContaining('retained realtime event window'),
+    gap: { runId: 'RUN-001', topic: 'jammer.event', missingFrom: 1, missingThrough: 1 },
   })]))
 })
 

@@ -71,6 +71,39 @@ describe('新增场景参数的写入边界', () => {
     expect(config).toEqual(before)
   })
 
+  it('简化大气模型衰减率为 0：保存阻断、读取仅提示；自动模型为 0 合法', () => {
+    const config = configuration()
+    Object.assign(config.scenario.environment, { atmosphereModel: 'simplified', simplifiedAttenuationDbPerKm: 0 })
+    const before = structuredClone(config)
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([
+      expect.objectContaining({ code: 'ATMOSPHERE_SIMPLIFIED_RATE_REQUIRED', fieldPath: 'scenario.environment.simplifiedAttenuationDbPerKm' }),
+    ])
+    const read = inspectScenarioConfig(config, 'read').result
+    expect(read.errors.map(issue => issue.code)).not.toContain('ATMOSPHERE_SIMPLIFIED_RATE_REQUIRED')
+    expect(read.warnings).toContainEqual(expect.objectContaining({ code: 'ATMOSPHERE_SIMPLIFIED_RATE_REQUIRED' }))
+    expect(config).toEqual(before)
+    config.scenario.environment.simplifiedAttenuationDbPerKm = 0.02
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
+    Object.assign(config.scenario.environment, { atmosphereModel: 'auto', simplifiedAttenuationDbPerKm: 0 })
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
+  })
+
+  it('启用海面多径但未框选海面区域时只提示不阻断，框选后提示消失', () => {
+    const config = configuration()
+    config.scenario.environment.multipathEnabled = true
+    delete config.scenario.environment.seaPolygon
+    for (const mode of ['write', 'read'] as const) {
+      const result = inspectScenarioConfig(config, mode).result
+      expect(result.errors.map(issue => issue.code)).not.toContain('SEA_POLYGON_REQUIRED')
+      expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'SEA_POLYGON_REQUIRED', fieldPath: 'scenario.environment.seaPolygon' }))
+    }
+    config.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }, { longitude: 119, latitude: 25 }]
+    expect(inspectScenarioConfig(config, 'write').result.warnings.map(issue => issue.code)).not.toContain('SEA_POLYGON_REQUIRED')
+    delete config.scenario.environment.seaPolygon
+    config.scenario.environment.multipathEnabled = false
+    expect(inspectScenarioConfig(config, 'write').result.warnings.map(issue => issue.code)).not.toContain('SEA_POLYGON_REQUIRED')
+  })
+
   it('超过雨强上限只给出封顶警告，不静默改写用户输入', () => {
     const config = configuration()
     config.scenario.environment.rainRateMmPerHour = 101

@@ -11,7 +11,6 @@ const config: Pick<ScenarioConfig, 'platforms'> = { platforms: [] }
 const legacy: ScenarioLinkSettings = {
   enabledSatellites: { TIANTONG: false, SHENTONG: false },
   switchCooldownS: 0, switchStableChecks: 1,
-  priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'],
 }
 
 function panel(modelValue?: ScenarioLinkSettings, disabled = false) {

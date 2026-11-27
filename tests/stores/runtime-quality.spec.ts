@@ -379,7 +379,7 @@ describe('运行质量 Store', () => {
     }]
     scene.config.linkSettings = {
       enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 0, switchStableChecks: 3,
-      priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'], switchCooldownFrames: 0,
+      switchCooldownFrames: 0,
       minimumGxbDb: 6, maximumBer: 1e-5, minimumGxbImprovementDb: 3, minimumBerImprovementFactor: 10, minimumSpatialIsolationDb: 0,
     }
     const calc = () => {

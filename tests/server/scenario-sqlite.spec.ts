@@ -214,18 +214,22 @@ describe('SQLite 场景开发持久化', () => {
     } finally { db.close() }
   })
 
-  it('旧四类优先级与历史业务文本重新打开仍原样读取，新建和 PUT 继续拒绝旧写入', async () => {
+  it('旧库忽略链路排序，历史类型开关与业务文本仍按原规则读写', async () => {
     const path = await databasePath()
     const old = draft()
     old.config.informationDemand[0]!.informationType = '视频'
     old.config.linkSettings = {
-      priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'],
       enabledTypes: { SAT: true, MICROWAVE: true, DATALINK: true, LASER: true },
       enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5,
     }
     const initial = new ScenarioSqliteStorage(path)
     expect(initial.save(old)).toBe(true)
     initial.close()
+    const db = new DatabaseSync(path)
+    try {
+      const legacy = { ...old.config, linkSettings: { ...old.config.linkSettings, priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'] } }
+      db.prepare('UPDATE scenarios SET config_json = ? WHERE id = ?').run(JSON.stringify(legacy), old.config.scenario.id)
+    } finally { db.close() }
     const reopened = await start(path)
     expect((await reopened.api.get(endpoint).set(headers).expect(200)).body.data.config).toEqual(old.config)
     const failed = await reopened.api.put(endpoint).set(headers).send({ ...update(old), expectedRevision: old.revision }).expect(422)
@@ -236,7 +240,6 @@ describe('SQLite 场景开发持久化', () => {
     await reopened.api.post('/api/v1/scenarios').set(headers).send(update(created)).expect(422)
     expect(reopened.storage.load('SCN-LEGACY-NEW')).toBeUndefined()
     old.config.informationDemand[0]!.informationType = '态势信息'
-    old.config.linkSettings.priority.push('FIBER')
     old.config.linkSettings.enabledTypes!.FIBER = true
     await reopened.api.put(endpoint).set(headers).send({ ...update(old), expectedRevision: old.revision }).expect(200)
     await reopened.stop()

@@ -1,22 +1,16 @@
 import type {
   EngineFrameSnapshot,
   Link,
-  Platform,
-  ScenarioConfig,
   UiLinkStatus,
 } from '../../contracts/domain-models'
-import type {
-  ConfiguredLinkSwitchState,
-  SituationMapLink,
-} from '../../components/situation/situation-map-controller'
-import { isConfiguredLinkEnabled, readLinkSettings } from '../scenarios/link-settings'
 import { createEngineLinkHoverLookup } from '../situation/engine-link-hover'
-import { resolveEngineFrameConfiguredLinks, type EngineConfiguredLinkStatus } from '../situation/engine-link-statuses'
-import { resolveEngineSwitchHighlights } from '../situation/engine-route-highlights'
+import { resolveEngineFrameConfiguredLinks, selectMapFocusLinks, selectVisibleMapLinks, type SituationMapLink, type EngineConfiguredLinkStatus } from '../situation/engine-link-statuses'
+import { latestMapSwitches, type ConfiguredLinkSwitchState } from '../situation/engine-route-highlights'
 import { selectFileMessageLinks, type FileMessageLink } from '../situation/file-message-links'
 import { platformMapSide, type SituationMapNode } from '../situation/initial-nodes'
 import type { LiveMessageFlowLane } from '../situation/live-message-flows'
 import { isPlatformPresentAt } from '../situation/platform-lifecycle'
+import type { ReplayMapConfig } from './replay-map-config'
 import type { EngineReplaySnapshot, EngineReplayTimelineMarker } from './engine-replay'
 import { selectReplayNodes, type LocalReplaySnapshot } from './local-replay'
 
@@ -28,43 +22,13 @@ export interface ReplayConfiguredLinkView {
   segmentStatuses: Map<string, EngineConfiguredLinkStatus>
 }
 
-function isPlatformLike(value: unknown): value is Platform {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const item = value as Partial<Platform>
-  return typeof item.id === 'string' && item.id.length > 0
-    && typeof item.name === 'string'
-    && typeof item.type === 'string'
-    && Boolean(item.initialPosition) && typeof item.initialPosition === 'object'
-    && typeof item.initialPosition!.longitude === 'number' && Number.isFinite(item.initialPosition!.longitude)
-    && typeof item.initialPosition!.latitude === 'number' && Number.isFinite(item.initialPosition!.latitude)
-    && typeof item.initialPosition!.altitude === 'number' && Number.isFinite(item.initialPosition!.altitude)
-}
-
-function isLinkLike(value: unknown): value is Link {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const item = value as Partial<Link>
-  return typeof item.id === 'string' && item.id.length > 0
-    && typeof item.type === 'string'
-    && typeof item.sourcePlatformId === 'string' && item.sourcePlatformId.length > 0
-    && typeof item.targetPlatformId === 'string' && item.targetPlatformId.length > 0
-}
-
-/** 校验运行结果对应场景中用于态势渲染的最小结构（平台与链路）；不完整时返回 null 以回退文件模式。 */
-export function extractReplayScenarioConfig(raw: unknown): ScenarioConfig | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
-  const config = raw as Partial<ScenarioConfig>
-  if (!Array.isArray(config.platforms) || config.platforms.length === 0 || !config.platforms.every(isPlatformLike)) return null
-  if (!Array.isArray(config.links) || !config.links.every(isLinkLike)) return null
-  return config as ScenarioConfig
-}
-
 /**
  * 合并场景平台定义与回放轨迹：与态势主界面一致以场景平台类型、名称、阵营与卫星子类型为基座，
  * 叠加当前游标位置；已到平台删除时刻的实体不回退显示初始位置。
  */
 export function selectReplayMapNodes(
   snapshot: LocalReplaySnapshot | null,
-  sceneConfig: ScenarioConfig | null,
+  sceneConfig: ReplayMapConfig | null,
   currentTimeS: number,
   interpolate = false,
 ): SituationMapNode[] {
@@ -113,13 +77,10 @@ export function selectReplayMapNodes(
  * 当前时刻尚未到达首帧（engineFrame 为空）时返回空链路集合，与态势主界面初始帧前表现一致。
  */
 export function selectReplayConfiguredLinks(
-  sceneConfig: ScenarioConfig,
+  sceneConfig: ReplayMapConfig,
   engineHistory: EngineReplaySnapshot,
 ): ReplayConfiguredLinkView {
-  const platformIds = new Set(sceneConfig.platforms.map(platform => platform.id))
-  const focusLinks = sceneConfig.links.filter(
-    link => platformIds.has(link.sourcePlatformId) && platformIds.has(link.targetPlatformId),
-  )
+  const focusLinks = selectMapFocusLinks(sceneConfig)
   const frame: EngineFrameSnapshot | null = engineHistory.engineFrame
   if (!frame) {
     return {
@@ -131,41 +92,13 @@ export function selectReplayConfiguredLinks(
     }
   }
 
-  const segmentStatuses = resolveEngineFrameConfiguredLinks(frame, sceneConfig.links)
+  const segmentStatuses = resolveEngineFrameConfiguredLinks(frame, sceneConfig.links, sceneConfig.linkSettings?.linkCalc)
   const statuses = new Map<string, UiLinkStatus>(
     [...segmentStatuses.entries()].map(([id, value]) => [id, value.status]),
   )
-  const settings = readLinkSettings(sceneConfig)
-  const hoverFor = createEngineLinkHoverLookup(
-    frame,
-    engineHistory.engineSwitches.map(item => item.route),
-  )
-
-  const configuredLinks: SituationMapLink[] = sceneConfig.links.flatMap(link => {
-    const status = statuses.get(link.id)
-    if (!platformIds.has(link.sourcePlatformId) || !platformIds.has(link.targetPlatformId)
-      || !isConfiguredLinkEnabled(link, settings, sceneConfig.platforms)
-      || (status !== 'UP' && status !== 'DEGRADED' && status !== 'DOWN')) return []
-    const engineStatus = segmentStatuses.get(link.id)
-    const displayed = engineStatus?.relayBypassed ? { ...link, relayPlatformId: null } : link
-    if (!engineStatus) return [displayed]
-    const relayId = displayed.relayPlatformId
-    const route = relayId
-      ? [displayed.sourcePlatformId, relayId, displayed.targetPlatformId]
-      : [displayed.sourcePlatformId, displayed.targetPlatformId]
-    return [{ ...displayed, distanceM: engineStatus.distanceM ?? undefined, hover: hoverFor(link.id, route) }]
-  })
-
-  const switches = new Map<string, ConfiguredLinkSwitchState>()
-  const latestSwitch = engineHistory.engineSwitches.at(-1)
-  if (latestSwitch && latestSwitch.frameId === frame.frameId) {
-    const resolved = resolveEngineSwitchHighlights(frame, latestSwitch.route.oldNodes, latestSwitch.route.nodes)
-    const before = new Set(resolved.before.linkIds)
-    const after = new Set(resolved.after.linkIds)
-    for (const id of new Set([...before, ...after])) {
-      switches.set(id, before.has(id) && after.has(id) ? 'BOTH' : before.has(id) ? 'BEFORE' : 'AFTER')
-    }
-  }
+  const configuredLinks = selectVisibleMapLinks(sceneConfig, focusLinks, statuses, segmentStatuses,
+    createEngineLinkHoverLookup(frame, engineHistory.engineSwitches.map(item => item.route)))
+  const switches = latestMapSwitches(frame, engineHistory.engineSwitches.at(-1))
 
   return { configuredLinks, focusLinks, statuses, switches, segmentStatuses }
 }
@@ -181,8 +114,9 @@ export function selectReplayLiveMessageFlows(
 ): LiveMessageFlowLane[] {
   if (!links?.length) return []
   const pulseWindowS = Math.max(2, Number.isFinite(speed) && speed > 0 ? speed : 1)
-  return selectFileMessageLinks(links, currentTimeS).map(link => {
-    const latest = link.records[link.records.length - 1]!
+  return selectFileMessageLinks(links, currentTimeS, 'received').map(link => {
+    const tail = link.records[link.records.length - 1]!
+    const latest = tail.time === link.lastTimeS ? tail : link.records.find(record => record.time === link.lastTimeS)!
     const isFresh = playing && currentTimeS - latest.time <= pulseWindowS
     return {
       id: link.id,
@@ -205,7 +139,7 @@ export function selectReplayLiveMessageFlows(
 }
 
 function buildEngineAliasNames(
-  sceneConfig: ScenarioConfig | null,
+  sceneConfig: ReplayMapConfig | null,
   nodeNames: Readonly<Record<string, string>>,
 ): Map<string, string> {
   const aliases = new Map<string, string>()
@@ -244,7 +178,7 @@ function formatFallbackEngineIdentifier(token: string): string {
   if (uav) return `无人节点 ${Number(uav[1])}`
   const groundJammer = /^jammer_station_(\d+)$/i.exec(token)
   if (groundJammer) return `地面干扰站 ${Number(groundJammer[1])}`
-  const airJammer = /^jammer_airborne_(\d+)$/i.exec(token)
+  const airJammer = /^jammer_(?:airborne|airbround)_(\d+)$/i.exec(token)
   if (airJammer) return `机载干扰平台 ${Number(airJammer[1])}`
   return token
 }
@@ -254,7 +188,7 @@ function formatFallbackEngineIdentifier(token: string): string {
  */
 export function localizeReplayTimelineMarkers(
   markers: readonly EngineReplayTimelineMarker[] | undefined,
-  sceneConfig: ScenarioConfig | null,
+  sceneConfig: ReplayMapConfig | null,
   nodeNames: Readonly<Record<string, string>>,
 ): EngineReplayTimelineMarker[] {
   if (!markers?.length) return []
@@ -275,7 +209,7 @@ export function localizeReplayTimelineMarkers(
       .replace(/C\s*波段(?:上行|下行)|L\s*波段(?:上行|下行)/gu, '数传')
       .replace(/卫通\s*[AB]（(?:前向|返向)）|卫通/gu, '卫星')
       .replace(/激光通信/gu, '激光')
-      .replace(/\b(?:mission_uav_\d+|jammer_station_\d+|jammer_airborne_\d+|rear_comm_vehicle|command_vehicle|tiantong_sat|shentong_sat)\b/giu, token => (
+      .replace(/\b(?:mission_uav_\d+|jammer_station_\d+|jammer_(?:airborne|airbround)_\d+|rear_comm_vehicle|command_vehicle|tiantong_sat|shentong_sat)\b/giu, token => (
         aliases.get(token.toLowerCase()) ?? aliases.get(token) ?? formatFallbackEngineIdentifier(token.toLowerCase())
       ))
     // 合并因多波段简化后产生的重复体制名（如「数传/数传」）

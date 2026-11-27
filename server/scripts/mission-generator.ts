@@ -4,7 +4,7 @@ import {
   INFORMATION_TYPE_DIRECTIONS,
   inspectScenarioConfig,
 } from '../../src/features/scenarios/scenario-validation.js'
-import { isConfiguredLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
+import { isConfiguredLinkEnabled, readLinkSettings, withoutRetiredLinkSettings } from '../../src/features/scenarios/link-settings.js'
 import { readLinkCalcSettings, readNaturalEnvironment } from '../../src/features/scenarios/link-calc-defaults.js'
 import { hotLinkChainError, readHotLinks } from '../../src/features/scenarios/hot-links.js'
 import { FIBER_MAPPED_PORT_FIELDS, LINK_PORT_FIELDS, RADIO_MAPPED_PORT_FIELDS, linkOverride, mappedPortFields } from '../../src/features/scenarios/link-port-parameters.js'
@@ -709,6 +709,17 @@ function portModulation(config: ScenarioDraft['config'], resolved: EffectivePort
   }
   return 'BPSK'
 }
+/** 临时口径：绑定到同一端口的链路若配置了非 0 波形抗干扰增益，取最大值覆盖该端口收发 peak_gain_dB。 */
+function portAntiJammingGain(config: ScenarioDraft['config'], resolved: EffectivePorts, key: string): number | undefined {
+  let maxGain: number | undefined
+  for (const index of resolved.bindings.get(key)?.indexes ?? []) {
+    const value = config.links[index]?.antiJammingGainDb
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      maxGain = maxGain === undefined ? value : Math.max(maxGain, value)
+    }
+  }
+  return maxGain
+}
 function portParams(config: ScenarioDraft['config'], resolved: EffectivePorts, allowedPorts?: Map<TemplatePlatformType, Set<string>>): EmittedPortParams {
   const explicitGains = config.deviceParameters?.antennaGains
   return TEMPLATE_PORT_PARAMS.flatMap(platformEntry => {
@@ -738,6 +749,12 @@ function portParams(config: ScenarioDraft['config'], resolved: EffectivePorts, a
         if (explicitGains && Object.hasOwn(explicitGains, antennaName) && typeof explicitGains[antennaName] === 'number') {
           tx.peak_gain_dB = explicitGains[antennaName]!
           rx.peak_gain_dB = explicitGains[antennaName]!
+        }
+        // 临时映射：绑定该端口的链路配置了非 0 波形抗干扰增益时，取最大值直接覆盖收发 peak_gain_dB。
+        const antiJamGain = portAntiJammingGain(config, resolved, `${platformEntry.platform_type}.${base.comm_name}`)
+        if (antiJamGain !== undefined) {
+          tx.peak_gain_dB = antiJamGain
+          rx.peak_gain_dB = antiJamGain
         }
       }
       if (override.transferRate !== undefined) { tx[rateKey] = Number(rate(override.transferRate, rateUnit)); rx[rateKey] = Number(rate(override.transferRate, rateUnit)) }
@@ -896,12 +913,13 @@ function portAdoption(
       const override = resolved.overrides.get(key) ?? {}
       const antennaName = port === 'fiber_link' ? null : antenna(type, port)
       const hasAntennaGain = antennaName !== null && explicitGains !== undefined && Object.hasOwn(explicitGains, antennaName)
+      const hasAntiJamGain = port !== 'fiber_link' && portAntiJammingGain(config, resolved, key) !== undefined
       // comm 段只列实际映射到 comm 输出的字段（未映射字段不标已采用）；光纤仅 transferRate。
       // 1112 固定模板：comm 段不随设备参数改写，设备参数只进入 link_calc port_params。
       const comm: PortAdoptionSegment | null = null
       const configuredPortParams = binding?.inherited ? hasDeviceConfig : Object.keys(override).length > 0
       const portParams: PortAdoptionSegment | null = emittedValue
-        ? { adoptedValue: emittedValue as unknown as Record<string, unknown>, source: configuredPortParams || hasAntennaGain ? 'CONFIGURED' : 'TEMPLATE_DEFAULT', unit: 'GHz / MHz / W / bit/s / 调制 BPSK|QPSK（按 1112 port_params 键）', outputPath: `${TYPE_FILE_BY_PLATFORM[type]} 的 link_calc port_params.${port}` }
+        ? { adoptedValue: emittedValue as unknown as Record<string, unknown>, source: configuredPortParams || hasAntennaGain || hasAntiJamGain ? 'CONFIGURED' : 'TEMPLATE_DEFAULT', unit: 'GHz / MHz / W / bit/s / 调制 BPSK|QPSK（按 1112 port_params 键）', outputPath: `${TYPE_FILE_BY_PLATFORM[type]} 的 link_calc port_params.${port}` }
         : null
       const outputStatus: PortAdoption['outputStatus'] = !isAllowed
         ? 'NOT_EMITTED'
@@ -962,9 +980,55 @@ function chain(chains: readonly (readonly string[])[], all: readonly Device[]): 
   })
   return result
 }
+const DEFAULT_TRAFFIC_RATE_BPS = 16_000_000
+/** 单条链路的显式方向速率（Mbps）：仅读取前向/返向显式配置，未配置返回 undefined。 */
+function explicitDirectionalRateMbps(
+  link: Link,
+  direction: 'FORWARD' | 'REVERSE',
+): number | undefined {
+  const explicit = direction === 'REVERSE' ? link.reverseDataRate : link.forwardDataRate
+  return typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0 ? explicit : undefined
+}
+/** 计算业务对应的热链方向速率（bps）；优先取热链上显式配置的前向/返向速率（多跳取最小值），未配置默认 16 Mbps（16_000_000 bps）。 */
+function hotLinkRateBps(
+  enabledLinks: readonly Link[],
+  hotChains: readonly (readonly string[])[],
+  direction: 'FORWARD' | 'REVERSE',
+  target: string,
+  demandLinkId?: string,
+): number {
+  const linkById = new Map(enabledLinks.map(link => [link.id, link]))
+  const matchedChain = hotChains.find(ids => {
+    const endpointId = direction === 'REVERSE' ? ids[0] : ids.at(-1)
+    const endpoint = endpointId ? linkById.get(endpointId) : undefined
+    if (!endpoint) return false
+    return direction === 'REVERSE' ? endpoint.sourcePlatformId === target : endpoint.targetPlatformId === target
+  })
+  if (matchedChain) {
+    const explicitRates = matchedChain
+      .map(id => linkById.get(id))
+      .filter((link): link is Link => link !== undefined)
+      .map(link => explicitDirectionalRateMbps(link, direction))
+      .filter((rate): rate is number => rate !== undefined)
+    if (explicitRates.length > 0) return Math.round(Math.min(...explicitRates) * 1_000_000)
+    return DEFAULT_TRAFFIC_RATE_BPS
+  }
+  const bound = demandLinkId ? linkById.get(demandLinkId) : undefined
+  if (bound) {
+    const rate = explicitDirectionalRateMbps(bound, direction)
+    if (rate !== undefined) return Math.round(rate * 1_000_000)
+  }
+  const fallbackRates = enabledLinks
+    .filter(link => link.direction === direction && (direction === 'REVERSE' ? link.sourcePlatformId === target : link.targetPlatformId === target))
+    .map(link => explicitDirectionalRateMbps(link, direction))
+    .filter((rate): rate is number => rate !== undefined)
+  return fallbackRates.length > 0 ? Math.round(Math.min(...fallbackRates) * 1_000_000) : DEFAULT_TRAFFIC_RATE_BPS
+}
 function traffic(
   config: ScenarioDraft['config'],
   all: readonly Device[],
+  enabledLinks: readonly Link[],
+  hot: { forward: readonly (readonly string[])[]; reverse: readonly (readonly string[])[] },
   laserOnlyTargets: ReadonlyMap<number, ReadonlySet<number> | 'ALL'>,
 ): Traffic {
   const names = { '态势信息': 'kForwardSituation', '目标指令': 'kForwardTarget', '侦察信息': 'kReturnReconVideo', '状态信息': 'kReturnReconStatus' } as const
@@ -990,10 +1054,12 @@ function traffic(
     targets.forEach(target => {
       if (!target) return
       const current = grouped.get(target) ?? { forward: [], return: [] }
+      const hotChains = direction === 'REVERSE' ? hot.reverse : hot.forward
       const record = {
         traffice_type: name,
         data_volume_bits: Math.round(demand.volumeMb * 8_000_000),
         trans_freq: demand.frequencyHz,
+        rate_bps: hotLinkRateBps(enabledLinks, hotChains, direction, target, demand.linkId),
       }
       ;(direction === 'REVERSE' ? current.return : current.forward).push(record)
       grouped.set(target, current)
@@ -1008,10 +1074,10 @@ function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDra
     const bands = readJammerBands(value)
     const extension = uiExtensions.jammers.find(item => item.jammerId === value.id)
     const airborne = config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'
-    // 未配置的链路计算字段取 1112 jammer_param 基准（地面 G_T -12/eirp 50/增益 30；机载 G_T -10/eirp 40/增益 25）。
+    // 未配置的链路计算字段取新版 jammer_param 基准（地面 G_T -12/eirp 0/增益 20；机载 G_T -10/eirp 0/增益 25）。
     const templateDefaults = airborne
-      ? { gtDbk: -10, eirpDbw: 40, antennaGainDbi: 25 }
-      : { gtDbk: -12, eirpDbw: 50, antennaGainDbi: 30 }
+      ? { gtDbk: -10, eirpDbw: 0, antennaGainDbi: 25 }
+      : { gtDbk: -12, eirpDbw: 0, antennaGainDbi: 20 }
     return {
       radarFrequency: value.radarFrequency,
       radarBandwidth: value.radarBandwidth,
@@ -1046,7 +1112,7 @@ function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDra
     }
   })
 }type Hop = { platform: string; inPort: string; outPort: string }
-type TrafficRecord = { traffice_type: string; data_volume_bits: number; trans_freq: number }
+type TrafficRecord = { traffice_type: string; data_volume_bits: number; trans_freq: number; rate_bps: number }
 type Traffic = Array<Record<string, { forward: TrafficRecord[]; return: TrafficRecord[] }>>
 export type RouteInputs = { traffic: Traffic; forward: Record<string, Hop[]>; reverse: Record<string, Hop[]> }
 /** link_calc 与本地补丁共用的业务与热链输入，保证两者路由一致。 */
@@ -1065,8 +1131,22 @@ function routeInputs(
       if (error !== null) throw new MissionGenerationError('linkSettings.hotLinks', `热链引用无效：${error}`)
     }
   }
-  return { traffic: traffic(config, all, laserOnlyTargets), forward: chain(hot.forward, all), reverse: chain(hot.reverse, all) }
+  return { traffic: traffic(config, all, enabledLinks, hot, laserOnlyTargets), forward: chain(hot.forward, all), reverse: chain(hot.reverse, all) }
 }
+/** 1112 模板的链路默认传输距离，单位为千米（km）。键名保留模板拼写。 */
+const DEFAULT_TRAFFIC_DISTANCE = [
+  {
+    link_type: 'cl_link',
+    distance_set: [
+      { dist_seg: 'relay-uav', distance: 60 },
+      { dist_seg: 'relay-relay', distance: 200 },
+      { dist_seg: 'relay-comand', distance: 240 },
+      { dist_seg: 'uav-comand', distance: 240 },
+    ],
+  },
+  { link_type: 'microwave_link', distance: 200 },
+  { link_type: 'lazer_link', distance: 40 },
+] as const
 function calculator(
   config: ScenarioDraft['config'],
   routes: RouteInputs,
@@ -1079,7 +1159,7 @@ function calculator(
   const jammerParamMode = (mode: string) => mode === 'BARRAGE' ? 'broadband' : mode === 'SPOT' ? 'spot' : 'sweep'
   const jams = { jammers: jammers.map(item => ({
     platform_name: item.platformId, weapon_name: item.weaponId, jammer_type: item.weaponId === 'alq99_jammer' ? 'airborne' : 'ground',
-    G_T_dBK: 0, enabled: item.configuredEnabled, mode: jammerParamMode(item.type),
+    G_T_dBK: item.gtDbk, enabled: item.configuredEnabled, mode: jammerParamMode(item.type),
     frequency_ghz: item.radarFrequency / 1000, bandwidth_mhz: item.radarBandwidth, power_w: item.radarPower, noise_figure: item.noiseFigureDb,
     weapon_power_w: item.powerW, weapon_eirp_dBW: item.eirpDbw, weapon_antenna_gain_dbi: item.antennaGainDbi,
     weapon_band_params: item.weaponBands.map(band => ({
@@ -1093,7 +1173,7 @@ function calculator(
     detect_radius_nm: item.detectionRangeM / 1852, trigger_radius_nm: item.jammingRangeM / 1852, release_radius_nm: item.releaseRangeM / 1852,
     spot_bandwidth_mhz: item.type === 'SPOT' ? (item.weaponBands[0]?.spotBandwidthMHz ?? item.bandwidthMHz) : 20, sweep_duty_cycle: item.sweepDutyCycle,
   })) }
-  return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR', `    update_interval ${n(calc.updateIntervalS)} sec`, `    emergency_threshold ${sci(calc.emergencyThreshold)}`, `    warning_threshold ${sci(calc.warningThreshold)}`, `    value_threshold_ber ${n(calc.valueThresholdBer)}`, `    channel_encoding_scheme ${n(calc.channelEncodingScheme)}`, `    traffic_type ${JSON.stringify(routes.traffic)}`, `    relay_uav_names ${JSON.stringify(config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id))}`, `    hot_link_ret ${JSON.stringify(routes.reverse)}`, `    hot_link_fw ${JSON.stringify(routes.forward)}`, `    port_params ${JSON.stringify(emittedPortParams)}`, `    natural_environment ${JSON.stringify(natural)}`, `    jammer_param ${JSON.stringify(jams)}`, '  end_processor'].join('\n')
+  return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR', `    update_interval ${n(calc.updateIntervalS)} sec`, `    emergency_threshold ${sci(calc.emergencyThreshold)}`, `    warning_threshold ${sci(calc.warningThreshold)}`, `    value_threshold_ber ${n(calc.valueThresholdBer)}`, `    channel_encoding_scheme ${n(calc.channelEncodingScheme)}`, `    traffic_type ${JSON.stringify(routes.traffic)}`, `    traffic_distance ${JSON.stringify(DEFAULT_TRAFFIC_DISTANCE)}`, `    relay_uav_names ${JSON.stringify(config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id))}`, `    hot_link_ret ${JSON.stringify(routes.reverse)}`, `    hot_link_fw ${JSON.stringify(routes.forward)}`, `    port_params ${JSON.stringify(emittedPortParams)}`, `    natural_environment ${JSON.stringify(natural)}`, `    jammer_param ${JSON.stringify(jams)}`, '  end_processor'].join('\n')
 }
 /** 本地运行包选项；对接方 TXT、预览和 writeScriptText 都不传，保持模板原样。 */
 export type LocalRuntimeOptions = {
@@ -1685,7 +1765,8 @@ function adaptRuntimeFiles(files: Record<string, string>, config: ScenarioDraft[
 }
 
 export function buildMissionPackage(draft: ScenarioDraft, output = configuredScenarioOutput(draft.config.scenario.timeStep), runtime?: LocalRuntimeOptions) {
-  const inputConfig = { ...draft.config, output }
+  const sourceConfig = withoutRetiredLinkSettings(draft.config)
+  const inputConfig = { ...sourceConfig, output }
   inputConfig.platforms.forEach((platform, index) => {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(platform.id)) {
       throw new MissionGenerationError(`platforms[${index}].id`, '引擎平台编号须以英文字母开头，仅包含字母、数字、下划线或连字符。')
@@ -1811,7 +1892,6 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   const inputNames = engineNames(original.platforms)
   const originalSettings = original.linkSettings
   const settings = readLinkSettings(original)
-  const localStub = runtime?.linkCalc === 'STUB'
   const activeLinks = original.links.map((link, index) => ({ link, index })).filter(({ link }) => isConfiguredLinkEnabled(link, settings, original.platforms))
   const activeJammers = draft.uiExtensions.jammers.map((extension, index) => ({ extension, index, jammerIndex: original.jammers.findIndex(jammer => jammer.id === extension.jammerId) }))
     .filter(({ extension, jammerIndex }) => original.jammingEnabled === true && extension.enabled && jammerIndex >= 0)
@@ -1821,7 +1901,6 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     ...(originalSettings?.linkCalc === undefined ? [] : [{ fieldPath: 'linkSettings.linkCalc', detail: '已写入 comm_platform_REAR.txt 的 link_calc 更新周期、BER 门限和编码方案；不再输出模板没有的 jamming_range。' }]),
     ...(originalSettings?.messageIntervalS === undefined ? [] : [{ fieldPath: 'linkSettings.messageIntervalS', detail: '已用于模板固定业务处理器的发送周期（模板为 5 秒，生成器不新增变量）。' }]),
     ...(originalSettings?.hotLinks === undefined ? [] : [{ fieldPath: 'linkSettings.hotLinks', detail: '已写入 link_calc 的 hot_link_fw / hot_link_ret。' }]),
-    ...(originalSettings?.priority === undefined ? [] : [{ fieldPath: 'linkSettings.priority', detail: '用于推导热链候选；模板固定执行逻辑不写入优先级。' }]),
     ...(original.scenario.realtime === undefined && original.scenario.environment.simClockSpeed === undefined ? [] : [{ fieldPath: 'scenario.realtime', detail: '与 scenario.environment.simClockSpeed 共同写入 comm_SimSetup.txt 的 realtime / clock_rate。' }]),
     ...original.informationDemand.flatMap((demand, index) => {
       if (demand.enabled === false) return []
@@ -1875,8 +1954,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     ...original.sensors.flatMap((sensor, index) => draft.uiExtensions.sensors.some(extension => extension.sensorId === sensor.id && extension.enabled) ? [{ fieldPath: `sensors[${index}]`, detail: '已启用 ESM 传感器未写入模板，仅保留快照。' }] : []),
   ]
   const dependencyUnconfirmed = [
-    ...(!localStub ? [{ fieldPath: 'linkSettings.linkCalc', detail: 'WSF_LINK_CALC_PROCESSOR 由外部 AFSIM/LinkCalc 提供；本包已写入参数，但提供方定义待确认。' }] : []),
-    // 地面站 prophet_jammer 武器块为提供方有意注释，插件按 jammer_param 计算（2026-11-23 已验证），不再列为待确认依赖。
+    // WSF_LINK_CALC_PROCESSOR 与地面站 prophet_jammer 均按提供方约定执行，不再在生成日志中列为待确认依赖。
     ...mapped.warnings.map(message => ({ fieldPath: 'links', detail: `未写入端口映射：${message}` })),
   ]
   const executionStatus = {
@@ -1987,7 +2065,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       '干扰方位角/俯仰角',
       '侦测传感器/ESM',
       '业务 QoS',
-      '链路优先级/质量门限',
+      '质量门限',
       'BER 阈值/编码/增益修正',
       '海峡宽度',
       '时间步长',
@@ -1999,7 +2077,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     [SCENARIO_PREVIEW_FILE]: [`// ${SCENARIO_PREVIEW_FILE}：可追溯入口。`, `// 场景：${config.scenario.name.replace(/[\r\n]+/gu, ' ')}（${config.scenario.id}，修订 ${draft.revision}）`, `// 引用顺序：${ENTRY_FILE} → ${[...TYPE_FILES, INSTANCE_FILE, 'observers.txt'].join(' → ')}`, `include_once ${ENTRY_FILE}`, ''].join('\n'),
     [AD_HOC_COMM_FILE]: templateFiles['ad_hoc_comm.txt'],
     'mapping.json': JSON.stringify(manifest, null, 2) + '\n',
-    'input.json': JSON.stringify(draft, null, 2) + '\n',
+    'input.json': JSON.stringify({ ...draft, config: sourceConfig }, null, 2) + '\n',
     'README.txt': [
       '1112 模板脚本包（mission_uav 与 5.x 干扰源实例段按场景配置生成）。',
       '10 个执行 TXT 以 1112 模板为基准，只允许变化：INS 的 mission_uav 实例段（数量/阵营/位置/航线/盘旋/返航/角色）、INS 的 5.x 干扰源实例段（数量/阵营/位置/航线/盘旋/侦测范围）、REAR 的 fw_sit_dst/fw_tgt_dst、REAR 的 link_calc 参数块、MISSION_UAV 的 relayNames/rt_video_dsts/rt_status_dsts 与 sat_link 接收频率单位、comm_SimSetup 的 realtime/clock_rate，以及 lazer_link 命名统一（当前源模板已统一，命中 0 处）。',
@@ -2035,6 +2113,11 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   // 交付/预览的 TXT 脚本不保留注释；mapping.json、input.json、README.txt 等资料文件不受影响。
   for (const name of scriptFiles) {
     if (typeof files[name] === 'string') files[name] = stripScriptComments(files[name]!)
+  }
+  if (runtime) {
+    // 当前本机 LinkCalc DLL 不识别 traffic_distance。升级到支持该指令的版本后移除此处适配。
+    const rearFile = 'comm_platform_REAR.txt'
+    files[rearFile] = files[rearFile]!.replace(/^([ \t]*)(traffic_distance[ \t])/mu, '$1// $2')
   }
   return { manifest, files }
 }

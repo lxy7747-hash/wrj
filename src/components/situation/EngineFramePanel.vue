@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import type { EngineLinkSegment, EnginePathNode, LinkType, Link, EngineFrameSnapshot } from '../../contracts/domain-models'
 import { useRuntimeQualityStore, type EngineAlarmContext } from '../../stores/runtime-quality'
 import { useSimulationStore } from '../../stores/simulation'
+import { engineSegmentDisplayStatus } from '../../features/situation/engine-link-statuses'
 import { engineSegmentLossRows } from '../../features/reports/engine-segment-details'
 import { reportLinkLabel } from '../../features/reports/report-link-label'
 import { formatSimulationTime, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS, qualityNodeOptionLabel } from '../../features/situation/situation-model'
@@ -12,10 +13,12 @@ import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { nodeCategory } from '../../config/map.config'
 import { wattsToDbm } from '../../features/scenarios/jammer-settings'
 import { formatCommunicationPortLabel, formatMessageTypeLabel } from '../../features/situation/file-message-links'
+import { describeSwitchReasonThreshold, summarizeSegmentJammingEvidence, type LinkCalcThresholds } from '../../features/situation/engine-narrative'
 
 const props = defineProps<{
   section: 'quality' | 'decisions' | 'jammers' | 'events'
   selectedLinkId?: string
+  berThresholds?: LinkCalcThresholds
   links?: Pick<Link, 'id' | 'type' | 'sourcePlatformId' | 'targetPlatformId'>[]
   evidence?: EngineReplayEvidence
   nodeNames?: Record<string, string>
@@ -47,6 +50,16 @@ const scenePlatform = (id: string | null) => props.evidence || simulation.run?.f
   ? undefined : simulation.selectedScene?.config.platforms.find(platform => platform.id === id)
 const name = (id: string | null) => props.evidence ? props.nodeNames?.[id ?? ''] ?? value(id)
   : scenePlatform(id)?.name ?? value(id)
+function segmentEvidence(segment: EngineLinkSegment) {
+  return summarizeSegmentJammingEvidence(
+    segment,
+    (platformId, engineName) => {
+      const resolved = name(platformId)
+      return resolved !== '暂无数据' ? resolved : (engineName ?? '暂无数据')
+    },
+    quality.value.engineFrame?.jammers,
+  )
+}
 function nodeFilterLabel(id: string, index: number): string {
   const displayName = name(id)
   const platform = props.nodePlatforms?.find(item => item.platformId === id)
@@ -69,6 +82,27 @@ function routeHops(nodes: EnginePathNode[]): Array<{ nodeName: string; linkLabel
     return { nodeName: name(node.platformId), linkLabel }
   })
 }
+const thresholdNodes = computed<readonly Pick<SituationMapNode, 'platformId' | 'name' | 'type'>[]>(() => {
+  if (props.nodePlatforms?.length) return props.nodePlatforms
+  const platforms = simulation.selectedScene?.config.platforms ?? []
+  return platforms.map(platform => ({ platformId: platform.id, name: platform.name, type: platform.type }))
+})
+function switchReasonThresholds(
+  item: (typeof quality.value.engineSwitches)[number],
+  reason: { linkId: string | null; reasons: string[] },
+): string[] {
+  const frameLinks = item.frameId === quality.value.engineFrame?.frameId ? quality.value.engineFrame.links : []
+  const alarms = quality.value.engineAlarms
+    .filter(entry => entry.frameId === item.frameId)
+    .map(entry => entry.alarm)
+  const details: string[] = []
+  for (const code of reason.reasons) {
+    if (!code) continue
+    const text = describeSwitchReasonThreshold(code, reason.linkId, item.route, frameLinks, thresholdNodes.value, props.berThresholds, alarms)
+    if (text && !details.includes(text)) details.push(text)
+  }
+  return details
+}
 /** 业务枚举去重并翻译为中文标签。 */
 function businessLabels(types: readonly string[]): string[] {
   return [...new Set(types.filter(Boolean).map(formatMessageTypeLabel))]
@@ -82,7 +116,7 @@ function shortIdentifier(id: string | null | undefined): string {
   return id.length > 16 ? `${id.slice(0, 8)}…` : id
 }
 const labels: Record<string, string> = { UP: '正常', DEGRADED: '劣化', DOWN: '中断', UNKNOWN: '未知',
-  BARRAGE: '宽带压制', SPOT: '瞄准式', SWEEP: '扫频', DETECTED: '已探测', NOT_DETECTED: '未侦测到目标',
+  BARRAGE: '宽带压制', SPOT: '瞄准式', SWEEP: '扫频', DETECTED: '已侦测', NOT_DETECTED: '未侦测到目标',
   UNDETECTED: '未侦测到目标', NO_TARGET: '未侦测到目标', IDLE: '未侦测到目标', NONE: '未侦测到目标',
   ON: '开启', OFF: '关闭', JAM_ON: '起扰', JAM_OFF: '停扰',
   beyond_weitch: '超视距切换', ber_switch: '链路劣化切换', alarm_switch: '链路告警切换', into_detect: '进入探测圈',
@@ -108,7 +142,7 @@ const UNDETECTED_STATUSES = new Set(['NOT_DETECTED', 'UNDETECTED', 'NO_TARGET', 
 const isJammerDetected = (jammer: EngineFrameSnapshot['jammers'][number]) =>
   jammer.detectStatus === 'DETECTED' || (jammer.detectStatus == null && jammer.detections.length > 0)
 const detectStatusLabel = (jammer: EngineFrameSnapshot['jammers'][number]) => {
-  if (jammer.detectStatus == null || jammer.detectStatus === '') return jammer.detections.length > 0 ? '已探测' : '未侦测到目标'
+  if (jammer.detectStatus == null || jammer.detectStatus === '') return jammer.detections.length > 0 ? '已侦测' : '未侦测到目标'
   if (UNDETECTED_STATUSES.has(jammer.detectStatus)) return '未侦测到目标'
   return label(jammer.detectStatus)
 }
@@ -124,6 +158,14 @@ const formatKm = (meters: number | null | undefined) =>
   meters == null || !Number.isFinite(meters) ? '暂无数据' : `${Number((meters / 1000).toFixed(2))} km`
 const formatPercent = (prob: number | null | undefined) =>
   prob == null || !Number.isFinite(prob) ? '暂无数据' : `${Number((prob * 100).toFixed(1))}%`
+function formatFrequencyHz(raw: number | null | undefined): string {
+  if (raw == null || !Number.isFinite(raw)) return '暂无数据'
+  if (raw <= 0) return '0 Hz'
+  if (raw >= 1e9) return `${Number((raw / 1e9).toPrecision(6))} GHz`
+  if (raw >= 1e6) return `${Number((raw / 1e6).toPrecision(6))} MHz`
+  if (raw >= 1e3) return `${Number((raw / 1e3).toPrecision(6))} kHz`
+  return `${Number(raw.toPrecision(6))} Hz`
+}
 function formatJamFrequency(raw: number | null | undefined): string {
   if (raw == null || !Number.isFinite(raw) || raw <= 0) return ''
   if (raw >= 1e9) return `${Number((raw / 1e9).toPrecision(6))} GHz`
@@ -156,6 +198,16 @@ function jammerEventsFor(jammer: EngineFrameSnapshot['jammers'][number]) {
     .slice(-8)
     .reverse()
 }
+const expandedJammerEvents = ref<Record<string, boolean>>({})
+function jammerEventKey(jammerKey: string | number, entry: ReturnType<typeof jammerEventsFor>[number]): string {
+  return `${jammerKey}:${entry.frameId}:${entry.simulationTime}:${entry.event.type ?? ''}:${entry.event.uavIds.join(',')}`
+}
+function toggleJammerEvent(key: string): void {
+  expandedJammerEvents.value = { ...expandedJammerEvents.value, [key]: !expandedJammerEvents.value[key] }
+}
+function jammerEventTargetsText(uavIds: readonly string[]): string {
+  return uavIds.map(name).join('、') || '—'
+}
 function jammerEventTagType(type: string | null): 'danger' | 'success' | 'warning' | 'info' {
   if (type === 'into_jamm') return 'danger'
   if (type === 'release_jamm') return 'success'
@@ -181,7 +233,8 @@ const nodeLabels = computed(() => {
 })
 const nodeLabel = (id: string | null) => nodeLabels.value.get(id ?? '') ?? '未知节点'
 const selectedType = (link: EngineLinkSegment): LinkType[] => link.linkIds.flatMap(id => configuredLinks.value.filter(configured => configured.id === id).map(configured => configured.type))
-const displayedStatus = (link: EngineLinkSegment) => link.error ? 'UNKNOWN' : link.status
+const statusTagTypes = { UP: 'success', DEGRADED: 'warning', DOWN: 'danger', UNKNOWN: 'info' } as const
+const displayedStatus = (link: EngineLinkSegment) => engineSegmentDisplayStatus(link, props.berThresholds)
 const segmentKey = (link: EngineLinkSegment) => JSON.stringify([quality.value.engineFrame?.runId, quality.value.engineFrame?.engineEpoch,
   link.linkId, link.sourcePlatformId, link.sourcePort, link.targetPlatformId, link.targetPort])
 const filteredLinks = computed(() => (quality.value.engineFrame?.links ?? []).filter(link =>
@@ -362,20 +415,41 @@ function alarmTooltip(item: MergedAlarm): string {
       </el-form>
       <div v-if="qualityView === 'segments' && filteredLinks.length" class="quality-card-list" role="list" aria-label="引擎链路段质量">
         <article v-for="link in filteredLinks" :key="segmentKey(link)" class="quality-card" role="listitem" :data-link-id="link.linkId">
-          <header class="quality-card-heading">
+          <header class="quality-card-heading" :title="`引擎上报：${label(link.status)}`">
             <strong>{{ name(link.sourcePlatformId) }} → {{ name(link.targetPlatformId) }}</strong>
-            <el-tag :type="displayedStatus(link) === 'UP' ? 'success' : displayedStatus(link) === 'DEGRADED' ? 'warning' : displayedStatus(link) === 'DOWN' ? 'danger' : 'info'">{{ link.error ? '异常（状态未知）' : label(displayedStatus(link)) }}</el-tag>
+            <el-tag :type="statusTagTypes[displayedStatus(link)]">{{ link.error ? '异常（状态未知）' : label(displayedStatus(link)) }}</el-tag>
           </header>
           <p v-if="link.error" class="quality-card-error" role="alert">{{ link.error }}</p>
           <dl class="quality-card-metrics">
-            <div><dt>干信比（dB）</dt><dd>{{ value(link.quality.gxbDb) }}</dd></div>
-            <div><dt>误码率</dt><dd>{{ value(link.quality.ber) }}</dd></div>
+            <div><dt>干信比(GXB)（dB）</dt><dd>{{ value(link.quality.gxbDb) }}</dd></div>
+            <div><dt>误码率(BER)</dt><dd>{{ value(link.quality.ber) }}</dd></div>
             <div><dt>发射辐射功率（dBW）</dt><dd>{{ value(link.inputTrace.eirpDbw) }}</dd></div>
             <div><dt>干扰损耗（dB）</dt><dd>{{ value(link.losses.jammingDb) }}</dd></div>
             <div><dt>距离（m）</dt><dd>{{ value(link.distanceM) }}</dd></div>
             <div><dt>抗干扰余量（dB）</dt><dd>{{ value(link.quality.marginDb) }}</dd></div>
             <div><dt>时延（ms）</dt><dd>{{ value(link.quality.delayMs) }}</dd></div>
           </dl>
+          <div
+            v-if="segmentEvidence(link).shouldShow"
+            class="quality-card-evidence"
+            :class="{ 'quality-card-evidence--jammed': segmentEvidence(link).isJammed }"
+            data-testid="quality-card-evidence"
+          >
+            <div class="quality-card-evidence__head">
+              <strong>{{ segmentEvidence(link).title }}</strong>
+            </div>
+            <p class="quality-card-evidence__summary">{{ segmentEvidence(link).summary }}</p>
+            <ul v-if="segmentEvidence(link).jammers.length" class="quality-card-evidence__jammers">
+              <li v-for="jammer in segmentEvidence(link).jammers" :key="jammer.key">
+                <span>{{ jammer.jammerName }}</span>
+                <span class="quality-card-evidence__meta">
+                  <template v-if="jammer.distanceKm !== null">距 {{ jammer.distanceKm.toFixed(2) }} km</template>
+                  <template v-if="jammer.eirpDbw !== null"> · EIRP {{ Number(jammer.eirpDbw.toFixed(1)) }} dBW</template>
+                  <template v-if="jammer.lossDb !== null"> · 路径损耗 {{ Number(jammer.lossDb.toFixed(2)) }} dB</template>
+                </span>
+              </li>
+            </ul>
+          </div>
           <details v-if="!evidence" class="quality-card-details">
             <summary>分项损耗</summary>
             <dl class="quality-card-losses">
@@ -392,8 +466,8 @@ function alarmTooltip(item: MergedAlarm): string {
           <article v-for="(route, index) in quality.engineFrame.pathQuality" :key="index" class="quality-card" role="listitem">
             <header class="quality-card-heading"><strong>热链 ID · {{ value(route.pathId) }}</strong></header>
             <dl class="quality-card-metrics">
-              <div><dt>干信比（dB）</dt><dd>{{ value(route.gxbDb) }}</dd></div>
-              <div><dt>误码率</dt><dd>{{ value(route.ber) }}</dd></div>
+              <div><dt>干信比(GXB)（dB）</dt><dd>{{ value(route.gxbDb) }}</dd></div>
+              <div><dt>误码率(BER)</dt><dd>{{ value(route.ber) }}</dd></div>
               <div><dt>抗干扰余量（dB）</dt><dd>{{ value(route.marginDb) }}</dd></div>
               <div><dt>时延（ms）</dt><dd>{{ value(route.delayMs) }}</dd></div>
               <div><dt>速率（bit/s）</dt><dd>{{ value(route.rateBps) }}</dd></div>
@@ -527,6 +601,7 @@ function alarmTooltip(item: MergedAlarm): string {
                 <div v-for="(reason, r) in item.route.reasons" :key="r" class="decision-reason-row">
                   <el-tag v-for="(cause, c) in reason.reasons" :key="c" size="small" type="warning" effect="plain">{{ label(cause) }}</el-tag>
                   <span v-if="reason.linkId" class="decision-reason-link" :title="reason.linkId">{{ linkDisplayName(reason.linkId) }}</span>
+                  <span v-for="threshold in switchReasonThresholds(item, reason)" :key="threshold" class="decision-reason-threshold" data-testid="switch-threshold-reason">{{ threshold }}</span>
                 </div>
               </div>
             </div>
@@ -583,7 +658,7 @@ function alarmTooltip(item: MergedAlarm): string {
             <div v-if="jammer.antennaGainDbi !== undefined"><dt>天线增益</dt> <dd data-testid="jammer-gain-value">{{ value(jammer.antennaGainDbi, ' dBi') }}</dd></div>
             <template v-if="jammer.freqBands === undefined">
               <div><dt>设备模式</dt> <dd>{{ jammerModeLabel(jammer.engineMode) }}</dd></div>
-              <div><dt>干扰频率</dt> <dd>{{ value(jammer.frequencyHz, ' Hz') }}</dd></div>
+              <div><dt>干扰频率</dt> <dd data-testid="jammer-frequency-value" :title="jammer.frequencyHz != null ? `${jammer.frequencyHz} Hz` : undefined">{{ formatFrequencyHz(jammer.frequencyHz) }}</dd></div>
             </template>
             <div><dt>干扰圈半径</dt> <dd>{{ formatKm(jammer.rangeM) }}</dd></div>
           </dl>
@@ -617,7 +692,7 @@ function alarmTooltip(item: MergedAlarm): string {
                 <div><dt>目标平台类型</dt> <dd data-testid="detection-platform-type">{{ platformTypeLabel(detection.platformType) }}</dd></div>
                 <div><dt>探测概率</dt> <dd data-testid="detection-probability">{{ detectionProbabilityText(detection) }}</dd></div>
                 <div><dt>探测范围</dt> <dd>{{ formatKm(detection.rangeM) }}</dd></div>
-                <div><dt>探测频率</dt> <dd>{{ value(detection.frequencyHz, ' Hz') }}</dd></div>
+                <div><dt>探测频率</dt> <dd data-testid="detection-frequency-value" :title="detection.frequencyHz != null ? `${detection.frequencyHz} Hz` : undefined">{{ formatFrequencyHz(detection.frequencyHz) }}</dd></div>
               </dl>
               <div v-if="detection.targets.length" class="jammer-card__targets">
                 <div v-for="(target, t) in detection.targets" :key="target.platformId ?? target.name ?? t" class="jammer-card__target-row">
@@ -642,7 +717,7 @@ function alarmTooltip(item: MergedAlarm): string {
             <div v-else class="jammer-card__actions">
               <div v-for="(action, a) in jammer.actions" :key="a" class="jammer-card__action-row">
                 <el-tag size="small" :type="action.action === 'JAM_ON' ? 'danger' : 'info'" effect="plain">{{ label(action.action) }}</el-tag>
-                <span class="jammer-card__action-target">{{ name(action.targetPlatformId) }}</span>
+                <span class="jammer-card__action-target" :title="name(action.targetPlatformId)">{{ name(action.targetPlatformId) }}</span>
                 <span v-if="formatJamFrequency(action.jamFreqHz)" class="jammer-card__action-freq" data-testid="jammer-action-freq">{{ formatJamFrequency(action.jamFreqHz) }}</span>
                 <span class="jammer-card__action-mode">{{ jammerModeLabel(action.mode ?? action.engineMode) }}</span>
               </div>
@@ -653,10 +728,29 @@ function alarmTooltip(item: MergedAlarm): string {
             <span class="jammer-card__section-title">启停事件记录</span>
             <p v-if="!jammerEventsFor(jammer).length" class="jammer-card__empty">暂无启停事件</p>
             <div v-else class="jammer-card__events">
-              <div v-for="(entry, e) in jammerEventsFor(jammer)" :key="e" class="jammer-card__event-row">
+              <div
+                v-for="(entry, e) in jammerEventsFor(jammer)"
+                :key="jammerEventKey(jammer.platformId ?? jammer.name ?? index, entry) + ':' + e"
+                class="jammer-card__event-row"
+                :class="{ 'is-expanded': expandedJammerEvents[jammerEventKey(jammer.platformId ?? jammer.name ?? index, entry)] }"
+              >
                 <span class="jammer-card__event-time">{{ formatSimulationTime(entry.simulationTime) }}</span>
                 <el-tag size="small" :type="jammerEventTagType(entry.event.type)" effect="plain">{{ label(entry.event.type) }}</el-tag>
-                <span class="jammer-card__event-targets">{{ entry.event.uavIds.map(name).join('、') || '—' }}</span>
+                <span
+                  class="jammer-card__event-targets"
+                  :class="{ 'is-expandable': entry.event.uavIds.length > 1 }"
+                  :title="jammerEventTargetsText(entry.event.uavIds)"
+                  data-testid="jammer-event-targets"
+                  @click="entry.event.uavIds.length > 1 && toggleJammerEvent(jammerEventKey(jammer.platformId ?? jammer.name ?? index, entry))"
+                >{{ jammerEventTargetsText(entry.event.uavIds) }}</span>
+                <button
+                  v-if="entry.event.uavIds.length > 1"
+                  type="button"
+                  class="jammer-card__event-toggle"
+                  :title="expandedJammerEvents[jammerEventKey(jammer.platformId ?? jammer.name ?? index, entry)] ? '收起目标列表' : `展开全部 ${entry.event.uavIds.length} 架目标`"
+                  data-testid="jammer-event-toggle"
+                  @click="toggleJammerEvent(jammerEventKey(jammer.platformId ?? jammer.name ?? index, entry))"
+                >{{ expandedJammerEvents[jammerEventKey(jammer.platformId ?? jammer.name ?? index, entry)] ? '收起' : `共${entry.event.uavIds.length}架` }}</button>
               </div>
             </div>
           </div>
@@ -718,8 +812,13 @@ function alarmTooltip(item: MergedAlarm): string {
 .jammer-card__action-mode { flex-shrink: 0; color: #8fb6d9; font-size: 11px; }
 .jammer-card__events { display: grid; gap: 5px; }
 .jammer-card__event-row { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; }
+.jammer-card__event-row.is-expanded { align-items: flex-start; }
 .jammer-card__event-time { flex-shrink: 0; color: #8aa6b8; font-family: Consolas, "Microsoft YaHei", monospace; font-variant-numeric: tabular-nums; }
 .jammer-card__event-targets { flex: 1; min-width: 0; color: #e7f0f8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jammer-card__event-targets.is-expandable { cursor: pointer; }
+.jammer-card__event-row.is-expanded .jammer-card__event-targets { white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.5; }
+.jammer-card__event-toggle { flex-shrink: 0; padding: 0 4px; border: none; background: transparent; color: #4bd9f2; font: inherit; font-size: 11px; cursor: pointer; }
+.jammer-card__event-toggle:hover { text-decoration: underline; }
 .engine-evidence .jammer-card__empty { margin: 2px 0 0; color: var(--el-text-color-secondary, #8aa6b8); font-size: 12px; }
 .decision-group + .decision-group { margin-top: 14px; }
 .decision-group__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
@@ -748,14 +847,23 @@ function alarmTooltip(item: MergedAlarm): string {
 .decision-route-badge { justify-self: start; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
 .decision-route-badge--old { background: rgba(245, 185, 66, .16); color: #f5b942; }
 .decision-route-badge--new { background: rgba(75, 217, 242, .16); color: #4bd9f2; }
-.decision-reason-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.decision-reason-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
 .decision-reason-link { color: #8aa6b8; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 11px; }
+.decision-reason-threshold { color: #ffd88a; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 11px; font-variant-numeric: tabular-nums; }
 .decision-highlights { padding-top: 6px; border-top: 1px dashed rgba(36, 68, 85, .8); }
 .engine-evidence .decision-highlights p { margin: 2px 0; font-size: 11px; }
 .decision-alarm__link { color: var(--console-text, #e7f0f8); font-size: 12px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 .engine-evidence .decision-alarm__msg { margin: 0; color: #ffd4da; font-size: 12px; line-height: 1.5; }
 .engine-evidence .decision-alarm__path { margin: 0; color: #8aa6b8; font-size: 11px; line-height: 1.4; }
 .engine-evidence .decision-empty { margin: 0; color: var(--el-text-color-secondary, #8aa6b8); font-size: 12px; }
+.quality-card-evidence { margin: 6px 0 8px; padding: 6px 8px; border: 1px solid rgba(245, 185, 66, .42); border-left: 3px solid #f5b942; border-radius: 5px; background: rgba(66, 44, 12, .28); }
+.quality-card-evidence--jammed { border-color: rgba(255, 92, 118, .52); border-left-color: #ff4d6d; background: rgba(96, 18, 34, .36); }
+.quality-card-evidence__head strong { color: #ffd88a; font-size: 11px; }
+.quality-card-evidence--jammed .quality-card-evidence__head strong { color: #ff9eb0; }
+.engine-evidence .quality-card-evidence__summary { margin: 3px 0 0; color: #e7f0f8; font-size: 11px; line-height: 1.45; }
+.quality-card-evidence__jammers { display: grid; gap: 3px; margin: 5px 0 0; padding: 4px 0 0; border-top: 1px dashed rgba(255, 120, 140, .28); list-style: none; }
+.quality-card-evidence__jammers li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px; font-size: 11px; color: #fff; }
+.quality-card-evidence__meta { color: #c5dae7; font-family: Consolas, "Microsoft YaHei", monospace; font-size: 11px; font-variant-numeric: tabular-nums; }
 </style>
 
 <style scoped src="./quality-cards.css"></style>

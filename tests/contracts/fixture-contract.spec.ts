@@ -95,7 +95,7 @@ describe('deterministic fixture contract', () => {
     ]) expect(validate(invalid)).toBe(false)
   })
 
-  it('链路新字段的合同允许旧数据并拒绝错误类型和重复排序', () => {
+  it('链路配置允许省略退役字段并验证旧输入的结构', () => {
     const schema = asObject(buildDeterministicFixtureSchema(openApi))
     const ajv = new Ajv2020({ allErrors: true, strict: false })
     addFormats(ajv)
@@ -113,9 +113,8 @@ describe('deterministic fixture contract', () => {
     expect(validate(config)).toBe(true)
     config.linkSettings.enabledTypes = { SAT: true, MICROWAVE: false, DATALINK: true, LASER: true, FIBER: true }
     expect(validate(config)).toBe(true)
-    config.linkSettings.priority[0] = config.linkSettings.priority[1]!
-    expect(validate(config)).toBe(false)
-    config.linkSettings.priority = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER']
+    expect(config.linkSettings).not.toHaveProperty('priority')
+    expect(validate({ ...config, linkSettings: { ...config.linkSettings, priority: ['SAT', 'SAT', 'DATALINK', 'LASER'] } })).toBe(false)
     config.links[0]!.spatialIsolationDb = -1
     expect(validate(config)).toBe(false)
   })
@@ -170,7 +169,7 @@ describe('deterministic fixture contract', () => {
     expect(jammer({ ...extension, duration: 30 })).toBe(false)
   })
 
-  it('场景导入合同兼容纯配置与完整快照，拒绝未知快照版本和外壳字段', () => {
+  it('场景导入分别校验外层非负整数与内层 X.Y 版本，沿用严格写入字段规则', () => {
     const schema = asObject(buildDeterministicFixtureSchema(openApi))
     const ajv = new Ajv2020({ allErrors: true, strict: false })
     addFormats(ajv)
@@ -180,10 +179,32 @@ describe('deterministic fixture contract', () => {
       jammers: config.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, enabled: true, elevation: 60 })),
       sensors: config.sensors.map(sensor => ({ sensorId: sensor.id, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })),
     } }
-    expect(validate({ items: [config] }), JSON.stringify(validate.errors)).toBe(true)
-    expect(validate({ items: [snapshot] }), JSON.stringify(validate.errors)).toBe(true)
-    expect(validate({ items: [{ ...snapshot, version: 2 }] })).toBe(false)
-    expect(validate({ items: [{ ...snapshot, locked: false }] })).toBe(false)
+    const amendedConfig = { ...config, schemaVersion: '2.0' }
+    for (const item of [
+      config, snapshot, amendedConfig,
+      { ...snapshot, version: 2 },
+      { ...snapshot, version: 98, config: amendedConfig },
+      { ...snapshot, version: 0, config: { ...config, schemaVersion: '17.25' } },
+      { ...snapshot, version: Number.MAX_VALUE, config: { ...config, schemaVersion: '0007.02' } },
+      { ...config, schemaVersion: '0.0' },
+    ]) {
+      expect(validate({ items: [item] }), JSON.stringify(validate.errors)).toBe(true)
+    }
+    for (const item of [
+      ...[-1, 2.5, '2', true, null, undefined, Number.NaN, Number.POSITIVE_INFINITY].map(version => ({ ...snapshot, version })),
+      ...['', 'prod', ' 2.0', '2.0\n', '2.0.1', '2', '2.', '.2', '+2.0', '-2.0', '2.0e1', '２.０',
+        '0x10', 'Infinity', 2.5, false, null, undefined, Number.NaN, Number.NEGATIVE_INFINITY]
+        .map(schemaVersion => ({ ...config, schemaVersion })),
+      { ...snapshot, locked: false },
+      { ...snapshot, uiExtensions: null },
+      { ...amendedConfig, output: undefined },
+      { ...amendedConfig, unexpected: true },
+      { ...amendedConfig, sensors: [{ ...config.sensors[0]!, detectionRange: 0 }] },
+    ]) expect(validate({ items: [item] })).toBe(false)
+    const validateWrite = ajv.compile({ ...schema, $ref: '#/$defs/ScenarioConfigWrite' })
+    expect(validateWrite(config)).toBe(true)
+    expect(validateWrite(amendedConfig)).toBe(false)
+    expect(validateWrite({ ...config, schemaVersion: 1 })).toBe(false)
   })
 
   it('约束实体类型与部署域及卫星字段，同时兼容旧卫星读取', () => {

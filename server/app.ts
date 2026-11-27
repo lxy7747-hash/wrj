@@ -72,6 +72,7 @@ import type { InitialNodeSnapshot } from '../src/features/situation/initial-node
 import type { LocalMonitorSnapshot } from '../src/features/data-exchange/local-monitor.js'
 import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
 import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
+import { snapshotReplayMap } from '../src/features/replays/replay-map-config.js'
 import { fileReceptionMapping, isPlaybackFileSource } from '../src/features/situation/file-reception.js'
 import type { LocalReportEvidence, LocalReportExportResult, LocalReportFilterResult } from '../src/contracts/domain-models.js'
 import { isLocalReport, isLocalReportExport, LOCAL_REPORT_TRENDS_ACCEPT, parseLocalReportFilter, reportTime, resolvePhaseRange } from '../src/features/reports/local-report.js'
@@ -94,9 +95,10 @@ import { attachQualityReport, baseQualityReportId, qualityReportSha256 } from '.
 import { attachEngineFrameArchive } from '../src/features/reports/engine-frame-report.js'
 import {
   EVIDENCE_KINDS, EVIDENCE_ROWS_DEFAULT, EVIDENCE_ROWS_MAX, EVIDENCE_SERIES_DEFAULT, EVIDENCE_SERIES_MAX,
-  buildFileSetSource, buildNativeArchiveSource, collectSeriesPages, decodeEvidenceCursor, encodeEvidenceCursor, evidenceFilterKey, evidenceWindow, filteredRows, normalizeEvidenceFilter, paginateRows, sampleSeries, seriesContinuityReliable, seriesRawPoints, sourceInfo,
+  buildFileSetSource, buildNativeArchiveSource, decodeEvidenceCursor, encodeEvidenceCursor, evidenceFilterKey, evidenceWindow, filteredRows, normalizeEvidenceFilter, paginateRows, sampleSeries, seriesContinuityReliable, seriesRawPoints, sourceInfo,
   type EvidenceKind, type EvidenceSeriesMeta, type EvidenceSource,
 } from '../src/features/reports/report-evidence.js'
+import { downsampleCurveRows, EXPORT_CURVE_MAX_POINTS } from './local/report-curve-downsample.js'
 
 export interface MockServerOptions {
   port?: number
@@ -163,7 +165,7 @@ export interface MockServerOptions {
   engineFrameArchive?: EngineFrameArchive
   /** 本地入口注入外部连接能力，纯 Mock 的模块闭包不引入外连和重连计时器。 */
   createEngineSnapshotClient?: (url: string, publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void | Promise<void>,
-    diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) => Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState'>>
+    diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) => Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState' | 'drainAndStop'>>
   /** 本地入口注入磁盘日志；纯Mock继续只使用有界内存，不导入文件能力。 */
   realtimeJournal?: RealtimeJournalStore
   /** 本地用UUID避免重启复用运行身份；纯Mock保留原确定性编号。 */
@@ -764,13 +766,15 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     stopping: boolean
     pageSubscribers?: number
     cancelPageDisconnect?: () => void
+    confirmPageOpen?: (actor: string) => void
     stopAfterStart?: boolean
     controlling?: boolean
     connecting?: boolean
     receiving?: boolean
     fileInitial?: InitialNodeSnapshot
     referenceParameters?: MissionResultParameters
-    completedWhileStopping?: MissionOutcome
+    outcome?: MissionOutcome
+    finalizing?: Promise<void>
     engineArchive?: EngineFrameArchiveSession
     engineArchiveScope?: EngineFrameArchiveScope
     csvOutputDirectory?: string
@@ -786,24 +790,36 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       if (csv && slot.csvOutputDirectory) await archive.publishTaskCsv(runId, slot.csvOutputDirectory, csv)
     }
   }
-  async function stopLocalMission(runId: string, slot: MissionSlot, actor: string, role: Role): Promise<void> {
-    slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
-    slot.stopping = true
-    engineSnapshots?.stop(runId)
-    slot.receiving = false
-    slot.logStreamer?.stop(); slot.logStreamer = undefined
-    slot.positionStreamer?.stop(); slot.positionStreamer = undefined
-    if (slot.messages) slot.messages.ended = true
-    try {
-      await slot.mission!.stop()
-      slot.mission = undefined
+  function finalizeLocalArchive(runId: string, slot: MissionSlot): Promise<void> {
+    return slot.finalizing ??= (async () => {
+      if (slot.messages) slot.messages.ended = true
+      slot.logStreamer?.stop(); slot.logStreamer = undefined
+      slot.positionStreamer?.stop(); slot.positionStreamer = undefined
+      if (engineSnapshots?.drainAndStop) await engineSnapshots.drainAndStop(runId)
+      else engineSnapshots?.stop(runId)
+      slot.receiving = false
       await closeEngineArchive(runId, slot)
       slot.engineArchive = undefined; slot.engineArchiveScope = undefined
+    })().catch(error => { slot.finalizing = undefined; throw error })
+  }
+
+  async function stopLocalMission(runId: string, slot: MissionSlot, actor: string, role: Role): Promise<void> {
+    slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
+    slot.confirmPageOpen = undefined
+    slot.stopping = true
+    try {
+      await slot.mission!.stop()
+      await finalizeLocalArchive(runId, slot)
+      if (slot.outcome?.errorMessage) throw new Error(slot.outcome.errorMessage)
+      slot.mission = undefined
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'mission 停止失败。'
-      if (slot.completedWhileStopping && !missionSafety(slot.taskId)) {
+      let message = error instanceof Error ? error.message : 'mission 停止失败。'
+      if (slot.outcome && !missionSafety(slot.taskId)) {
+        try { await finalizeLocalArchive(runId, slot) } catch (archiveError) {
+          if (archiveError instanceof Error && archiveError.message !== message) message += `；${archiveError.message}`
+        }
         slot.mission = undefined
-        realtime.publishRuntimeState(simulations.finishMission(runId, slot.completedWhileStopping))
+        realtime.publishRuntimeState(simulations.finishMission(runId, { ...slot.outcome, errorMessage: message }))
       } else {
         realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
       }
@@ -812,11 +828,6 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     } finally {
       if (slot.engineArchive?.failure()) auth.recordError(actor, role, 'SIMULATION_COMMAND', runId)
       slot.stopping = false
-      if (slot.mission && slot.completedWhileStopping && !missionSafety(slot.taskId)) {
-        slot.mission = undefined
-        realtime.publishRuntimeState(simulations.finishMission(runId, slot.completedWhileStopping))
-      }
-      slot.completedWhileStopping = undefined
     }
   }
 
@@ -1008,7 +1019,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.set('strict routing', true)
 
   let realtime: RealtimeController
-  let engineSnapshots: Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState'>> | undefined
+  let engineSnapshots: Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState' | 'drainAndStop'>> | undefined
   const syncEngineControl = (runId: string): void => {
     const state = engineSnapshots?.controlState?.(runId), run = simulations.get(runId)
     if (state && run.ok && ['RUNNING', 'PAUSED'].includes(run.data.uiStatus)) {
@@ -1556,9 +1567,15 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.get('/api/v1/simulations/:runId', (req, res) => {
     const runId = req.params.runId
     const requestId = 'REQ-P3-SIMULATION-GET'
-    if (requireDemoRole(req, res, auth, 'SIMULATION_READ', runId) === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SIMULATION_READ', runId)
+    if (role === undefined) return
     const result = simulations.get(runId)
     if (sendSimulationFailure(res, result, requestId)) return
+    if (req.query.pageOwner === '1') {
+      if (requireDemoRole(req, res, auth, 'SIMULATION_CONTROL', runId) === undefined) return
+      missions.get(runId)?.confirmPageOpen?.(actorForRequest(req, role))
+      res.setHeader('Cache-Control', 'no-store')
+    }
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1879,6 +1896,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         const started = simulations.startRemote(runId, remoteEngineNow())
         await beginEngineArchive(runId, slot)
         if (closing) throw new Error('服务正在关闭，未建立远端连接。')
+        // 先登记远端运行边界和 runId，再启动上游 WS，避免首帧竞态丢弃。
+        realtime.publishRuntimeState(started)
         slot.receiving = true
         if (!engineSnapshots.start(started, manifest)) throw new Error('远端连接绑定失败，请检查场景映射及运行归属。')
         syncEngineControl(runId)
@@ -1947,7 +1966,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         slot.consoleLog = process.readConsoleLog ? { runId, read: process.readConsoleLog.bind(process), timeoutMs: process.timeoutMs } : undefined
         slot.mission = process
         slot.csvOutputDirectory = process.outputDirectory
-        slot.completedWhileStopping = undefined
+        slot.finalizing = undefined
+        slot.outcome = undefined
         const started = simulations.startMission(runId, process.pid, process.startedAt)
         if (process.readPositions && options.createMissionPositionStreamer) {
           slot.positionStreamer = options.createMissionPositionStreamer(
@@ -1961,12 +1981,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           try { await streamer.start() } catch { streamer.stop(); slot.logStreamer = undefined }
         }
         await beginEngineArchive(runId, slot)
+        // 先登记本次运行边界和 runId，再启动上游连接，避免首帧或首批诊断在 runIds 就绪前被丢弃。
+        realtime.publishRuntimeState(started)
         // 可以接收外部数据。只有对端 TCP 连接归属本机进程时才开放控制。
         if (options.linkEngineWsUrl && engineSnapshots) {
           try {
             const manifest = buildEngineFrameMapping(draft.data.config)
             slot.receiving = true
-            if (!engineSnapshots.start(started, manifest, process.pid)) {
+            if (!engineSnapshots.start(started, manifest, process.pid, process.reportStartupDiagnostic)) {
               engineSnapshots.stop(runId)
               slot.receiving = false
             }
@@ -1980,22 +2002,26 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
           auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CSV_WRITE', runId)
         })
+        void process.exited?.then(() => {
+          if (slot.mission !== process) return
+          if (!closing) realtime.publishRuntimeState(simulations.markMissionExited(runId))
+          // completed 与手动 STOP 共用此归档结果并报告写盘错误。
+          void finalizeLocalArchive(runId, slot).catch(() => {})
+        })
         void process.completed.then(async outcome => {
+          if (slot.mission !== process) return
           slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
-          engineSnapshots?.stop(runId)
-          slot.logStreamer?.stop(); slot.logStreamer = undefined
-          slot.positionStreamer?.stop(); slot.positionStreamer = undefined
-          try { await closeEngineArchive(runId, slot) } catch (error) {
+          slot.confirmPageOpen = undefined
+          slot.outcome = outcome
+          try { await finalizeLocalArchive(runId, slot) } catch (error) {
             const message = error instanceof Error ? error.message : '引擎帧归档落盘失败。'
-            if (slot.mission === process && !closing) {
+            if (slot.mission === process && !closing && !slot.stopping) {
               realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
               auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
             }
             return
-          } finally { slot.engineArchive = undefined; slot.engineArchiveScope = undefined }
-          if (slot.mission !== process || closing) return
-          if (slot.messages) slot.messages.ended = true
-          if (slot.stopping) { slot.completedWhileStopping = outcome; return }
+          }
+          if (slot.mission !== process || closing || slot.stopping) return
           slot.mission = undefined
           const safety = missionSafety(slot.taskId)
           const finished = safety ? simulations.markMissionStopUncertain(runId, safety.message) : simulations.finishMission(runId, outcome)
@@ -2004,7 +2030,6 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         })
         auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         const current = simulations.get(runId)
-        realtime.publishRuntimeState(current.ok ? current.data : started)
         slot.positionStreamer?.start()
         res.status(200).json(success(current.ok ? current.data : started, pageMeta(requestId)))
       } catch (error) {
@@ -2802,7 +2827,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId) === undefined) return
     try {
       if (!isMissionResultId(req.params.resultId) || Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
-      res.vary('Accept')
+      res.vary('Accept').vary('X-Mission-Result-View')
       const includeMetricTrends = req.header('accept') === LOCAL_REPORT_TRENDS_ACCEPT
       // 报告视图优先读取轻量快照（不含回放轨迹），避免打开报告时加载整份回放。
       if (req.header('x-mission-result-view') === 'report' && options.missionResults?.getReportView) {
@@ -2819,6 +2844,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }
       const snapshot = await options.missionResults?.get(req.params.resultId)
       if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '未找到指定运行结果，未切换到其他文件。' })); return }
+      if (req.header('x-mission-result-view') === 'replay') {
+        const { record, replay } = snapshot
+        let replayMap = snapshot.replayMap
+        if (!replayMap && !record.executionSource) {
+          const saved = scenarios.get(record.scenarioId)
+          if (saved.ok && saved.data.revision === record.revision) replayMap = snapshotReplayMap(saved.data.config)
+        }
+        res.json(success({ record, replay, replayMap }, pageMeta('REQ-MISSION-RESULT-GET')))
+        return
+      }
       if (req.header('x-mission-result-view') === 'report') {
         let initialFilter: Omit<LocalReportFilterResult, 'report'> | undefined
         let baseReport = snapshot.report
@@ -3180,28 +3215,39 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       let charts: Array<{ title: string; kind: 'LINE' | 'BAR'; unit: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; sourceRange: string }>
       let sections: Array<{ title: string; columns: string[]; rows: string[][] }>
       if (source.sourceKind === 'NATIVE_ARCHIVE') {
-        // 有界：按目录逐条曲线两遍流式采样、按 kind 分页取前 200 行，均不积累完整明细数组。
+        // 有界单遍流式导出：一次扫描 JSONL 同时按极值保真分桶所有曲线，避免按曲线重复扫盘与内存暴涨。
         charts = []
-        for (const meta of source.series) {
-          const collected: Array<{ time: number; value: number; breakBefore?: boolean }> = []
-          let offset = 0, rawCount = 0, complete = false
-          for (let guard = 0; guard < 10000; guard += 1) {
-            const points = await options.engineFrameArchive!.querySeriesPoints(snapshot.record.runId!, nativeScope, meta.seriesId, selection, EVIDENCE_SERIES_MAX, sourceSha256, offset)
-            if (!points) throw new Error('EVIDENCE_SERIES_PAGE_FAILED')
-            if (guard === 0) rawCount = points.rawCount
-            collected.push(...points.points)
-            if (points.nextOffset === null) { complete = true; break }
-            if (points.points.length === 0) throw new Error('EVIDENCE_SERIES_PAGE_STALLED')
-            offset = points.nextOffset
+        if (options.engineFrameArchive!.queryAllSeriesDownsampled) {
+          const allSeries = await options.engineFrameArchive!.queryAllSeriesDownsampled(
+            snapshot.record.runId!,
+            nativeScope,
+            selection,
+            EXPORT_CURVE_MAX_POINTS,
+            sourceSha256,
+          )
+          if (!allSeries) throw new Error('EVIDENCE_SERIES_PAGE_FAILED')
+          for (const item of allSeries) {
+            if (!item.points.length) continue
+            charts.push({
+              title: `${item.meta.seriesId}（展示 ${item.points.length} 点 · 原始 ${item.rawCount} · ${item.sampling}）`,
+              kind: 'LINE' as const,
+              unit: item.meta.unit,
+              sourceRange: `${source.label} · SHA-256 ${source.sourceSha256} · 按冻结帧步长判连续`,
+              rows: item.points.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })),
+            })
           }
-          if (!complete) throw new Error('EVIDENCE_SERIES_PAGE_LIMIT')
-          if (!collected.length) continue
-          const sampling = rawCount <= collected.length ? 'FULL' : 'DOWNSAMPLED'
-          for (let start = 0; start < collected.length; start += EVIDENCE_SERIES_MAX) {
-            const chunk = collected.slice(start, start + EVIDENCE_SERIES_MAX)
-            const chunkIndex = start / EVIDENCE_SERIES_MAX
-            charts.push({ title: `${meta.seriesId}（第${chunkIndex + 1}段 · 展示 ${chunk.length} 点 · 原始 ${rawCount} · ${sampling}）`, kind: 'LINE' as const, unit: meta.unit,
-              sourceRange: `${source.label} · SHA-256 ${source.sourceSha256} · 按冻结帧步长判连续`, rows: chunk.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) })
+        } else {
+          for (const meta of source.series) {
+            const points = await options.engineFrameArchive!.querySeriesPoints(snapshot.record.runId!, nativeScope, meta.seriesId, selection, EXPORT_CURVE_MAX_POINTS, sourceSha256, 0)
+            if (!points) throw new Error('EVIDENCE_SERIES_PAGE_FAILED')
+            if (!points.points.length) continue
+            charts.push({
+              title: `${meta.seriesId}（展示 ${points.points.length} 点 · 原始 ${points.rawCount} · ${points.sampling}）`,
+              kind: 'LINE' as const,
+              unit: meta.unit,
+              sourceRange: `${source.label} · SHA-256 ${source.sourceSha256} · 按冻结帧步长判连续`,
+              rows: points.points.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })),
+            })
           }
         }
         sections = []
@@ -3216,18 +3262,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         charts = source.series.flatMap(meta => {
           const raw = seriesRawPoints(source, meta, filter, window)
           if (!raw.length) return []
-          const identity = { reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId!, sourceSha256, filterKey: evidenceFilterKey(filter), kind: meta.kind, seriesId: meta.seriesId, seriesMaxPoints: EVIDENCE_SERIES_MAX }
-          // 导出必须循环消费全部必要续页，覆盖完整筛选时段；每图点数上限，不把无穷点塞入一张图。
-          const all = collectSeriesPages(raw, EVIDENCE_SERIES_MAX, identity)
+          // 导出曲线统一按极值保真分桶降采样至单图有界点数，避免超密断帧把单条曲线拆成几十张巨图。
+          const sampled = downsampleCurveRows(raw, EXPORT_CURVE_MAX_POINTS)
           const continuity = seriesContinuityReliable(meta) ? '按冻结步长判连续' : '连续性不可确定（缺可靠步长）'
-          const chunks: typeof all[] = []
-          for (let index = 0; index < all.length; index += EVIDENCE_SERIES_MAX) chunks.push(all.slice(index, index + EVIDENCE_SERIES_MAX))
-          return chunks.map((points, chunkIndex) => ({
-            title: `${meta.seriesId}（第${chunkIndex + 1}/${chunks.length}段 · 展示 ${points.length} 点 · 原始 ${raw.length} · ${raw.length > all.length ? 'DOWNSAMPLED' : 'FULL'}）`,
-            kind: 'LINE' as const, unit: meta.unit,
+          return [{
+            title: `${meta.seriesId}（展示 ${sampled.length} 点 · 原始 ${raw.length} · ${raw.length > sampled.length ? 'DOWNSAMPLED' : 'FULL'}）`,
+            kind: 'LINE' as const,
+            unit: meta.unit,
             sourceRange: `${source.label} · SHA-256 ${source.sourceSha256} · ${continuity}`,
-            rows: points.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })),
-          }))
+            rows: sampled.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })),
+          }]
         })
         sections = source.capabilities.map(kind => {
           const all = filteredRows(source.rowsByKind[kind] ?? [], filter, window)
@@ -3296,7 +3340,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       }
       try {
-        const snapshot = typeof resultId === 'string' ? await options.missionResults?.get(resultId) : undefined
+        const snapshot = typeof resultId === 'string' ? await options.missionResults?.get(resultId, req.body.filter !== undefined) : undefined
         let report = resultId !== undefined ? snapshot?.report ?? null
           : archiveId !== undefined ? options.archiveStorage?.get(archiveId)?.report ?? null : await options.loadLocalReport!()
         if (report !== null && !isLocalReport(report)) throw new Error('invalid local report')
@@ -3312,17 +3356,20 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           catch { res.status(409).json(failure('FILTER_UNSUPPORTED', 409, { message: '筛选索引不可用或条件无效，请重新生成结果。' })); return }
         }
         if (!options.exportLocalReport) throw new Error('export unavailable')
-        let comparisons: MissionResultParameterComparison[] = snapshot?.parameters ? [{ record: snapshot.record, parameters: snapshot.parameters }] : []
-        if (snapshot) {
-          // 同一场景最多读取 12 次完成结果；无参数快照的旧结果保留可导出性，但不伪造比较值。
-          try {
-            const records = await options.missionResults?.list() ?? []
-            const candidateIds = [snapshot.record.resultId, ...records.filter(record => record.scenarioId === snapshot.record.scenarioId).map(record => record.resultId)]
-            const resolved = await Promise.all([...new Set(candidateIds)].slice(0, 12).map(id => options.missionResults!.get(id)))
-            comparisons = resolved.flatMap(candidate => candidate?.parameters === undefined ? [] : [{ record: candidate.record, parameters: candidate.parameters }])
-          } catch { /* 其他历史结果不可读时，仍保留当前已校验快照及其参考配置标记。 */ }
+        const comparisons: MissionResultParameterComparison[] = snapshot?.parameters ? [{ record: snapshot.record, parameters: snapshot.parameters }] : []
+        if (req.body.format === 'CSV' && snapshot && options.missionResults) {
+          const records = await options.missionResults.list().catch(() => [])
+          const historyIds = new Set(records.filter(record => record.scenarioId === snapshot.record.scenarioId
+            && record.resultId !== snapshot.record.resultId).map(record => record.resultId))
+          // 同一场景最多比较 12 次运行；逐份读取历史快照，只保留其中的参数。
+          for (const id of [...historyIds].slice(0, 11)) {
+            const candidate = await options.missionResults.get(id, false).catch(() => null)
+            if (candidate?.parameters !== undefined) comparisons.push({ record: candidate.record, parameters: candidate.parameters })
+          }
         }
-        report = await reportWithQuality(report, snapshot?.record, snapshot?.parameters?.phases, req.body.filter, reportId, snapshot?.report.localEvidence?.endTimeS, { sourceEvidence: snapshot?.report.localEvidence })
+        report = await reportWithQuality(report, snapshot?.record, snapshot?.parameters?.phases, req.body.filter, reportId, snapshot?.report.localEvidence?.endTimeS, {
+          sourceEvidence: snapshot?.report.localEvidence, includeMetricTrends: req.body.format !== 'CSV',
+        })
         if (report.reportId !== reportId || report.localEvidence?.quality?.source.sha256 !== req.body.qualitySha256) {
           res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '质量来源已变化，请重新加载报告后导出。' }))
           return
@@ -4261,17 +4308,25 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const slot = missions.get(run.runId) ?? { taskId: run.taskId, stopping: false } as MissionSlot
       missions.set(run.runId, slot)
       slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
+      slot.confirmPageOpen = undefined
       slot.stopAfterStart = false
       slot.pageSubscribers = (slot.pageSubscribers ?? 0) + 1
       return () => {
         slot.pageSubscribers = (slot.pageSubscribers ?? 1) - 1
         if (slot.pageSubscribers > 0 || closing) return
-        slot.cancelPageDisconnect = missionClock.schedule(MISSION_PAGE_RECONNECT_MS, () => {
-          slot.cancelPageDisconnect = undefined
-          if ((slot.pageSubscribers ?? 0) > 0 || closing) return
-          if (slot.starting) { slot.stopAfterStart = true; return }
-          void stopAbandonedMission(run.runId, slot, actor, role)
-        })
+        const confirmPageOpen = (requestActor: string): void => {
+          if (requestActor !== actor || closing) return
+          slot.cancelPageDisconnect?.()
+          slot.cancelPageDisconnect = missionClock.schedule(MISSION_PAGE_RECONNECT_MS, () => {
+            slot.cancelPageDisconnect = undefined
+            slot.confirmPageOpen = undefined
+            if ((slot.pageSubscribers ?? 0) > 0 || closing) return
+            if (slot.starting) { slot.stopAfterStart = true; return }
+            void stopAbandonedMission(run.runId, slot, actor, role)
+          })
+        }
+        slot.confirmPageOpen = confirmPageOpen
+        confirmPageOpen(actor)
       }
     })
   httpServer.listen(port, publicOrigin ? options.host ?? '0.0.0.0' : options.access?.listenHost ?? '127.0.0.1')
@@ -4298,19 +4353,25 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
      */
     close: () => {
       closing = true
-      engineSnapshots?.stop()
       closePromise ??= (async () => {
         const errors: unknown[] = []
-        const stopped = await Promise.allSettled([...missions.values()].map(async slot => {
+        const stopped = await Promise.allSettled([...missions.entries()].map(async ([runId, slot]) => {
           slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
+          slot.confirmPageOpen = undefined
           await slot.starting?.catch(() => undefined)
           slot.logStreamer?.stop(); slot.logStreamer = undefined
           slot.positionStreamer?.stop(); slot.positionStreamer = undefined
-          await slot.mission?.stop()
-          slot.mission = undefined
-          await closeEngineArchive(slot.engineArchiveScope?.runId ?? '', slot)
-          slot.engineArchive = undefined; slot.engineArchiveScope = undefined
+          if (slot.mission || slot.finalizing) {
+            await slot.mission?.stop()
+            await finalizeLocalArchive(runId, slot)
+            slot.mission = undefined
+          } else {
+            engineSnapshots?.stop(runId)
+            await closeEngineArchive(runId, slot)
+            slot.engineArchive = undefined; slot.engineArchiveScope = undefined
+          }
         }))
+        engineSnapshots?.stop()
         for (const result of stopped) if (result.status === 'rejected') errors.push(result.reason)
         if (!realtimeClosed) {
           try { await realtime.close(); realtimeClosed = true } catch (error) { errors.push(error) }

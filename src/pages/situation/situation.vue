@@ -5,7 +5,7 @@ import { canVisitMenu } from '../../features/admin/access-control'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
-import { MAP_CONFIG } from '../../config/map.config'
+import { MAP_CONFIG, buildNodeSublabelMap, nodeCategory } from '../../config/map.config'
 import { APP_CONFIG } from '../../config/app.config'
 import type { DetectionEvent, Link, SwitchEvent, UiLinkStatus, UiSimulationStatus } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
@@ -16,8 +16,9 @@ import RuntimeLinkDecisionPanel from '../../components/situation/RuntimeLinkDeci
 import EngineFramePanel from '../../components/situation/EngineFramePanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
+import WsConnectionIndicator from '../../components/situation/WsConnectionIndicator.vue'
 import MissionConsoleLog from '../../components/situation/MissionConsoleLog.vue'
-import type { ConfiguredLinkSwitchState, SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
+import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
   JAMMER_TYPE_LABELS,
@@ -26,6 +27,7 @@ import {
   formatSimulationTime,
   getJammerTypeLabel,
   getPlatformName,
+  qualityNodeOptionLabel,
   selectSituationLinksWithPlatforms,
   selectSituationMetrics,
   type SituationLinkView,
@@ -35,7 +37,7 @@ import { useScenarioStore } from '../../stores/scenario'
 import { wattsToDbm } from '../../features/scenarios/jammer-settings'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { useRuntimeQualityStore, type RuntimeQualityScope } from '../../stores/runtime-quality'
-import { RUNTIME_STATUS_LABELS, runtimeDecisionReason, selectRuntimeQualityViews } from '../../features/situation/runtime-quality-view'
+import { runtimeDecisionReason, selectRuntimeQualityViews } from '../../features/situation/runtime-quality-view'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { isInitialNodeSnapshot, platformMapSide, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
 import { selectFileCommunicationLinks, FILE_COMMUNICATION_LABELS } from '../../features/situation/file-communication-links'
@@ -44,13 +46,14 @@ import { selectReplayNodes } from '../../features/replays/local-replay'
 import { useReplayStore } from '../../stores/replay'
 import { isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { createMissionPositionTimeline, isMissionPositionSnapshot, type MissionPositionSnapshot } from '../../features/situation/mission-positions'
+import type { PositionUpdate } from '../../features/situation/position-updates'
 import { createLiveMessageTracker, type LiveMessageState } from '../../features/situation/live-message-flows'
 import { isMissionMessageSnapshot } from '../../features/situation/mission-messages'
 import { unwrapSuccessData } from '../../stores/api-envelope'
 import { isQualityDataset } from '../../features/data-exchange/quality-records'
 import { saveDownload } from '../../features/shared/download'
-import { resolveEngineSwitchHighlights } from '../../features/situation/engine-route-highlights'
-import { resolveEngineFrameConfiguredLinks } from '../../features/situation/engine-link-statuses'
+import { latestMapSwitches } from '../../features/situation/engine-route-highlights'
+import { resolveEngineFrameConfiguredLinks, selectMapFocusLinks, selectVisibleMapLinks } from '../../features/situation/engine-link-statuses'
 import { createEngineLinkHoverLookup } from '../../features/situation/engine-link-hover'
 import { fileReceptionLinks, fileReceptionScenarioId, playbackFileSource } from '../../features/situation/file-reception'
 import { canSendEngineControl } from '../../features/situation/engine-control'
@@ -59,8 +62,6 @@ import { FramePlaybackClock, FRAME_PLAYBACK_RENDER_MS, FRAME_PLAYBACK_TIMEOUT_MS
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
 const BUSINESS_NODE_CAPACITY = 50
-// 用户约定的展示名称；底层仍保留设备证据，不据此推断切换或干扰。
-const FILE_LINK_STATUS_LABELS = { 开启: '正常', 关闭: '切换', 未知: '干扰' } as const
 const BUSINESS_NODE_TYPES = new Set([
   'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE', 'AIRBORNE_MISSION_CLUSTER',
 ])
@@ -72,6 +73,7 @@ const summaryTabs: ReadonlyArray<{ key: SummaryTab; label: string }> = [
 ]
 
 const activeTab = ref<SummaryTab>('nodes')
+const auth = useAuthStore()
 const simulationStore = useSimulationStore()
 const referenceScenarios = useScenarioStore()
 const referenceScenarioId = ref('')
@@ -105,6 +107,7 @@ const stopPending = ref(false)
 const selectedNodeId = ref('')
 const selectedLinkId = ref('')
 const linkDialogVisible = ref(false)
+const linkDetailDirections = shallowRef<readonly Pick<Link, 'id' | 'direction'>[]>([])
 const telemetryTab = ref('status')
 const qualityLoadMessage = ref('')
 const sceneSummaryCollapsed = ref(false)
@@ -171,7 +174,9 @@ const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
 const missionPositions = ref<MissionPositionSnapshot | null>(null)
 const missionPositionTimeline = createMissionPositionTimeline()
 watch(missionPositions, snapshot => missionPositionTimeline.accept(snapshot?.positions ?? null), { flush: 'sync' })
+const pausedMission = shallowRef<{ nodes: PositionUpdate[]; time: number } | null>(null)
 const displayedMissionPositions = computed(() => {
+  if (pausedMission.value) return pausedMission.value.nodes
   const nodes = missionPositions.value?.positions?.nodes ?? []
   const frame = runtimeQualityStore.engineFrame
   return frame && frame.runId === simulationRun.value?.runId ? missionPositionTimeline.at(frame.simulationTime) : nodes
@@ -204,13 +209,13 @@ const runtimeQualityScope = computed<RuntimeQualityScope | null>(() => {
     : null
 })
 let qualityLoadRevision = 0
+const qualityScopeLinks = computed(() => combinedPlayback.value && initialSnapshot.value
+  ? fileReceptionLinks(initialSnapshot.value) : selectedScene.value?.config.links ?? [])
 /** 当前质量上下文的语义身份：认证/会话 + 作用域五字段 + 顺序无关的链路集合；对象/数组实例刷新不算变化。 */
 const runtimeQualityIdentity = computed(() => {
   const scope = runtimeQualityScope.value
   const auth = useAuthStore()
-  const ids = combinedPlayback.value && initialSnapshot.value
-    ? fileReceptionLinks(initialSnapshot.value).map(link => link.id)
-    : selectedScene.value?.config.links.map(link => link.id) ?? []
+  const ids = qualityScopeLinks.value.map(link => link.id)
   const scopeKey = scope ? [scope.taskId, scope.runId, scope.scenarioId, scope.revision, scope.startedAt].join('\u0000') : ''
   // 顺序无关但保留重复/非法身份：不去重，避免重复 ID 或空/非字符串被隐藏为“未变化”。
   const linkKey = ids.map(id => `${typeof id}:${String(id)}`).sort().join('\u0000')
@@ -218,14 +223,13 @@ const runtimeQualityIdentity = computed(() => {
 })
 watch(runtimeQualityIdentity, () => {
   const scope = runtimeQualityScope.value
-  const ids = combinedPlayback.value && initialSnapshot.value
-    ? fileReceptionLinks(initialSnapshot.value).map(link => link.id)
-    : selectedScene.value?.config.links.map(link => link.id) ?? []
+  const ids = qualityScopeLinks.value.map(link => link.id)
   const epoch = runtimeQualityStore.activate(scope, ids)
   if (scope) void loadRuntimeQuality(scope, epoch)
 }, { immediate: true, flush: 'sync' })
 // 本地位置和链路独立到达，展示只推进到两者都已收到的仿真时刻；结束时收齐全部尾帧。
-watch(() => [runtimeQualityStore.epoch, missionPositionSource.value, simulationRun.value?.configLocked, missionPositions.value] as const, () => {
+watch(() => [runtimeQualityStore.epoch, missionPositionSource.value, simulationRun.value?.configLocked, missionPositions.value, pausedMission.value] as const, () => {
+  if (pausedMission.value) return
   runtimeQualityStore.setPresentationTimes(missionPositionSource.value && simulationRun.value?.configLocked && missionPositions.value?.positions?.nodes.length
     ? missionPositionTimeline.times() : null)
 }, { immediate: true, flush: 'sync' })
@@ -349,7 +353,7 @@ watch(displayConnected, connected => {
 }, { flush: 'sync' })
 watch(fileTime, time => { if (!fileSliderDragging.value) fileSliderTime.value = time })
 function fileTimeLabel(time: number): string {
-  return `${Math.floor(time / 60)}分${Math.floor(time % 60)}秒`
+  return formatSimulationTime(time, 'minutes')
 }
 async function seekFileTime(time: number | number[]): Promise<void> {
   if (typeof time === 'number' && !combinedActive.value) {
@@ -384,34 +388,13 @@ const mapNodes = computed(() => selectedScene.value
     ...(showInitialSceneMap.value ? undefined : displayedMissionPositions.value.find(node => node.platformId === platform.id)),
   }))
   : hasMapData.value && sourceState.value === 'FILE' ? fileNodes.value : [])
-const mapFocusLinks = computed(() => {
-  const scene = selectedScene.value
-  if (!scene) return []
-  const platformIds = new Set(scene.config.platforms.map(platform => platform.id))
-  return scene.config.links.filter(link => platformIds.has(link.sourcePlatformId) && platformIds.has(link.targetPlatformId))
-})
+const mapFocusLinks = computed(() => selectedScene.value ? selectMapFocusLinks(selectedScene.value.config) : [])
 const mapConfiguredLinks = computed(() => {
   const scene = selectedScene.value
   if (!scene) return undefined
   if (showInitialSceneMap.value) return []
-  const platformIds = new Set(scene.config.platforms.map(platform => platform.id))
-  const settings = readLinkSettings(scene.config)
-  const hoverFor = createEngineLinkHoverLookup(
-    runtimeQualityStore.engineFrame, runtimeQualityStore.engineSwitches.map(item => item.route),
-  )
-  return scene.config.links.flatMap(link => {
-    const status = runtimeMapStatuses.value.get(link.id)
-    if (!platformIds.has(link.sourcePlatformId) || !platformIds.has(link.targetPlatformId)
-      || !isConfiguredLinkEnabled(link, settings, scene.config.platforms)
-      || (status !== 'UP' && status !== 'DEGRADED' && status !== 'DOWN')) return []
-    const engineStatus = runtimeStatusMap.value.has(link.id) ? undefined : engineSegmentStatusMap.value.get(link.id)
-    const displayed = engineStatus?.relayBypassed ? { ...link, relayPlatformId: null } : link
-    if (!engineStatus) return [displayed]
-    const relayId = displayed.relayPlatformId
-    const route = relayId ? [displayed.sourcePlatformId, relayId, displayed.targetPlatformId]
-      : [displayed.sourcePlatformId, displayed.targetPlatformId]
-    return [{ ...displayed, distanceM: engineStatus.distanceM ?? undefined, hover: hoverFor(link.id, route) }]
-  })
+  return selectVisibleMapLinks(scene.config, mapFocusLinks.value, runtimeMapStatuses.value, engineSegmentStatusMap.value,
+    createEngineLinkHoverLookup(runtimeQualityStore.engineFrame, runtimeQualityStore.engineSwitches.map(item => item.route)))
 })
 const missionPositionTime = computed(() => displayedMissionPositions.value.length
   ? Math.max(...displayedMissionPositions.value.map(node => node.time)) : null)
@@ -426,10 +409,23 @@ const simulationRunProgress = computed(() => {
   if (simulationStatus.value !== 'RUNNING' && simulationStatus.value !== 'PAUSED') return null
   const { totalDuration } = run.canonical
   if (!(totalDuration > 0)) return null
-  const currentTime = Math.min(totalDuration, runtimeQualityStore.engineFrame?.runId === run.runId ? runtimeQualityStore.engineFrame.simulationTime : Math.max(run.canonical.currentTime, missionPositionTime.value ?? 0))
+  const currentTime = Math.min(totalDuration, pausedMission.value?.time ?? (runtimeQualityStore.engineFrame?.runId === run.runId
+    ? runtimeQualityStore.engineFrame.simulationTime : Math.max(run.canonical.currentTime, missionPositionTime.value ?? 0)))
   const percent = Math.min(100, Math.max(0, currentTime / totalDuration * 100))
   return { percent, currentTime, totalDuration }
 })
+function freezeMissionDisplay(): void {
+  if (!realMissionMode.value || !simulationRun.value?.configLocked || pausedMission.value) return
+  pausedMission.value = { nodes: displayedMissionPositions.value, time: simulationRunProgress.value?.currentTime ?? simulationTime.value }
+  runtimeQualityStore.setPresentationPaused(true)
+}
+function releaseMissionDisplay(): void {
+  if (!pausedMission.value) return
+  pausedMission.value = null
+  runtimeQualityStore.setPresentationPaused(false)
+}
+watch(() => simulationRun.value?.configLocked ? missionPositionSource.value : null, releaseMissionDisplay, { flush: 'sync' })
+
 const latestEngineJammerTopic = computed(() => telemetryStore.engineJammerUpdates.findLast(update => !combinedPlayback.value || update.simulationTime <= fileTime.value) ?? null)
 const latestEngineSwitchTopic = computed(() => telemetryStore.engineSwitchUpdates.findLast(update => !combinedPlayback.value || update.simulationTime <= fileTime.value) ?? null)
 
@@ -542,7 +538,7 @@ watch(missionMessageSource, (source, _, onCleanup) => {
       cursor = data.cursor
       hasMore = data.hasMore
       const activeRun = simulationRun.value
-      const allowNewPulses = activeRun?.runId === runId && activeRun.configLocked && activeRun.uiStatus === 'RUNNING' && !stopPending.value
+      const allowNewPulses = activeRun?.runId === runId && activeRun.configLocked && activeRun.uiStatus === 'RUNNING' && !stopPending.value && !pausedMission.value
       liveMessageState.value = liveMessageTracker.ingest(data, { allowNewPulses })
     } catch {
       nextDelay = 1_500
@@ -550,7 +546,7 @@ watch(missionMessageSource, (source, _, onCleanup) => {
       clearTimeout(timeout)
       reading = false
       const activeRun = simulationRun.value
-      const running = activeRun?.runId === runId && activeRun.configLocked && activeRun.uiStatus === 'RUNNING' && !stopPending.value
+      const running = activeRun?.runId === runId && activeRun.configLocked && activeRun.uiStatus === 'RUNNING' && !stopPending.value && !pausedMission.value
       if (!cancelled && !endpointUnavailable && (running || hasMore || finalRead)) {
         const delay = hasMore || finalRead ? 50 : nextDelay
         finalRead = false
@@ -804,6 +800,7 @@ const fileLinksForSummary = computed(() => {
 const displayedLinks = computed(() => {
   if (selectedScene.value) {
     const scene = selectedScene.value
+    const settings = readLinkSettings(scene.config)
     const platformIds = new Set(scene.config.platforms.map(platform => platform.id))
     const platforms = new Map(scene.config.platforms.map(platform => [platform.id, platform]))
     // 只展示两端节点都存在的链路，避免表格和地图出现缺少设备端点的链路。
@@ -817,6 +814,7 @@ const displayedLinks = computed(() => {
         destinationName: platforms.get(link.targetPlatformId)!.name,
         live: null,
         configured: link,
+        disabled: !isConfiguredLinkEnabled(link, settings, scene.config.platforms),
         file: null,
       }))
   }
@@ -854,25 +852,41 @@ const selectedLink = computed(() => situationLinks.value.find((link) => link.lin
 // 引擎按设备段给出状态；按明确单段、中继两跳聚合或中继绕过直连段分别投影，不冒充本机单段射频数值。
 const runtimeStatusMap = computed(() => new Map(runtimeQualityStore.linkStatuses.filter(value => !('source' in value)).map(value => [value.linkId, value])))
 const engineSegmentStatusMap = computed(() =>
-  resolveEngineFrameConfiguredLinks(runtimeQualityStore.engineFrame, selectedScene.value?.config.links ?? []),
+  resolveEngineFrameConfiguredLinks(runtimeQualityStore.engineFrame, selectedScene.value?.config.links ?? [], selectedScene.value?.config.linkSettings?.linkCalc),
 )
-const runtimeQualityViews = computed(() => selectRuntimeQualityViews(runtimeQualityStore.snapshot, runtimeQualityStore.bindings, displayedLinks.value, simulationTime.value, runtimeStatusMap.value))
-const displayedStatusLinks = computed(() => displayedLinks.value.map(link => ({ ...link, runtimeStatus: runtimeStatusMap.value.get(link.linkId) ?? engineSegmentStatusMap.value.get(link.linkId) })))
+const runtimeQualityViews = computed(() => selectRuntimeQualityViews(runtimeQualityStore.snapshot, runtimeQualityStore.bindings, displayedLinks.value, pausedMission.value?.time ?? simulationTime.value, runtimeStatusMap.value))
+const tableEngineStatuses = computed(() => combinedPlayback.value
+  ? resolveEngineFrameConfiguredLinks(runtimeQualityStore.engineFrame, qualityScopeLinks.value)
+  : engineSegmentStatusMap.value)
+const reportedEngineLinkIds = computed(() => new Set(runtimeQualityStore.engineFrame?.links.flatMap(segment => segment.linkIds)))
+const displayedStatusLinks = computed(() => displayedLinks.value.map(link => {
+  const assessment = runtimeStatusMap.value.get(link.linkId)
+  const engine = tableEngineStatuses.value.get(link.linkId)
+  let status: UiLinkStatus | 'UNKNOWN' | 'NO_DATA' | 'DISABLED' = 'NO_DATA'
+  let title = '当前帧未收到这条链路的状态数据'
+  if (link.configured && link.disabled) {
+    status = 'DISABLED'
+    title = '这条链路在当前场景中已停用'
+  } else if (assessment && assessment.reason !== 'MEASUREMENT_MISSING') {
+    status = assessment.status
+    title = runtimeDecisionReason(assessment.reason)
+  } else if (engine) {
+    status = engine.status
+    title = `引擎分段 ${engine.frameId}，按分段状态及场景 BER 门限显示`
+  } else if (reportedEngineLinkIds.value.has(link.linkId) || (runtimeQualityStore.snapshot && runtimeQualityViews.value.has(link.linkId))) {
+    status = 'UNKNOWN'
+    title = '已收到关联数据，尚无法判定整条链路的状态'
+  } else if (link.live) {
+    status = link.live.status
+    title = link.live.reason
+  }
+  if (link.file) title += `。设备启停证据：${link.file.status}`
+  return { ...link, status, title }
+}))
 const runtimeMapStatuses = computed(() => new Map<string, UiLinkStatus>([...runtimeStatusMap.value.entries(), ...engineSegmentStatusMap.value.entries()]
   .flatMap(([id, value]) => value.status === 'UNKNOWN' ? [] : [[id, value.status] as const])))
 /** 只高亮最近一次切换；历史证据保留供查看，不累计到地图上。 */
-const engineSwitchMap = computed(() => {
-  const frame = runtimeQualityStore.engineFrame
-  const item = runtimeQualityStore.engineSwitches.at(-1)
-  if (!frame || !item) return new Map<string, ConfiguredLinkSwitchState>()
-  // 无冻结证据时仅解析同帧，不能用当前帧猜测历史路径。
-  const resolved = item.resolution ?? (item.frameId === frame.frameId ? resolveEngineSwitchHighlights(frame, item.route.oldNodes, item.route.nodes) : undefined)
-  if (!resolved) return new Map<string, ConfiguredLinkSwitchState>()
-  const before = new Set(resolved.before.linkIds)
-  const after = new Set(resolved.after.linkIds)
-  return new Map([...new Set([...before, ...after])].map(id => [id,
-    before.has(id) && after.has(id) ? 'BOTH' : before.has(id) ? 'BEFORE' : 'AFTER'] as const))
-})
+const engineSwitchMap = computed(() => latestMapSwitches(runtimeQualityStore.engineFrame, runtimeQualityStore.engineSwitches.at(-1)))
 const qualityLinks = computed(() => displayedLinks.value.map(link => ({
   ...(link.live ?? link), runtimeQuality: runtimeQualityViews.value.get(link.linkId) ?? null,
 })))
@@ -919,6 +933,7 @@ watch([selectedLink, selectedConfiguredLink, selectedFileLink], ([live, configur
 watch(() => selectedScene.value?.config.scenario.id, () => {
   selectedNodeId.value = ''
   selectedLinkId.value = ''
+  linkDetailDirections.value = []
   mapFocusTarget.value = null
 })
 const situationMetrics = computed(() => frame.value === null
@@ -1173,7 +1188,8 @@ async function startSimulation(): Promise<void> {
     } else await filePlayback.play()
     return
   }
-  await simulationStore.start()
+  const frozen = pausedMission.value
+  if (await simulationStore.start() && !unmounted && frozen === pausedMission.value) releaseMissionDisplay()
 }
 
 /**
@@ -1194,7 +1210,9 @@ async function pauseSimulation(): Promise<void> {
     if (combinedActive.value && control && canSendEngineControl(control, 'pause')) await simulationStore.pause()
     return
   }
-  await simulationStore.pause()
+  freezeMissionDisplay()
+  const frozen = pausedMission.value
+  if (!await simulationStore.pause() && !unmounted && pausedMission.value === frozen && simulationRun.value?.engineControl?.action !== 'pause') releaseMissionDisplay()
 }
 
 /** 直接停止；保存失败保持暂停和运行锁，允许再次点击停止重试。 */
@@ -1208,6 +1226,8 @@ async function requestStop(): Promise<void> {
     && !(remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt)) return
   const epoch = sourceEpoch
   stopPending.value = true
+  const wasPaused = Boolean(pausedMission.value)
+  freezeMissionDisplay()
   try {
     if (combinedPlayback.value) {
       combinedPaused.value = true
@@ -1224,6 +1244,7 @@ async function requestStop(): Promise<void> {
     }
   } finally {
     stopPending.value = false
+    if (!wasPaused && !unmounted && epoch === sourceEpoch) releaseMissionDisplay()
   }
 }
 
@@ -1234,27 +1255,77 @@ async function requestStop(): Promise<void> {
  * @sideeffect 更新所选链路并打开详情框。
  */
 function openLinkDetails(link: SituationLinkView): void {
+  linkDetailDirections.value = []
   selectedLinkId.value = link.linkId
   linkDialogVisible.value = true
 }
 
-function openConfiguredLinkDetails(link: Link): void {
+function openConfiguredLinkDetails(link: Link, paired?: Link): void {
+  linkDetailDirections.value = paired ? (link.direction === 'FORWARD' ? [link, paired] : [paired, link]) : []
   selectedLinkId.value = link.id
   linkDialogVisible.value = true
 }
 
+function selectLinkDetailDirection(linkId: string): void {
+  if (linkDetailDirections.value.some(direction => direction.id === linkId)) selectedLinkId.value = linkId
+}
+
+const savedNodeSublabels = computed(() => buildNodeSublabelMap(selectedScene.value?.config.platforms ?? []))
+const liveNodeSublabels = computed(() => buildNodeSublabelMap(initialSnapshot.value ? fileNodes.value : frame.value?.platforms ?? []))
+
+function summaryNodeName(
+  platform: { name?: string; id?: string; platformId?: string; type?: string },
+  index: number,
+): string {
+  const id = platform.platformId ?? platform.id ?? ''
+  const name = platform.name?.trim() ?? ''
+  if (name && /\p{Script=Han}/u.test(name)) return name
+  return qualityNodeOptionLabel(name || id, index, id, nodeCategory(platform))
+}
+
+function summaryNodeSublabel(
+  platform: { name?: string; id?: string; platformId?: string; type?: string },
+  sublabels: ReadonlyMap<string, string>,
+): string {
+  const id = platform.platformId ?? platform.id ?? ''
+  const category = nodeCategory(platform)
+  if (category) {
+    return sublabels.get(id) ?? PLATFORM_TYPE_LABELS[category as keyof typeof PLATFORM_TYPE_LABELS] ?? platform.type ?? ''
+  }
+  return platform.type ?? id
+}
+
+function savedLinkRouteLabel(link: Link): string {
+  const platforms = selectedScene.value?.config.platforms ?? []
+  const platformName = (id: string) => platforms.find(item => item.id === id)?.name ?? id
+  return link.relayPlatformId
+    ? `${platformName(link.sourcePlatformId)} → ${platformName(link.relayPlatformId)} → ${platformName(link.targetPlatformId)}`
+    : `${platformName(link.sourcePlatformId)} → ${platformName(link.targetPlatformId)}`
+}
+
 /**
- * 点击全链路状态表格行时，在地图中定位，并打开已有详情。
+ * 单击全链路状态表格行时，仅在地图中定位并高亮对应链路，不弹出详情框。
  * @param link 链路表格行数据。
  * @returns 无返回值。
  */
 function handleLinkRowClick(link: typeof displayedLinks.value[number]): void {
+  selectedLinkId.value = link.linkId
+  focusLinkOnMap(link.linkId)
+}
+
+/**
+ * 双击全链路状态表格行时，在地图中定位，并打开链路质量详情弹框。
+ * @param link 链路表格行数据。
+ * @returns 无返回值。
+ */
+function handleLinkRowDblClick(link: typeof displayedLinks.value[number]): void {
   focusLinkOnMap(link.linkId)
   if (link.live) {
     openLinkDetails(link.live)
   } else if (link.configured) {
     openConfiguredLinkDetails(link.configured)
   } else if (link.file) {
+    linkDetailDirections.value = []
     selectedLinkId.value = link.linkId
     linkDialogVisible.value = true
   }
@@ -1411,11 +1482,17 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           <el-progress class="simulation-progress-bar" :percentage="simulationRunProgress.percent" :show-text="false" :stroke-width="8" />
           <span class="toolbar-timeline__time">{{ Math.round(simulationRunProgress.percent) }}%</span>
         </div>
+        <span v-if="stopPending && realMissionMode" role="status" data-testid="mission-stop-progress">
+          {{ simulationRun?.canonical.processId === null ? '进程已退出，正在保存运行数据…' : '正在停止仿真…' }}
+        </span>
         <MissionConsoleLog
           v-if="APP_CONFIG.showMissionConsoleLog && realMissionMode && sourceState === 'SCENE' && !otherSceneRun && simulationRun?.runId && (simulationRun.canonical.processId !== null || simulationRun.startedAt)"
           :run-id="simulationRun.runId"
           :running="simulationStatus === 'RUNNING'"
         />
+      </template>
+      <template #status>
+        <WsConnectionIndicator :simulation-active="simulationStatus === 'RUNNING' || simulationStatus === 'PAUSED'" />
       </template>
     </SimulationToolbar>
     <div v-if="combinedPlayback" class="parameter-reference" data-testid="file-parameter-reference">
@@ -1480,10 +1557,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <div v-for="group in savedNodeGroups" :key="group.title" class="summary-group">
                 <h3>{{ group.title }} · {{ group.platforms.length }} 个</h3>
                 <ul>
-                  <li v-for="platform in group.platforms" :key="platform.id">
+                  <li v-for="(platform, index) in group.platforms" :key="platform.id">
                     <button type="button" class="summary-focus-button" :data-testid="`focus-node-${platform.id}`"
-                      :aria-label="`在地图中定位${platform.name}`" :aria-pressed="selectedNodeId === platform.id" @click="focusNodeOnMap(platform.id)">
-                      <span>{{ platform.id }}</span><small>{{ PLATFORM_TYPE_LABELS[platform.type] }}</small>
+                      :aria-label="`在地图中定位${summaryNodeName(platform, index)}`" :aria-pressed="selectedNodeId === platform.id" @click="focusNodeOnMap(platform.id)">
+                      <span>{{ summaryNodeName(platform, index) }}</span><small>{{ summaryNodeSublabel(platform, savedNodeSublabels) }}</small>
                     </button>
                   </li>
                 </ul>
@@ -1493,8 +1570,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <ul>
                 <li v-for="link in selectedScene.config.links" :key="link.id">
                   <button type="button" class="summary-focus-button" :data-testid="`focus-link-${link.id}`"
-                    :aria-label="`在地图中定位${LINK_TYPE_LABELS[link.type]} ${link.id}`" @click="focusLinkOnMap(link.id)">
-                    <span>{{ link.id }}</span><small>{{ LINK_TYPE_LABELS[link.type] }}</small>
+                    :aria-label="`在地图中定位${LINK_TYPE_LABELS[link.type]} ${savedLinkRouteLabel(link)}`" @click="focusLinkOnMap(link.id)">
+                    <span>{{ savedLinkRouteLabel(link) }}</span><small>{{ LINK_TYPE_LABELS[link.type] }} · {{ link.direction === 'FORWARD' ? '前向' : '返向' }}</small>
                   </button>
                 </li>
               </ul>
@@ -1514,7 +1591,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <dl class="timing-list">
                 <div><dt>帧标识</dt><dd>暂无数据</dd></div>
                 <div><dt>任务 / 运行</dt><dd>{{ otherSceneRun ? '暂无数据' : `${simulationRun?.taskId} / ${simulationRun?.runId}` }}</dd></div>
-                <div><dt>仿真时刻</dt><dd>{{ otherSceneRun ? 0 : missionPositionTime ?? simulationTime }} s</dd></div>
+                <div><dt>仿真时刻</dt><dd>{{ otherSceneRun ? 0 : pausedMission?.time ?? missionPositionTime ?? simulationTime }} s</dd></div>
                 <div><dt>帧序号</dt><dd>暂无数据</dd></div>
               </dl>
             </div>
@@ -1523,16 +1600,16 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div class="summary-group">
               <h3>信息节点 · {{ initialSnapshot?.nodes.length ?? situationMetrics?.businessNodeCount }} 个</h3>
               <ul>
-                <li v-for="platform in displayedBusinessPlatforms" :key="platform.platformId">
+                <li v-for="(platform, index) in displayedBusinessPlatforms" :key="platform.platformId">
                   <button
                     type="button"
                     class="summary-focus-button"
                     :data-testid="`focus-node-${platform.platformId}`"
-                    :aria-label="`在地图中定位${platform.name}`"
+                    :aria-label="`在地图中定位${summaryNodeName(platform, index)}`"
                     :aria-pressed="selectedNodeId === platform.platformId"
                     @click="focusNodeOnMap(platform.platformId)"
                   >
-                    <span>{{ initialSnapshot ? platform.name : platform.platformId }}</span><small>{{ initialSnapshot ? platform.type : platform.name }}</small>
+                    <span>{{ summaryNodeName(platform, index) }}</span><small>{{ summaryNodeSublabel(platform, liveNodeSublabels) }}</small>
                   </button>
                 </li>
               </ul>
@@ -1540,15 +1617,15 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div v-if="!initialSnapshot" class="summary-group">
               <h3>支撑实体</h3>
               <ul>
-                <li v-for="platform in supportingPlatforms" :key="platform.platformId">
+                <li v-for="(platform, index) in supportingPlatforms" :key="platform.platformId">
                   <button
                     type="button"
                     class="summary-focus-button"
                     :data-testid="`focus-node-${platform.platformId}`"
-                    :aria-label="`在地图中定位${platform.name}`"
+                    :aria-label="`在地图中定位${summaryNodeName(platform, index)}`"
                     @click="focusNodeOnMap(platform.platformId)"
                   >
-                    <span>{{ platform.platformId }}</span><small>{{ platform.name }}</small>
+                    <span>{{ summaryNodeName(platform, index) }}</span><small>{{ summaryNodeSublabel(platform, liveNodeSublabels) }}</small>
                   </button>
                 </li>
               </ul>
@@ -1582,7 +1659,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   :aria-label="`在地图中定位${LINK_TYPE_LABELS[link.type]} ${link.sourceName}至${link.destinationName}`"
                   @click="focusLinkOnMap(link.linkId)"
                 >
-                  <span>{{ link.linkId }}</span><small>{{ LINK_TYPE_LABELS[link.type] }}</small>
+                  <span>{{ link.sourceName }} → {{ link.destinationName }}</span><small>{{ LINK_TYPE_LABELS[link.type] }}</small>
                 </button>
               </li>
             </ul>
@@ -1635,17 +1712,22 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :source-key="!hasMapData ? 'empty' : selectedScene ? `${selectedScene.config.scenario.id}:${selectedScene.revision}` : initialSnapshot?.sha256 ?? frame?.runId"
           :frame="hasMapData ? frame : null"
           :engine-frame="hasMapData && !showInitialSceneMap ? runtimeQualityStore.engineFrame : null"
+          :viewport-key="selectedScene ? `${auth.principal?.userId}:${selectedScene.config.scenario.id}:${selectedScene.revision}` : undefined"
           :trail-source-key="showInitialSceneMap ? '' : `${simulationRun?.runId ?? ''}:${simulationRun?.startedAt ?? ''}:${missionPositions?.positions?.generation ?? ''}`"
           :position-replay="sourceState === 'FILE' && ownsFilePlayback && !fileSourceMismatch ? filePlayback.localSnapshot : null"
           :initial-nodes="mapNodes"
           :configured-links="mapConfiguredLinks"
           :focus-links="mapFocusLinks"
+          :configured-scenario="selectedScene?.config"
           :configured-link-statuses="runtimeMapStatuses"
           :configured-link-switches="engineSwitchMap"
+          :latest-switch="runtimeQualityStore.engineSwitches.at(-1)"
+          :recent-switches="runtimeQualityStore.engineSwitches"
           :configured-jammers="selectedScene?.config.jammers"
           :configured-environment="selectedScene?.config.scenario.environment"
+          :link-calc-thresholds="selectedScene?.config.linkSettings?.linkCalc"
           :live-message-flows="hasMapData && sourceState === 'SCENE' && !showInitialSceneMap ? (liveMessageState?.lanes ?? []) : []"
-          :live-flow-playing="sourceState === 'SCENE' && simulationRun?.uiStatus === 'RUNNING' && !stopPending"
+          :live-flow-playing="sourceState === 'SCENE' && simulationRun?.uiStatus === 'RUNNING' && !pausedMission && !stopPending"
           :live-flow-key="missionMessageSource ?? ''"
           :file-links="hasMapData && sourceState === 'FILE' ? fileLinks : []"
           :file-message-links="hasMapData && sourceState === 'FILE' ? fileMessageLinks : []"
@@ -1655,6 +1737,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :file-speed="filePlayback.speed"
           :file-seek-revision="fileSeekRevision"
           :links="hasMapData ? mapLiveLinks : []"
+          select-nearby-links
+          separate-link-directions
           :selected-node-id="hasMapData ? selectedNodeId : ''"
           :focus-target="hasMapData ? mapFocusTarget : null"
           @select-node="selectedNodeId = $event"
@@ -1694,7 +1778,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </div>
           <div class="link-table-wrap">
             <table class="link-table" :class="{ 'link-table--quality': MAP_CONFIG.showLinkQualityColumns }">
-              <thead><tr><th>链路</th><th>体制</th><th v-if="MAP_CONFIG.showLinkQualityColumns">SNR</th><th v-if="MAP_CONFIG.showLinkQualityColumns">误码率</th><th :title="sourceState === 'FILE' ? '展示约定：开启→正常，关闭→切换，未知→干扰；不代表实际质量、切换或干扰判定' : undefined">状态</th></tr></thead>
+              <thead><tr><th>链路</th><th>体制</th><th v-if="MAP_CONFIG.showLinkQualityColumns">SNR</th><th v-if="MAP_CONFIG.showLinkQualityColumns">误码率(BER)</th><th>状态</th></tr></thead>
               <tbody>
                 <tr
                   v-for="link in displayedStatusLinks"
@@ -1702,23 +1786,20 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   tabindex="0"
                   role="button"
                   :data-link-id="link.linkId"
-                  :class="{ 'is-exception': link.live && link.live.status !== 'UP', 'is-switch-before': engineSwitchMap.get(link.linkId) === 'BEFORE', 'is-switch-after': engineSwitchMap.get(link.linkId) === 'AFTER', 'is-switch-both': engineSwitchMap.get(link.linkId) === 'BOTH' }"
+                  title="单击定位链路，双击查看详情"
+                  :class="{ 'is-exception': link.status === 'DOWN', 'is-switch-before': engineSwitchMap.get(link.linkId) === 'BEFORE', 'is-switch-after': engineSwitchMap.get(link.linkId) === 'AFTER', 'is-switch-both': engineSwitchMap.get(link.linkId) === 'BOTH' }"
                   @click="handleLinkRowClick(link)"
-                  @keydown.enter="handleLinkRowClick(link)"
+                  @dblclick="handleLinkRowDblClick(link)"
+                  @keydown.enter="handleLinkRowDblClick(link)"
                 >
                   <td><strong>{{ link.relayName ? `${link.sourceName}→${link.relayName}→${link.destinationName}` : `${link.sourceName}→${link.destinationName}` }}</strong><small v-if="engineSwitchMap.get(link.linkId)">最近一次切换：{{ engineSwitchMap.get(link.linkId) === 'BEFORE' ? '前' : engineSwitchMap.get(link.linkId) === 'AFTER' ? '后' : '前后' }}路径</small></td>
                   <td>{{ link.file ? (link.type === 'DATALINK' ? '数传' : (FILE_COMMUNICATION_LABELS[link.type as keyof typeof FILE_COMMUNICATION_LABELS] ?? link.type).replace('通信', '')) : (link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '')) }}</td>
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? link.live.snrDb.toFixed(2) : link.file ? '--' : '暂无数据' }}</td>
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? formatBer(link.live.ber) : link.file ? '--' : '暂无数据' }}</td>
                   <td>
-                    <el-tag v-if="link.runtimeStatus"
-                      :type="link.runtimeStatus.status === 'UP' ? 'success' : link.runtimeStatus.status === 'DOWN' ? 'danger' : link.runtimeStatus.status === 'DEGRADED' ? 'warning' : 'info'"
-                      :title="'source' in link.runtimeStatus ? `引擎分段 ${link.runtimeStatus.frameId}` : runtimeDecisionReason(link.runtimeStatus.reason)" :data-runtime-link-status="link.runtimeStatus.status">
-                      {{ RUNTIME_STATUS_LABELS[link.runtimeStatus.status] }}
-                    </el-tag>
-                    <LinkStateBadge v-else-if="link.live" :link="link.live" />
-                    <span v-else-if="link.file" class="link-device-status" :data-status="link.file.status" :title="`设备启停证据：${link.file.status}；名称为展示约定，不代表实际质量、切换或干扰判定`">{{ FILE_LINK_STATUS_LABELS[link.file.status] }}</span>
-                    <el-tag v-else type="danger">{{ RUNTIME_STATUS_LABELS.DOWN }}</el-tag>
+                    <LinkStateBadge :status="link.status" :title="link.title"
+                      :data-runtime-link-status="link.live ? undefined : link.status" :data-status="link.file?.status"
+                      :data-canonical-status="link.live?.canonicalStatus" :data-threshold-version="link.live?.thresholdVersion" />
                   </td>
                 </tr>
               </tbody>
@@ -1789,7 +1870,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div v-if="runtimeQualityStore.state === 'ERROR'" class="runtime-quality-feedback" role="alert" data-testid="runtime-quality-error">
               <p v-for="(issue, index) in runtimeQualityStore.errors" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</p>
             </div>
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :source-label="engineSourceLabel" :selected-link-id="selectedLinkId" :links="combinedPlayback ? fileLinks : undefined" :node-platforms="mapNodes" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :ber-thresholds="selectedScene?.config.linkSettings?.linkCalc" :source-label="engineSourceLabel" :selected-link-id="selectedLinkId" :links="combinedPlayback ? fileLinks : undefined" :node-platforms="mapNodes" />
             <QualityMetricPanel v-else
               :links="qualityLinks"
               :nodes="[...new Set(displayedLinks.flatMap(link => [link.sourceName, link.destinationName]))]"
@@ -1805,7 +1886,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             </section>
           </el-tab-pane>
           <el-tab-pane v-if="runtimeQualityStore.engineFrame || runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy class="telemetry-decisions-pane">
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="decisions" :source-label="engineSourceLabel" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="decisions" :ber-thresholds="selectedScene?.config.linkSettings?.linkCalc" :node-platforms="mapNodes" :source-label="engineSourceLabel" />
             <RuntimeLinkDecisionPanel v-else :statuses="runtimeStatusMap" :candidates="runtimeQualityStore.routeCandidates"
               :decisions="runtimeQualityStore.routeDecisions" :events="runtimeQualityStore.decisionEvents" />
           </el-tab-pane>
@@ -1836,7 +1917,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span>{{ missionPositionMessage || '正在读取本次位置数据。' }}</span>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" :engine-source-label="engineSourceLabel" :node-positions="linkFramePositions" :platforms="selectedScene?.config.platforms ?? []" />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :directions="linkDetailDirections" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" :engine-source-label="engineSourceLabel" :node-positions="linkFramePositions" :platforms="selectedScene?.config.platforms ?? []" @select-direction="selectLinkDetailDirection" />
   </section>
 </template>
 
@@ -2029,9 +2110,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .link-table tr.is-exception:hover td, .link-table tr.is-exception:focus td { background: #4a1b27; }
 .link-table td strong { display: block; white-space: normal; overflow-wrap: anywhere; }
 .link-table td small { display: block; margin-top: .2rem; color: #829db3; font-size: 11px; }
-.link-device-status { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #829db3; background: rgba(130, 157, 179, .15); font-size: 11px; white-space: nowrap; }
-.link-device-status[data-status="开启"] { color: #49e49a; background: rgba(73, 228, 154, .15); }
-.link-device-status[data-status="关闭"] { color: #ff7b7b; background: rgba(255, 123, 123, .15); }
 .jammer-list { display: block; padding: 0; }
 .jammer-list article { padding: .6rem .85rem; border-bottom: 1px solid #1e3448; color: #a8bfd4; background: transparent; }
 .jammer-list article>div:first-child { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .45rem; }

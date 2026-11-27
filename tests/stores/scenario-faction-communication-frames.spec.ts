@@ -79,22 +79,16 @@ describe('F01 所属阵营写入校验', () => {
   })
 })
 
-describe('F02 节点通信能力范围写入校验', () => {
-  it('缺失表示未配置，合法正数写入通过', () => {
+describe('已废弃的节点通信范围与参考传输距离兼容处理', () => {
+  it('旧数据携带 communicationRangeM 或 transmissionDistance 时不报错，且保存归一化时丢弃', async () => {
+    const { dropRetiredScenarioFields } = await import('../../src/features/scenarios/scenario-validation')
     const config = configuration()
-    expect(errorCodes(config, 'platforms[0].communicationRangeM')).toEqual([])
-    config.platforms[0]!.communicationRangeM = 50_000
-    const before = structuredClone(config)
+    Object.assign(config.platforms[0]!, { communicationRangeM: 0 })
+    Object.assign(config.scenario.environment, { transmissionDistance: 500 })
     expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
-    expect(config).toEqual(before)
-  })
-
-  it.each([0, -1, Number.NaN])('非正/非法取值 %s 被拒绝', (value) => {
-    const config = configuration()
-    config.platforms[0]!.communicationRangeM = value
-    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([
-      expect.objectContaining({ code: 'PLATFORM_COMMUNICATION_RANGE_INVALID', fieldPath: 'platforms[0].communicationRangeM' }),
-    ])
+    const cleaned = dropRetiredScenarioFields(structuredClone(config))
+    expect(cleaned.platforms[0]).not.toHaveProperty('communicationRangeM')
+    expect(cleaned.scenario.environment).not.toHaveProperty('transmissionDistance')
   })
 })
 

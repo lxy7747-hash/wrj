@@ -1,4 +1,34 @@
-import type { EngineFrameSnapshot, EngineLinkSegment, Link, UiLinkStatus } from '../../contracts/domain-models'
+import type { EngineFrameSnapshot, EngineLinkSegment, Link, ScenarioConfig, UiLinkStatus } from '../../contracts/domain-models'
+import { linkStatusWithBer, type BerThresholds } from '../scenarios/link-calc-defaults'
+import { isConfiguredLinkEnabled, readLinkSettings } from '../scenarios/link-settings'
+import type { createEngineLinkHoverLookup, EngineLinkHover } from './engine-link-hover'
+
+export type SituationMapLink = Link & { distanceM?: number; hover?: EngineLinkHover }
+
+export function selectMapFocusLinks(config: Pick<ScenarioConfig, 'platforms' | 'links'>): Link[] {
+  const ids = new Set(config.platforms.map(platform => platform.id))
+  return config.links.filter(link => ids.has(link.sourcePlatformId) && ids.has(link.targetPlatformId))
+}
+
+/** 两张地图共用链路显示条件、实际路径和悬浮明细。 */
+export function selectVisibleMapLinks(
+  config: Pick<ScenarioConfig, 'platforms' | 'linkSettings'>, links: readonly Link[], statuses: ReadonlyMap<string, UiLinkStatus>,
+  engineStatuses: ReadonlyMap<string, EngineConfiguredLinkStatus>,
+  hoverFor: ReturnType<typeof createEngineLinkHoverLookup>,
+): SituationMapLink[] {
+  const settings = readLinkSettings(config)
+  return links.flatMap(link => {
+    const status = statuses.get(link.id)
+    if ((status !== 'UP' && status !== 'DEGRADED' && status !== 'DOWN') || !isConfiguredLinkEnabled(link, settings, config.platforms)) return []
+    const engine = engineStatuses.get(link.id)
+    if (!engine) return [link]
+    const displayed = engine.relayBypassed ? { ...link, relayPlatformId: null } : link
+    const route = displayed.relayPlatformId
+      ? [displayed.sourcePlatformId, displayed.relayPlatformId, displayed.targetPlatformId]
+      : [displayed.sourcePlatformId, displayed.targetPlatformId]
+    return [{ ...displayed, distanceM: engine.distanceM ?? undefined, hover: hoverFor(link.id, route) }]
+  })
+}
 
 export interface EngineConfiguredLinkStatus {
   source: 'ENGINE_FRAME'
@@ -14,6 +44,12 @@ export interface EngineConfiguredLinkStatus {
 }
 
 type UsableSegment = EngineLinkSegment & { status: UiLinkStatus }
+type LinkEndpoints = Pick<Link, 'id' | 'sourcePlatformId' | 'targetPlatformId' | 'relayPlatformId'>
+
+export function engineSegmentDisplayStatus(segment: EngineLinkSegment, thresholds?: BerThresholds): EngineLinkSegment['status'] {
+  if (segment.error || segment.status === 'UNKNOWN') return 'UNKNOWN'
+  return linkStatusWithBer(segment.status, segment.quality.ber, thresholds)
+}
 
 function isUsableSegment(segment: EngineLinkSegment): segment is UsableSegment {
   return !segment.error && segment.status !== 'UNKNOWN'
@@ -49,7 +85,7 @@ function buildEntry(
 
 function resolveDirectLinkStatus(
   frame: EngineFrameSnapshot,
-  link: Link,
+  link: LinkEndpoints,
   candidates: readonly EngineLinkSegment[],
 ): EngineConfiguredLinkStatus | null {
   if (candidates.length !== 1) return null
@@ -64,7 +100,7 @@ function isSingleSharedTrunk(segments: readonly EngineLinkSegment[]): boolean {
 
 function resolveRelayedLinkStatus(
   frame: EngineFrameSnapshot,
-  link: Link,
+  link: LinkEndpoints,
   candidates: readonly EngineLinkSegment[],
 ): EngineConfiguredLinkStatus | null {
   const relayId = link.relayPlatformId
@@ -109,17 +145,20 @@ function resolveRelayedLinkStatus(
  */
 export function resolveEngineFrameConfiguredLinks(
   frame: EngineFrameSnapshot | null | undefined,
-  links: readonly Link[],
+  links: readonly LinkEndpoints[],
+  thresholds?: BerThresholds,
 ): Map<string, EngineConfiguredLinkStatus> {
   const result = new Map<string, EngineConfiguredLinkStatus>()
   if (!frame || !links.length) return result
 
   const segmentsByLinkId = new Map<string, EngineLinkSegment[]>()
   for (const segment of frame.links) {
+    const status = engineSegmentDisplayStatus(segment, thresholds)
+    const displayed = status === segment.status ? segment : { ...segment, status }
     for (const linkId of new Set(segment.linkIds)) {
       const bucket = segmentsByLinkId.get(linkId)
-      if (bucket) bucket.push(segment)
-      else segmentsByLinkId.set(linkId, [segment])
+      if (bucket) bucket.push(displayed)
+      else segmentsByLinkId.set(linkId, [displayed])
     }
   }
 

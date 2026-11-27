@@ -7,6 +7,7 @@ import { SVGRenderer } from 'echarts/renderers'
 import type { ECharts } from 'echarts/core'
 import { formatDateTime } from '../../features/shared/date-time'
 import { reportTime } from '../../features/reports/local-report'
+import { buildLineChartPoints, formatChartMinutesSeconds, formatLineChartTooltip } from '../../features/reports/chart-tooltip'
 
 echarts.use([LineChart, BarChart, RadarChart, GridComponent, TooltipComponent, LegendComponent, SVGRenderer])
 
@@ -110,20 +111,22 @@ function echartsOption(): Record<string, unknown> {
       areaStyle: { color: 'rgba(111, 195, 255, 0.2)' }, lineStyle: { color: '#6fc3ff' }, itemStyle: { color: '#6fc3ff' } }],
   }
   if (props.line) {
-    const points: Array<[number, number | null] | { value: [number, number]; symbol: 'circle'; symbolSize: number }> = []
-    data.forEach((row, index) => {
-      const time = row.time ?? index
-      if (index > 0 && row.breakBefore) points.push([time, null])
-      const isolated = (index === 0 || row.breakBefore) && (index === data.length - 1 || data[index + 1]?.breakBefore)
-      points.push(isolated ? { value: [time, row.value], symbol: 'circle', symbolSize: 6 } : [time, row.value])
-    })
+    const points = buildLineChartPoints(data)
     const xMin = props.xMin ?? 0
     const xMax = props.xMax ?? (data.length ? (data.at(-1)!.time ?? data.length - 1) : xMin)
     return {
       animation: false,
       grid: { left: 12, right: 18, top: 30, bottom: 28, containLabel: true },
-      tooltip: { trigger: 'axis', valueFormatter: (value: unknown) => `${String(value)} ${props.unit}` },
-      xAxis: { type: 'value', min: xMin, max: xMax, splitLine: { show: false }, axisLabel: { color: '#9eb4cb', fontSize: 10, formatter: (value: number) => reportTime(value) }, axisLine: { lineStyle: { color: '#526a82' } } },
+      tooltip: { trigger: 'axis', formatter: (params: unknown) => formatLineChartTooltip(params, props.unit) },
+      xAxis: {
+        type: 'value',
+        min: xMin,
+        max: xMax,
+        splitLine: { show: false },
+        axisLabel: { color: '#9eb4cb', fontSize: 10, formatter: (value: number) => reportTime(value) },
+        axisPointer: { label: { formatter: (params: { value: unknown }) => formatChartMinutesSeconds(Number(params.value)) } },
+        axisLine: { lineStyle: { color: '#526a82' } },
+      },
       yAxis: { type: 'value', minInterval: props.stepEnd ? 1 : undefined, name: props.unit, nameLocation: 'end', nameGap: 8, nameTextStyle: { color: '#9eb4cb', fontSize: 10 }, axisLabel: { color: '#9eb4cb', fontSize: 10, margin: 6 }, splitLine: { lineStyle: { color: 'rgba(158, 180, 203, 0.18)' } } },
       series: [{ type: 'line', data: points, step: props.stepEnd ? 'end' : false, symbol: 'none', connectNulls: false, lineStyle: { color: '#6fc3ff', width: 2 }, itemStyle: { color: '#6fc3ff' } }],
     }
@@ -131,7 +134,7 @@ function echartsOption(): Record<string, unknown> {
   return {
     animation: false,
     grid: { left: 12, right: 18, top: 30, bottom: 28, containLabel: true },
-    tooltip: { trigger: 'axis', valueFormatter: (value: unknown, index: number) => data[index]?.displayValue ?? `${String(value)} ${props.unit}` },
+    tooltip: { trigger: 'axis', valueFormatter: (value: unknown, index: number) => data[index]?.displayValue ?? (value == null ? '暂无数据' : `${String(value)} ${props.unit}`) },
     xAxis: { type: 'category', data: data.map(row => row.label), splitLine: { show: false }, axisLabel: { color: '#9eb4cb', fontSize: 10 }, axisLine: { lineStyle: { color: '#526a82' } } },
     yAxis: { type: 'value', name: props.unit, nameLocation: 'end', nameGap: 8, nameTextStyle: { color: '#9eb4cb', fontSize: 10 }, axisLabel: { color: '#9eb4cb', fontSize: 10, margin: 6 }, splitLine: { lineStyle: { color: 'rgba(158, 180, 203, 0.18)' } } },
     series: [{ type: 'bar', barMaxWidth: '60%', itemStyle: { color: '#6fc3ff' },

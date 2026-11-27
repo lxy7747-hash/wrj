@@ -84,7 +84,7 @@ describe('场景拆分面板', () => {
     wrapper.unmount()
   })
 
-  it('优先级支持竖向拖拽与键盘排序，取消和运行锁不修改配置', async () => {
+  it('链路设置可选择卫星，运行锁阻止修改', async () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
     config.platforms.push({ ...structuredClone(config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG' })
     const baseline = readLinkSettings(config)
@@ -99,12 +99,10 @@ describe('场景拆分面板', () => {
     expect(wrapper.find('[data-testid="link-switch-cooldown"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="link-type-enabled-MICROWAVE"]').exists()).toBe(false)
     expect(wrapper.findAllComponents({ name: 'ElSelect' })).toHaveLength(0)
-    expect(wrapper.findAll('[data-testid^="link-priority-"]')).toHaveLength(0)
     await wrapper.get('[data-testid="open-link-settings"]').trigger('click')
     expect(wrapper.emitted('update:dialogVisible')!.at(-1)).toEqual([true])
     await typedWrapper.setProps({ dialogVisible: true })
-    expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(5)
-    expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(0)
+    expect(wrapper.get('[data-testid="link-settings-dialog"]').text()).not.toContain('链路优先级')
     expect(wrapper.find('[aria-label="本场景选用卫星"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('本场景选用卫星')
     expect(wrapper.text()).not.toContain('中继卫星选择')
@@ -121,7 +119,7 @@ describe('场景拆分面板', () => {
       'link-calc-enable-valueThresholdBer', 'link-switch-consistency',
     ])
     satelliteSelect.vm.$emit('change', 'SHENTONG')
-    let changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    const changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
     expect(changed.enabledSatellites.TIANTONG).toBe(false)
     expect(baseline.enabledSatellites.TIANTONG).toBe(true)
     await typedWrapper.setProps({ modelValue: changed })
@@ -132,108 +130,16 @@ describe('场景拆分面板', () => {
     expect(wrapper.emitted('update:dialogVisible')!.at(-1)).toEqual([false])
     await typedWrapper.setProps({ dialogVisible: false })
     expect(wrapper.find('[data-testid="link-switch-cooldown"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="link-priority-0"]').exists()).toBe(false)
     await wrapper.get('[data-testid="open-link-settings"]').trigger('click')
     await typedWrapper.setProps({ dialogVisible: true })
     await wrapper.get('[data-testid="link-strategy-advanced"] > summary').trigger('click')
     await vi.waitFor(() => expect(wrapper.find('[data-testid="link-switch-cooldown"]').exists()).toBe(true))
-    const originalPriority = [...baseline.priority]
-    const priorityItem = (index: number) => wrapper.get(`[data-testid="link-priority-${index}"]`)
-    const priorityRow = (index: number) => wrapper.get('.link-settings__priority').findAll('li')[index]!
-    const beforeDrag = wrapper.emitted('update:modelValue')!.length
-    await priorityItem(2).trigger('dragstart')
-    await priorityRow(0).trigger('dragover')
-    expect(priorityRow(0).classes()).toContain('is-drop-target')
-    expect(wrapper.emitted('update:modelValue')).toHaveLength(beforeDrag)
-    await priorityRow(0).trigger('drop')
-    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'])
-    expect(changed.enabledSatellites.TIANTONG).toBe(false)
-    expect(baseline.priority).toEqual(originalPriority)
-    await typedWrapper.setProps({ modelValue: changed })
-    expect(priorityItem(0).text()).toContain('卫星')
-    await priorityItem(0).trigger('dragstart')
-    await priorityRow(3).trigger('drop')
-    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'LASER', 'SAT', 'FIBER'])
-    await typedWrapper.setProps({ modelValue: changed })
-    await priorityItem(3).trigger('keydown', { key: 'ArrowUp' })
-    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'])
-    await typedWrapper.setProps({ modelValue: changed })
-    const beforeCancel = wrapper.emitted('update:modelValue')!.length
-    await priorityItem(0).trigger('keydown', { key: 'ArrowUp' })
-    await priorityItem(4).trigger('keydown', { key: 'ArrowDown' })
-    await priorityItem(0).trigger('dragstart')
-    await priorityItem(0).trigger('dragend')
-    await priorityRow(4).trigger('drop')
-    expect(wrapper.emitted('update:modelValue')).toHaveLength(beforeCancel)
-    expect(wrapper.find('.is-dragging').exists()).toBe(false)
-    await priorityItem(0).trigger('dragstart')
     await typedWrapper.setProps({ disabled: true, dialogVisible: true })
     const count = wrapper.emitted('update:modelValue')!.length
     wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-relay-satellite')!.vm.$emit('change', 'TIANTONG')
-    await priorityRow(4).trigger('drop')
-    expect(priorityItem(0).attributes('draggable')).toBe('false')
-    expect(priorityItem(0).attributes('disabled')).toBeDefined()
     wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.vm.$emit('update:modelValue', 20)
     expect(wrapper.emitted('update:modelValue')).toHaveLength(count)
     expect(config.linkSettings).toBeUndefined()
-    wrapper.unmount()
-  })
-
-  it('优先级支持置顶/上移/下移按钮、一键恢复默认，并展示各类参与链路条数', async () => {
-    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-    const baseline = readLinkSettings(config)
-    const wrapper = mount(LinkSettingsPanel, {
-      props: {
-        modelValue: baseline,
-        dialogVisible: true,
-        platforms: config.platforms,
-        links: config.links,
-        disabled: false,
-        typeOptions: [
-          { value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
-          { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' }, { value: 'FIBER', label: '光纤链路' },
-        ],
-      },
-      global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
-    })
-    const typedWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue?: ScenarioLinkSettings; disabled: boolean } }>
-    // 默认顺序下不显示“恢复默认”；首项禁用置顶与上移，末项禁用下移。
-    expect(wrapper.find('[data-testid="priority-reset-default"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="priority-move-top-0"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="priority-move-up-0"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="priority-move-down-4"]').attributes('disabled')).toBeDefined()
-    // 展示每类参与场景的链路条数以及首项最高优先标签。
-    expect(wrapper.get('[data-testid="link-priority-0"]').text()).toContain('最高优先')
-    expect(wrapper.get('[data-testid="link-priority-0"]').text()).toMatch(/\d+ 条参与/)
-    // 点击“置顶”将第 3 项（卫星）移至首位，并显示“恢复默认”。
-    await wrapper.get('[data-testid="priority-move-top-2"]').trigger('click')
-    let changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'])
-    await typedWrapper.setProps({ modelValue: changed })
-    expect(wrapper.find('[data-testid="priority-reset-default"]').exists()).toBe(true)
-    // 点击“下移”将首位（卫星）下移一位，再点击“上移”移回。
-    await wrapper.get('[data-testid="priority-move-down-0"]').trigger('click')
-    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['DATALINK', 'SAT', 'MICROWAVE', 'LASER', 'FIBER'])
-    await typedWrapper.setProps({ modelValue: changed })
-    await wrapper.get('[data-testid="priority-move-up-1"]').trigger('click')
-    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'])
-    await typedWrapper.setProps({ modelValue: changed })
-    // 锁定状态下禁用所有排序及恢复默认按钮。
-    await typedWrapper.setProps({ disabled: true })
-    expect(wrapper.get('[data-testid="priority-move-down-0"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="priority-reset-default"]').attributes('disabled')).toBeDefined()
-    // 解锁后点击“恢复默认”回到初始顺序并隐藏按钮。
-    await typedWrapper.setProps({ disabled: false })
-    await wrapper.get('[data-testid="priority-reset-default"]').trigger('click')
-    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'])
-    await typedWrapper.setProps({ modelValue: changed })
-    expect(wrapper.find('[data-testid="priority-reset-default"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

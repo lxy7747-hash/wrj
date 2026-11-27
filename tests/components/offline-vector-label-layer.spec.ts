@@ -46,7 +46,9 @@ vi.mock('pbf', () => ({
     }
   },
 }))
+vi.mock('leaflet.vectorgrid', () => ({}))
 
+import { createOfflineVectorBasemap } from '../../src/components/situation/offline-vector-basemap'
 import { createOfflineVectorLabelLayer } from '../../src/components/situation/offline-vector-label-layer'
 import { MAP_CONFIG } from '../../src/config/map.config'
 import { bindVectorTileSource, createVectorTileSource } from '../../src/components/situation/vector-tile-source'
@@ -98,7 +100,7 @@ describe('离线矢量文字瓦片层', () => {
     vi.unstubAllGlobals()
   })
 
-  it('固定使用唯一 loopback 地址且 Z0–2 返回空瓦片不请求网络', async () => {
+  it('使用唯一 loopback 地址，原生标注范围外返回透明瓦片而不发请求', async () => {
     expect(MAP_CONFIG.resources.vector.tileUrl).toBe(
       'http://127.0.0.1:4174/tiles/china-taiwan-260823/{z}/{x}/{y}',
     )
@@ -106,15 +108,16 @@ describe('离线矢量文字瓦片层', () => {
     const done = vi.fn()
 
     const canvas = layer.createTile(coords(2), done) as HTMLCanvasElement
+    const overzoomed = layer.createTile(coords(MAP_CONFIG.resources.vector.maxNativeZoom + 1), done)
 
-    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(done).toHaveBeenCalledTimes(2))
     expect(fetch).not.toHaveBeenCalled()
-    expect(done).toHaveBeenCalledOnce()
     expect(done).toHaveBeenCalledWith(undefined, canvas)
+    expect(done).toHaveBeenCalledWith(undefined, overzoomed)
     expect(layer.options.pane).toBe('offline-label-pane')
     const layerOptions = layer.options as L.GridLayerOptions
     expect(layerOptions.minZoom).toBe(MAP_CONFIG.zoom.min)
-    expect(layerOptions.maxZoom).toBe(MAP_CONFIG.zoom.max)
+    expect(layerOptions.maxZoom).toBe(MAP_CONFIG.resources.vector.maxNativeZoom)
     expect(canvas.classList.contains('offline-vector-label-tile')).toBe(true)
     expect(canvas.style.pointerEvents).toBe('none')
     expect(canvas.style.width).toBe('384px')
@@ -350,6 +353,43 @@ describe('离线矢量文字瓦片层', () => {
     expect(feature.loadGeometry).toHaveBeenCalledTimes(geometryCalls)
     expect(context.fillStyle).toBe('#d7e8f3')
     source.clear()
+  })
+
+  it('底图跳过透明要素的解码，标注仍从同一原生瓦片读取要素', async () => {
+    const label = pointFeature({ name: '共享标签', admin_level: 4 }, 2000, 2000)
+    const street = lineFeature({ kind: 'primary' }, [[0, 2000], [4000, 2000]])
+    const futureLayer = pointFeature({}, 1000, 1000)
+    parserState.tile = tileWith({ addresses: [pointFeature({}, 500, 500)], boundary_labels: [label], streets: [street], future_layer: [futureLayer] })
+    const addressFeature = vi.spyOn(parserState.tile.layers.addresses!, 'feature')
+    const labelFeature = vi.spyOn(parserState.tile.layers.boundary_labels!, 'feature')
+    const previousVectorGrid = Object.getOwnPropertyDescriptor(L, 'vectorGrid')
+    Object.defineProperty(L, 'vectorGrid', { configurable: true, value: {
+      protobuf: (_url: string, options: L.GridLayerOptions) => L.gridLayer(options),
+    } })
+    const source = createVectorTileSource()
+    try {
+      const basemap = createOfflineVectorBasemap('dark', source)
+      expect(basemap.options).toMatchObject({ updateWhenIdle: true, updateWhenZooming: false })
+      const bound = basemap as unknown as { _getVectorTilePromise: (coords: L.Coords) => Promise<{ layers: Record<string, unknown> }> }
+      const nativeCoords = coords(MAP_CONFIG.resources.vector.maxNativeZoom)
+      const tile = await bound._getVectorTilePromise(nativeCoords)
+      expect(Object.keys(tile.layers)).toEqual(['streets', 'future_layer'])
+      expect(addressFeature).not.toHaveBeenCalled()
+      expect(labelFeature).not.toHaveBeenCalled()
+      expect(street.loadGeometry).toHaveBeenCalledOnce()
+      expect(futureLayer.loadGeometry).toHaveBeenCalledOnce()
+
+      const labels = createOfflineVectorLabelLayer('dark', source) as PublicGridLayer
+      const done = vi.fn()
+      labels.createTile(nativeCoords, done)
+      await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
+      expect(fetch).toHaveBeenCalledOnce()
+      expect(context.fillText).toHaveBeenCalledWith('共享标签', 0, 0)
+    } finally {
+      source.clear()
+      if (previousVectorGrid) Object.defineProperty(L, 'vectorGrid', previousVectorGrid)
+      else Reflect.deleteProperty(L, 'vectorGrid')
+    }
   })
 
   it('单层卸载不取消另一层读取，所有消费者卸载后才取消，重新请求可恢复', async () => {

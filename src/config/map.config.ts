@@ -59,10 +59,12 @@ export const MAP_CONFIG = {
   /** Leaflet 允许的最小/最大缩放级别，以及滚轮等交互吸附到的缩放步长。 */
   zoom: {
     min: 1,
-    max: 18,
+    max: 24,
     snap: 1,
     /** 聚合作业无人机标记的最高缩放级别（含）。 */
     uavClusterMax: 10,
+    /** 点击链路定位时的最高缩放级别，高于无人机聚合上限以便展开查看目标链路与端点。 */
+    linkFocusMax: 13,
   },
   /** 任务区域的西南、东北边界；Leaflet 坐标顺序为 [纬度, 经度]。 */
   taskBounds: [[21.8, 117.0], [26.4, 123.0]],
@@ -237,4 +239,47 @@ export function resolvePlatformCoordinates(
     longitude: platform.longitude,
     latitude: platform.latitude,
   }
+}
+
+const MAP_NODE_SUBLABEL_PREFIXES: Readonly<Record<string, string>> = {
+  REAR_COMMAND_NODE: '后方指挥节点C',
+  FORWARD_RELAY_NODE: '高空前出中继节点R',
+  GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车G',
+  AIRBORNE_MISSION_CLUSTER: '空中无人作业集群U',
+  COMMUNICATION_SATELLITE: '通信卫星S',
+  GROUND_JAMMER_DETECTION_STATION: '地面干扰站J',
+  AIRBORNE_JAMMER_PLATFORM: '机载干扰平台J',
+}
+
+/** 生成态势地图与左侧节点摘要共用的中文编码副标签，避免界面暴露英文平台 ID。 */
+export function formatNodeSublabel(
+  platform: { type?: string; platformId?: string; id?: string; name?: string },
+  categoryOrder: number,
+): string {
+  const category = nodeCategory(platform)
+  const prefix = category ? MAP_NODE_SUBLABEL_PREFIXES[category] : undefined
+  if (!prefix) return platform.platformId ?? platform.id ?? ''
+  const codeLetter = prefix.at(-1)
+  const explicitMatch = codeLetter && platform.name
+    ? new RegExp(`(?:^|[^A-Za-z])${codeLetter}0*([1-9]\\d*)(?:$|[^0-9])`, 'u').exec(platform.name)
+    : null
+  const serial = explicitMatch ? Number(explicitMatch[1]) : categoryOrder
+  return `${prefix}${serial}`
+}
+
+/** 按同类节点出现顺序生成中文编码映射（key 为 platformId 或 id）。 */
+export function buildNodeSublabelMap(
+  nodes: ReadonlyArray<{ type?: string; platformId?: string; id?: string; name?: string }>,
+): ReadonlyMap<string, string> {
+  const categoryCounters = new Map<string, number>()
+  const sublabels = new Map<string, string>()
+  for (const node of nodes) {
+    const id = node.platformId ?? node.id
+    if (!id) continue
+    const key = nodeCategory(node) ?? ''
+    const next = (categoryCounters.get(key) ?? 0) + 1
+    categoryCounters.set(key, next)
+    sublabels.set(id, formatNodeSublabel(node, next))
+  }
+  return sublabels
 }

@@ -178,15 +178,25 @@ describe('质量接入真实HTTP与文件生产', () => {
       if (format === 'PDF') expect(bytes.subarray(0, 5).toString()).toBe('%PDF-')
       else {
         const text = bytes.toString('utf8')
-        const start = text.indexOf('<h2>GXB 随时间变化 · L-SAT-02</h2>')
-        expect(start).toBeGreaterThanOrEqual(0)
-        const cut = text.indexOf('<h2>', start + 1)
-        const gxb = text.slice(start, cut < 0 ? undefined : cut)
-        expect(gxb).toContain('<title>0分0秒: 30 dB</title>')
-        expect(gxb).toContain('<title>0分1秒: 20 dB</title>')
-        expect(gxb).toContain('横轴：0～1 秒；纵轴：20～30 dB')
+        const main = text.indexOf('<h2>干信比随时间变化</h2>')
+        expect(main).toBeGreaterThanOrEqual(0)
+        const mainCurve = text.slice(main, text.indexOf('<h2>', main + 1))
+        expect(mainCurve).toContain('<title>0分0秒: 30 dB</title>')
+        expect(mainCurve).toContain('<title>0分1秒: 20 dB</title>')
+        expect(mainCurve).not.toContain('<title>0分0秒: 10 dB</title>')
+        const { startTimeS, endTimeS } = filtered.report.localEvidence
+        expect(mainCurve).toContain(`横轴：${startTimeS}～${endTimeS} 秒；纵轴：20～30 dB`)
+        expect(text).toContain(imported.source.sha256)
         expect(text).toContain('链路=L-SAT-02')
+        expect(text).not.toContain('GXB 随时间变化 · L-SAT-02')
       }
     }
+    const csvRequest = { reportId, format: 'CSV', qualitySha256: imported.source.sha256, filter: { linkId: 'L-SAT-02' } }
+    const csv = (await api.post(`/api/v1/reports/${reportId}/export?resultId=${resultId}`).set(headers).send(csvRequest).expect(200)).body.data
+    const details = await readFile(csv.filePath, 'utf8')
+    expect(details).toContain(imported.source.sha256)
+    expect(details).toContain('"0分0秒","0","L-SAT-02"')
+    expect(details).toContain('"0分1秒","1","L-SAT-02"')
+    expect(details).not.toContain('"0分0秒","0","L-MW-01"')
   })
 })

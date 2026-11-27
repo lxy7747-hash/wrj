@@ -54,8 +54,8 @@ const LEAF_FIELD_LABELS: Record<string, string> = {
   emergencyThreshold: '紧急阈值',
   channelEncodingScheme: '信道编码方式',
   switchCooldownS: '切换冷却时间',
-  priority: '链路优先级',
-  peak_gain_dB: '峰值增益',
+  priority: '业务优先级',
+  peak_gain_dB: '天线峰值增益',
   latitude: '纬度',
   longitude: '经度',
   altitude: '高度',
@@ -94,7 +94,6 @@ const LEAF_FIELD_LABELS: Record<string, string> = {
   seaPathOverSeaThresholdKm: '跨海距离阈值',
   seaPolygon: '海面多边形区域',
   simClockSpeed: '仿真倍速',
-  transmissionDistance: '参考传输距离',
   rainCloudAttenuation: '天气等级',
 }
 

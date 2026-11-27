@@ -66,6 +66,22 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; disposePinia(pinia) })
 
 describe('EngineFramePanel', () => {
+  it('质量卡在场景 BER 恰好达到阈值时更新标签，原始引擎状态可核对', async () => {
+    const runtime = useRuntimeQualityStore()
+    const frame = runtime.engineFrame!
+    const first = frame.links[0]!
+    const linkWithBer = (ber: number) => ({ ...first, quality: { ...first.quality, ber } })
+    runtime.engineFrame = { ...frame, links: [linkWithBer(0.1)] }
+    wrapper = mount(EngineFramePanel, { props: { section: 'quality', berThresholds: { warningThreshold: 0.1, emergencyThreshold: 0.9 } },
+      global: { plugins: [pinia, ElementPlus] } })
+    const heading = () => wrapper!.get('[data-link-id="seg-old"] .quality-card-heading')
+    expect(heading().get('.el-tag').text()).toBe('劣化')
+    expect(heading().attributes('title')).toBe('引擎上报：正常')
+    runtime.engineFrame = { ...frame, frameId: frame.frameId + 1, links: [linkWithBer(0.9)] }
+    await flushPromises()
+    expect(heading().get('.el-tag').text()).toBe('中断')
+  })
+
   it.each([
     ['引擎实时数据', '实时更新'],
     ['最后收到的引擎数据（等待新帧）', '等待更新'],
@@ -78,7 +94,7 @@ describe('EngineFramePanel', () => {
     useRuntimeQualityStore().engineFrame = { ...useRuntimeQualityStore().engineFrame!, frameId: 175.25, simulationTime: 175.25 }
     wrapper = mount(EngineFramePanel, { props: { section: 'quality', sourceLabel }, global: { plugins: [pinia, ElementPlus] } })
     expect(wrapper.findAll('[data-testid="quality-source"]')).toHaveLength(1)
-    expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('数据时刻：00:02:55 · ' + status)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('数据时刻：00:02:55.25 · ' + status)
     expect(wrapper.get('.quality-card-source').text()).not.toContain('帧 175.25')
     expect(wrapper.get('.quality-card-source').text()).not.toContain('数据说明')
     expect(wrapper.getComponent(ElTooltip).props('content')).toContain('帧 175.25')
@@ -115,7 +131,7 @@ describe('EngineFramePanel', () => {
     expect(paths.find('.quality-card-details').exists()).toBe(false)
     expect(pathCards[0]!.get('header').text()).toContain('PATH-1')
     expect(metrics(pathCards[0]!)).toEqual({
-      '干信比（dB）': '9.5', '误码率': '1.2e-7', '抗干扰余量（dB）': '26.3',
+      '干信比(GXB)（dB）': '9.5', '误码率(BER)': '1.2e-7', '抗干扰余量（dB）': '26.3',
       '时延（ms）': '1.26', '速率（bit/s）': '2356',
     })
     expect(pathCards[1]!.get('header').text()).toContain('暂无数据')
@@ -223,8 +239,10 @@ describe('EngineFramePanel', () => {
     await inputs[0]!.vm.$emit('update:modelValue', 375); await inputs[1]!.vm.$emit('update:modelValue', 376); await flushPromises()
     expect(qualityCards()).toHaveLength(5)
     await wrapper.setProps({ section: 'jammers' })
-    expect(wrapper.text()).toContain('探测频率 2400000000 Hz')
-    expect(wrapper.text()).toContain('频率 2400000000 Hz')
+    expect(wrapper.text()).toContain('探测频率 2.4 GHz')
+    expect(wrapper.text()).toContain('干扰频率 2.4 GHz')
+    expect(wrapper.get('[data-testid="detection-frequency-value"]').attributes('title')).toBe('2400000000 Hz')
+    expect(wrapper.get('[data-testid="jammer-frequency-value"]').attributes('title')).toBe('2400000000 Hz')
     expect(wrapper.text()).toContain('经度 121.55°'); expect(wrapper.text()).toContain('纬度 25.15°')
     expect(wrapper.text()).toContain('设备模式 宽带压制'); expect(wrapper.text()).toContain('探测概率 暂无数据')
     expect(wrapper.get('[data-testid="detection-platform-type"]').text()).toBe('无人机')
@@ -256,7 +274,7 @@ describe('EngineFramePanel', () => {
       ],
     }
     runtime.engineEvents = [
-      { frameId: 120, simulationTime: 120, event: { type: 'into_jamm', pathId: null, uavNames: ['mission_uav_01'], jammerNames: ['jammer_station_01'], uavIds: ['mission_uav_01'], jammerIds: ['jammer_station_01'] } },
+      { frameId: 120, simulationTime: 120, event: { type: 'into_jamm', pathId: null, uavNames: ['mission_uav_01', 'mission_uav_02', 'mission_uav_03'], jammerNames: ['jammer_station_01'], uavIds: ['mission_uav_01', 'mission_uav_02', 'mission_uav_03'], jammerIds: ['jammer_station_01'] } },
       { frameId: 185, simulationTime: 185, event: { type: 'release_jamm', pathId: null, uavNames: ['mission_uav_01'], jammerNames: ['jammer_station_01'], uavIds: ['mission_uav_01'], jammerIds: ['jammer_station_01'] } },
     ]
     wrapper = mount(EngineFramePanel, { props: { section: 'jammers' }, global: { plugins: [pinia, ElementPlus] } })
@@ -268,6 +286,14 @@ describe('EngineFramePanel', () => {
     expect(eventBlocks[0]!.text()).toContain('进入干扰圈')
     expect(eventBlocks[0]!.text()).toContain('离开干扰圈')
     expect(eventBlocks[1]!.text()).toContain('暂无启停事件')
+    const targetSpans = eventBlocks[0]!.findAll('[data-testid="jammer-event-targets"]')
+    expect(targetSpans[1]!.attributes('title')).toBe('mission_uav_01、mission_uav_02、mission_uav_03')
+    const toggle = eventBlocks[0]!.get('[data-testid="jammer-event-toggle"]')
+    expect(toggle.text()).toBe('共3架')
+    await toggle.trigger('click')
+    await flushPromises()
+    expect(toggle.text()).toBe('收起')
+    expect(targetSpans[1]!.element.closest('.jammer-card__event-row')?.classList.contains('is-expanded')).toBe(true)
   })
   it('实时链路卡片展开后随当前帧更新分项损耗，保留零值和缺测', async () => {
     const runtime = useRuntimeQualityStore()
@@ -385,7 +411,7 @@ describe('EngineFramePanel', () => {
     expect(endpoint()).toBe('地面无人集群指挥车（C 波段上行） → 任务无人机 01（C 波段上行）')
     expect(details.text()).not.toContain('引擎段编号')
     expect(details.text()).toContain('来源帧 7 · 源仿真时刻 0分12.5秒')
-    expect(details.text()).toContain('干信比 GXB（信噪比）0.00 dB')
+    expect(details.text()).toContain('干信比(GXB)0.00 dB')
 
     await wrapper.setProps({ platforms: [
       { id: 'P-COMMAND', name: '场景节点甲' }, { id: 'P-RELAY', name: '场景节点乙' },
@@ -411,6 +437,8 @@ describe('EngineFramePanel', () => {
     expect(actual.text().match(/暂无运行位置记录/g)).toHaveLength(2)
     expect(inputs.text()).toMatch(/来源帧\s*7/)
     expect(inputs.text()).toContain('仿真时刻')
+    expect(inputs.text()).toContain(`模型版本${frame.modelVersion ?? '未提供'}`)
+    expect(inputs.text()).toContain(`调制方式${frame.modulation ?? '未提供'}`)
     expect(inputs.text()).toContain('2.75')
     expect(comparison.text()).not.toContain('收发端状态输入未回传')
 
@@ -450,7 +478,7 @@ describe('EngineFramePanel', () => {
       card.findAll(':scope > .link-quality-dialog__grid > div').map(row => [row.get('dt').text(), row.get('dd').text()]),
     )
     expect(mainRows(cards[0]!)).toMatchObject({
-      '干信比 GXB（信噪比）': '0.00 dB',
+      '干信比(GXB)': '0.00 dB',
       '发射辐射功率': '30.00 dBW',
       '抗干扰余量': '26.30 dB',
       '时延': '1.369 ms',

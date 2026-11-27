@@ -4,6 +4,7 @@ import type { BusinessInformationNodeType, Faction, Platform, PlatformType, Sate
 import { INFORMATION_NODE_LIMIT, PLATFORM_TYPE_DOMAINS, WAYPOINT_PLATFORM_TYPES, waypointSpeedError } from '../../features/scenarios/scenario-validation'
 import { createPlatformGrid } from '../../features/scenarios/platform-layout'
 import { PLATFORM_POINT_DEFAULT_ALTITUDE, PLATFORM_POINT_DEFAULT_SPEED, PLATFORM_POSITION_RULES, RELAY_DEFAULT_ORIGIN, RELAY_DEFAULT_ROUTE, SATELLITE_GEO_POSITION } from '../../features/scenarios/platform-position-rules'
+import { DEFAULT_LOITER_POINT_COUNT, DEFAULT_LOITER_RADIUS_KM, MAX_LOITER_RADIUS_KM, MIN_LOITER_RADIUS_KM, generateLoiterCircleWaypoints, inferLoiterCircle, type LoiterCircleParams } from '../../features/scenarios/loiter-circle'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
 import WaypointMapPicker, { type WaypointMapContext, type WaypointMapNode, type WaypointMapPoint, type WaypointMapRoute } from './WaypointMapPicker.vue'
 
@@ -16,7 +17,7 @@ type AppendRouteList = 'waypoints' | 'loiter'
 type RoutePickerTarget =
   | { list: 'waypoints' | TemplateRouteList, index: number }
   | { list: AppendRouteList, index: null }
-  | { list: 'initialPosition' }
+  | { list: 'initialPosition' | 'loiterCenter' }
 
 /** 可配置盘旋航点的平台类型，与场景校验保持一致。 */
 const LOITER_PLATFORM_TYPES: readonly PlatformType[] = ['AIRBORNE_MISSION_CLUSTER', 'FORWARD_RELAY_NODE', 'AIRBORNE_JAMMER_PLATFORM']
@@ -65,6 +66,15 @@ const emit = defineEmits<{
 
 const editor = ref<Platform | null>(null)
 const advancedConfig = ref<HTMLDetailsElement | null>(null)
+const loiterDetails = ref<HTMLDetailsElement | null>(null)
+const loiterCircle = ref<LoiterCircleParams>({
+  longitude: 0,
+  latitude: 0,
+  radiusKm: DEFAULT_LOITER_RADIUS_KM,
+  altitude: PLATFORM_POINT_DEFAULT_ALTITUDE,
+  speed: PLATFORM_POINT_DEFAULT_SPEED,
+  pointCount: DEFAULT_LOITER_POINT_COUNT,
+})
 const waypointPickerVisible = ref(false)
 const waypointPickerTarget = ref<RoutePickerTarget | null>(null)
 const waypointPickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 })
@@ -114,26 +124,11 @@ function setFaction(value: Faction | '' | undefined): void {
   if (value === 'BLUE' || value === 'RED' || value === 'NEUTRAL') editor.value.faction = value
   else delete editor.value.faction
 }
-/** 节点通信范围界面按 km 编辑、合同存 m；清空表示未配置。 */
-const communicationRangeKm = computed<number | undefined>({
-  get: () => editor.value?.communicationRangeM === undefined ? undefined : Number((editor.value.communicationRangeM / 1000).toFixed(3)),
-  set: (value) => {
-    if (editor.value === null) return
-    touchField('communicationRangeM')
-    if (value === undefined || value === null || !Number.isFinite(value)) delete editor.value.communicationRangeM
-    else editor.value.communicationRangeM = value * 1000
-  },
-})
-function setCommunicationRangeKm(value: number | undefined): void {
-  communicationRangeKm.value = value ?? undefined
-}
 const batchAdding = computed(() => showBatchQuantity.value && quantity.value > 1)
 const supportsLoiter = computed(() => editor.value !== null && LOITER_PLATFORM_TYPES.includes(editor.value.type))
 const supportsReturn = computed(() => editor.value !== null && RETURN_PLATFORM_TYPES.includes(editor.value.type))
-const visibleTemplateRoutes = computed<TemplateRouteList[]>(() => [
-  ...(supportsLoiter.value ? ['loiter' as const] : []), ...(supportsReturn.value ? ['return' as const] : []),
-])
-/** 普通航点沿用类型选点范围；新模板路线点不受编队范围限制，与校验一致。 */
+const loiterEnabled = computed(() => (editor.value?.loiterWaypoints?.length ?? 0) > 0)
+/** 普通航点沿用类型选点范围；新模板路线点与盘旋圆心不受编队范围限制，与校验一致。 */
 const waypointPickerBounds = computed(() => {
   const target = waypointPickerTarget.value
   if (target === null || target.list === 'waypoints') return waypointBounds.value
@@ -141,13 +136,35 @@ const waypointPickerBounds = computed(() => {
   if (target.list === 'initialPosition') return positionRule.value
   return undefined
 })
-/** 当前是否在为初始位置打开地图选点，用于切换弹窗文案。 */
+/** 当前是否在为初始位置或盘旋圆心打开地图选点，用于切换弹窗文案与预览圈。 */
 const pickingInitialPosition = computed(() => waypointPickerTarget.value?.list === 'initialPosition')
+const pickingLoiterCenter = computed(() => waypointPickerTarget.value?.list === 'loiterCenter')
 const pickingReturnWaypoint = computed(() => waypointPickerTarget.value?.list === 'return')
+const loiterPreviewRadiusMeters = computed(() => (
+  pickingLoiterCenter.value && Number.isFinite(loiterCircle.value.radiusKm) && loiterCircle.value.radiusKm > 0
+    ? loiterCircle.value.radiusKm * 1000
+    : undefined
+))
+const waypointPickerTitle = computed(() => {
+  if (pickingInitialPosition.value) return `地图选取${initialPositionLabel.value}`
+  if (pickingLoiterCenter.value) return '地图选取盘旋圆心'
+  return undefined
+})
+const waypointPickerHint = computed(() => {
+  if (pickingInitialPosition.value) return `单击地图选择${initialPositionLabel.value}的经纬度。`
+  if (pickingLoiterCenter.value) return `单击地图选择盘旋圆心，蓝色虚线圈为当前盘旋半径（${loiterCircle.value.radiusKm} km）预览。`
+  if (pickingReturnWaypoint.value) return undefined
+  return '单击地图微调该航点的经纬度。'
+})
+const waypointPickerEmptyText = computed(() => {
+  if (pickingInitialPosition.value) return `尚未选择${initialPositionLabel.value}`
+  if (pickingLoiterCenter.value) return '尚未选择盘旋圆心'
+  return undefined
+})
 const waypointPickerRoute = computed<WaypointMapRoute | undefined>(() => {
   const platform = editor.value
   const target = waypointPickerTarget.value
-  if (!platform || !target || target.list === 'initialPosition' || target.index !== null) return
+  if (!platform || !target || target.list === 'initialPosition' || target.list === 'loiterCenter' || target.index !== null) return
   const loiter = target.list === 'loiter'
   const points = loiter ? platform.loiterWaypoints ?? [] : platform.waypoints
   const origin = (loiter && supportsWaypoints.value ? platform.waypoints.at(-1) : undefined) ?? platform.initialPosition
@@ -157,7 +174,7 @@ const waypointPickerRoute = computed<WaypointMapRoute | undefined>(() => {
 const waypointPickerContext = computed<WaypointMapContext | undefined>(() => {
   const platform = editor.value
   const target = waypointPickerTarget.value
-  if (!platform || !target || target.list === 'initialPosition' || target.index === null) return undefined
+  if (!platform || !target || target.list === 'initialPosition' || target.list === 'loiterCenter' || target.index === null) return undefined
   const lastWaypoint = platform.waypoints.at(-1)
   if (target.list === 'waypoints') {
     return { points: platform.waypoints, origin: platform.initialPosition, loiter: false, activeIndex: target.index }
@@ -296,12 +313,74 @@ function addReturnWaypoint(): void {
   points.push({ longitude: base.longitude, latitude: base.latitude, altitude: PLATFORM_POINT_DEFAULT_ALTITUDE, speed: PLATFORM_POINT_DEFAULT_SPEED })
 }
 
+/** 计算新建盘旋时的默认圆心、高度和速度（沿用末航点或初始位置）。 */
+function loiterFallback(): { longitude: number; latitude: number; altitude: number; speed: number } {
+  const platform = editor.value
+  const anchor = platform?.waypoints.at(-1) ?? platform?.initialPosition
+  const altitude = anchor && Number.isFinite(anchor.altitude) && anchor.altitude > 0
+    ? anchor.altitude
+    : PLATFORM_POINT_DEFAULT_ALTITUDE
+  const lastSpeed = platform?.waypoints.at(-1)?.speed
+  return {
+    longitude: anchor?.longitude ?? 0,
+    latitude: anchor?.latitude ?? 0,
+    altitude,
+    speed: lastSpeed !== undefined && Number.isFinite(lastSpeed) && lastSpeed >= 1 ? lastSpeed : PLATFORM_POINT_DEFAULT_SPEED,
+  }
+}
+
+/** 从当前 `editor.loiterWaypoints` 反推圆心和半径用于表单回显，不改写原始航点数组。 */
+function syncLoiterCircleFromPlatform(): void {
+  loiterCircle.value = inferLoiterCircle(editor.value?.loiterWaypoints, loiterFallback())
+}
+
+/** 按当前圆心、半径、高度和速度生成标准盘旋圆周航点数组写入 `editor.loiterWaypoints`。 */
+function regenerateLoiterFromCircle(): void {
+  if (editor.value === null) return
+  const c = loiterCircle.value
+  if (!Number.isFinite(c.longitude) || !Number.isFinite(c.latitude) || !Number.isFinite(c.radiusKm) || c.radiusKm <= 0) return
+  editor.value.loiterWaypoints = generateLoiterCircleWaypoints({
+    longitude: c.longitude,
+    latitude: c.latitude,
+    radiusKm: c.radiusKm,
+    altitude: Number.isFinite(c.altitude) ? c.altitude : PLATFORM_POINT_DEFAULT_ALTITUDE,
+    speed: Number.isFinite(c.speed) && c.speed >= 1 ? c.speed : PLATFORM_POINT_DEFAULT_SPEED,
+    pointCount: DEFAULT_LOITER_POINT_COUNT,
+  })
+  touchField('loiterWaypoints')
+}
+
+/** 开关盘旋配置；开启时按默认圆心与半径生成圆周航点，关闭时移除 `loiterWaypoints`。 */
+function toggleLoiter(enabled: string | number | boolean): void {
+  if (editor.value === null) return
+  if (!enabled) {
+    delete editor.value.loiterWaypoints
+    if (loiterDetails.value) loiterDetails.value.open = false
+    return
+  }
+  if ((editor.value.loiterWaypoints?.length ?? 0) > 0) return
+  loiterCircle.value = inferLoiterCircle(undefined, loiterFallback())
+  regenerateLoiterFromCircle()
+}
+
+function updateLoiterCircle(
+  field: 'longitude' | 'latitude' | 'radiusKm' | 'altitude' | 'speed',
+  value: number | undefined | null,
+): void {
+  if (value === undefined || value === null || !Number.isFinite(value)) return
+  loiterCircle.value = { ...loiterCircle.value, [field]: value }
+  if (loiterEnabled.value) regenerateLoiterFromCircle()
+}
+
 /** 删除路线点；盘旋航点删空时移除字段，表示不盘旋。 */
 function removeTemplatePoint(list: TemplateRouteList, index: number): void {
   const points = templatePoints(list)
   if (editor.value === null || points === undefined) return
   points.splice(index, 1)
-  if (list === 'loiter' && points.length === 0) delete editor.value.loiterWaypoints
+  if (list === 'loiter') {
+    if (points.length === 0) delete editor.value.loiterWaypoints
+    syncLoiterCircleFromPlatform()
+  }
 }
 
 /** 将路线点与相邻点交换位置，越界时不处理。 */
@@ -368,6 +447,7 @@ function onPlatformTypeChange(type: PlatformType): void {
   }
   touchField('type')
   synchronizeTypeFields(type)
+  syncLoiterCircleFromPlatform()
 }
 
 function onSatelliteTypeChange(satelliteType: SatelliteType): void {
@@ -397,12 +477,13 @@ function applyWaypointMapRoute(points: TemplateRoutePoint[], moved?: ReadonlyMap
   const target = waypointPickerTarget.value
   const platform = editor.value
   if (!waypointPickerVisible.value || props.pending || props.locked || !platform || !target
-    || target.list === 'initialPosition' || target.index !== null || (points.length === 0 && !moved?.size)) return
+    || target.list === 'initialPosition' || target.list === 'loiterCenter' || target.index !== null || (points.length === 0 && !moved?.size)) return
   // 现有点从原始数组读取，避免把响应式代理放进稍后需要克隆的编辑副本。
   const { waypoints, loiterWaypoints } = toRaw(platform)
   if (target.list === 'loiter') {
     platform.loiterWaypoints = [...(loiterWaypoints ?? []).map((point, index) => ({ ...point, ...moved?.get(index) })), ...points]
     touchField('loiterWaypoints')
+    syncLoiterCircleFromPlatform()
   } else {
     // 沿用普通航点的到达时间预填方式，用户可在表格中按任务时序调整。
     const lastPoint = waypoints.at(-1)
@@ -431,6 +512,14 @@ function openInitialPositionPicker(): void {
   waypointPickerVisible.value = true
 }
 
+/** 打开盘旋圆心地图选点；地图中以当前半径绘制预览圈。 */
+function openLoiterCenterPicker(): void {
+  if (editor.value === null || !supportsLoiter.value) return
+  waypointPickerTarget.value = { list: 'loiterCenter' }
+  waypointPickerPoint.value = { longitude: loiterCircle.value.longitude, latitude: loiterCircle.value.latitude }
+  waypointPickerVisible.value = true
+}
+
 function applyWaypointMapPoint(point: WaypointMapPoint): void {
   const target = waypointPickerTarget.value
   const platform = editor.value
@@ -440,6 +529,9 @@ function applyWaypointMapPoint(point: WaypointMapPoint): void {
     platform.initialPosition.latitude = point.latitude
     touchField('initialPosition.longitude')
     touchField('initialPosition.latitude')
+  } else if (target.list === 'loiterCenter') {
+    loiterCircle.value = { ...loiterCircle.value, longitude: point.longitude, latitude: point.latitude }
+    regenerateLoiterFromCircle()
   } else {
     if (target.index === null) return
     const routePoint = target.list === 'waypoints' ? platform.waypoints[target.index] : templatePoints(target.list)?.[target.index]
@@ -454,6 +546,7 @@ function applyWaypointMapPoint(point: WaypointMapPoint): void {
     }
     touchField(`${path}.longitude`)
     touchField(`${path}.latitude`)
+    if (target.list === 'loiter') syncLoiterCircleFromPlatform()
   }
   waypointPickerVisible.value = false
 }
@@ -470,7 +563,13 @@ function removeWaypoint(index: number): void {
 function apply(): void {
   if (editor.value === null || props.pending || props.locked || cannotAdd.value) return
   confirmationAttempted.value = true
-  if (advancedConfig.value && (fieldError('faction') || fieldError('communicationRangeM'))) advancedConfig.value.open = true
+  if (advancedConfig.value && fieldError('faction')) advancedConfig.value.open = true
+  if (loiterDetails.value && (
+    validationIssues.value.some(issue => issue.fieldPath.startsWith('loiterWaypoints['))
+    || editor.value.loiterWaypoints?.some(point => waypointSpeedError(point.speed))
+  )) {
+    loiterDetails.value.open = true
+  }
   let message = ''
   if (!editor.value.name?.trim()) message = '请填写名称。'
   else if (invalidSpacing.value) message = '节点间隔必须大于 0 km。'
@@ -489,11 +588,15 @@ watch(() => props.modelValue, (visible) => {
   resetMapPickers()
   if (!visible) return
   if (advancedConfig.value) advancedConfig.value.open = false
+  if (loiterDetails.value) loiterDetails.value.open = false
   resetValidationState()
   editor.value = props.platform === null ? null : structuredClone(toRaw(props.platform))
   quantity.value = 1
   spacingKm.value = 1
-  if (editor.value !== null) synchronizeTypeFields(editor.value.type)
+  if (editor.value !== null) {
+    synchronizeTypeFields(editor.value.type)
+    syncLoiterCircleFromPlatform()
+  }
 }, { immediate: true })
 </script>
 
@@ -556,10 +659,6 @@ watch(() => props.modelValue, (visible) => {
               <el-option v-for="option in FACTION_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="节点通信范围（km）" :error="fieldError('communicationRangeM')">
-            <el-input-number :model-value="communicationRangeKm" :min="0" :step="1" controls-position="right" placeholder="未配置" data-testid="platform-communication-range" @update:model-value="setCommunicationRangeKm" />
-            <small :class="{ 'platform-editor-field__hint--hidden': !!fieldError('communicationRangeM') }" class="platform-editor-field__hint">范围 0～∞ km；0 表示未配置。</small>
-          </el-form-item>
         </div>
       </details>
 
@@ -608,32 +707,81 @@ watch(() => props.modelValue, (visible) => {
         </el-table>
       </section>
 
-      <section v-for="list in visibleTemplateRoutes" :key="list" class="platform-editor-section" :aria-labelledby="`platform-${list}-title`" :data-testid="`${list}-section`">
+      <section v-if="supportsLoiter" class="platform-editor-section" aria-labelledby="platform-loiter-title" data-testid="loiter-section">
         <div class="waypoint-heading">
-          <h4 :id="`platform-${list}-title`" class="platform-editor-section__title">{{ list === 'loiter' ? `盘旋航点（${editor.loiterWaypoints?.length ?? 0}）` : `返航路线（${editor.returnPlan?.waypoints.length ?? 0}）` }}</h4>
-          <el-switch v-if="list === 'return'" :model-value="editor.returnPlan !== undefined" inline-prompt active-text="返航" inactive-text="不返航" aria-label="启用返航" data-testid="return-enabled" @change="toggleReturnPlan" />
-          <el-button v-if="list === 'loiter' || editor.returnPlan" size="small" :disabled="pending || locked" :data-testid="`add-${list}-waypoint`" @click="list === 'loiter' ? openWaypointRoute('loiter') : addReturnWaypoint()">{{ list === 'loiter' ? '新增盘旋航点' : '新增返航路线航点' }}</el-button>
+          <h4 id="platform-loiter-title" class="platform-editor-section__title">盘旋配置（{{ editor.loiterWaypoints?.length ?? 0 }}）</h4>
+          <el-switch :model-value="loiterEnabled" inline-prompt active-text="盘旋" inactive-text="不盘旋" aria-label="启用盘旋" data-testid="loiter-enabled" @change="toggleLoiter" />
+          <el-button v-if="loiterEnabled" size="small" :disabled="pending || locked" data-testid="pick-loiter-center" @click="openLoiterCenterPicker">地图选圆心</el-button>
         </div>
-        <p v-if="list === 'loiter'" class="platform-editor-field__hint">盘旋航点在航线末尾循环飞行；非必填，配置时至少 2 个点，速度须大于 0。</p>
-        <p v-else class="platform-editor-field__hint">开启后从返航时刻起沿返航路线依次飞行，飞完最后一个航点即结束；返航时刻须大于 0 且早于仿真结束时刻，返航路线至少 1 个航点，直飞回基地只需填 1 个。</p>
-        <div v-if="list === 'return' && editor.returnPlan" class="position-grid">
+        <p class="platform-editor-field__hint">开启后选择盘旋圆心并设置半径，系统自动生成 {{ DEFAULT_LOITER_POINT_COUNT }} 个圆周盘旋航点并在航线末尾循环飞行；非必填。</p>
+        <template v-if="loiterEnabled">
+          <div class="position-grid">
+            <el-form-item required label="圆心经度（°）">
+              <el-input-number :model-value="loiterCircle.longitude" :min="-180" :max="180" :step="0.01" controls-position="right" data-testid="loiter-center-longitude" @update:model-value="updateLoiterCircle('longitude', $event)" />
+            </el-form-item>
+            <el-form-item required label="圆心纬度（°）">
+              <el-input-number :model-value="loiterCircle.latitude" :min="-90" :max="90" :step="0.01" controls-position="right" data-testid="loiter-center-latitude" @update:model-value="updateLoiterCircle('latitude', $event)" />
+            </el-form-item>
+            <el-form-item required label="盘旋半径（km）">
+              <el-input-number :model-value="loiterCircle.radiusKm" :min="MIN_LOITER_RADIUS_KM" :max="MAX_LOITER_RADIUS_KM" :step="0.5" controls-position="right" data-testid="loiter-radius-km" @update:model-value="updateLoiterCircle('radiusKm', $event)" />
+            </el-form-item>
+            <el-form-item required label="盘旋高度（m）">
+              <el-input-number :model-value="loiterCircle.altitude" :min="0" :step="100" controls-position="right" data-testid="loiter-altitude" @update:model-value="updateLoiterCircle('altitude', $event)" />
+            </el-form-item>
+            <el-form-item required label="盘旋速度（m/s）">
+              <el-input-number :model-value="loiterCircle.speed" :min="1" :step="10" controls-position="right" data-testid="loiter-speed" @update:model-value="updateLoiterCircle('speed', $event)" />
+            </el-form-item>
+          </div>
+          <p v-if="templateRouteListError('loiter')" class="platform-editor-field__error" data-testid="loiter-list-error">{{ templateRouteListError('loiter') }}</p>
+          <details ref="loiterDetails" class="scenario-advanced loiter-points-details" data-testid="loiter-details">
+            <summary>查看 / 微调盘旋航点明细（{{ editor.loiterWaypoints?.length ?? 0 }} 点）</summary>
+            <div class="loiter-details-toolbar">
+              <el-button size="small" :disabled="pending || locked" data-testid="add-loiter-waypoint" @click="openWaypointRoute('loiter')">地图追加 / 拖动航点</el-button>
+              <el-button size="small" :disabled="pending || locked" data-testid="regenerate-loiter-circle" @click="regenerateLoiterFromCircle">按圆心半径重新生成</el-button>
+            </div>
+            <el-table :data="editor.loiterWaypoints ?? []" empty-text="暂无盘旋航点" data-testid="loiter-table">
+              <el-table-column label="经度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`loiterWaypoints[${$index}].longitude`)"><el-input-number v-model="row.longitude" :min="validate === undefined ? -180 : undefined" :max="validate === undefined ? 180 : undefined" controls-position="right" :data-testid="`loiter-longitude-${$index}`" @input="touchField(`loiterWaypoints[${$index}].longitude`)" @update:model-value="touchField(`loiterWaypoints[${$index}].longitude`); syncLoiterCircleFromPlatform()" /></el-form-item></template></el-table-column>
+              <el-table-column label="纬度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`loiterWaypoints[${$index}].latitude`)"><el-input-number v-model="row.latitude" :min="validate === undefined ? -90 : undefined" :max="validate === undefined ? 90 : undefined" controls-position="right" :data-testid="`loiter-latitude-${$index}`" @input="touchField(`loiterWaypoints[${$index}].latitude`)" @update:model-value="touchField(`loiterWaypoints[${$index}].latitude`); syncLoiterCircleFromPlatform()" /></el-form-item></template></el-table-column>
+              <el-table-column label="高度（m） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`loiterWaypoints[${$index}].altitude`)"><el-input-number v-model="row.altitude" :min="validate === undefined ? 0 : undefined" controls-position="right" :data-testid="`loiter-altitude-${$index}`" @input="touchField(`loiterWaypoints[${$index}].altitude`)" @update:model-value="touchField(`loiterWaypoints[${$index}].altitude`); syncLoiterCircleFromPlatform()" /></el-form-item></template></el-table-column>
+              <el-table-column label="速度（m/s）*" min-width="160"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`loiterWaypoints[${$index}].speed`, waypointSpeedError(row.speed) ? TEMPLATE_ROUTE_SPEED_ERROR : '')"><el-input-number v-model="row.speed" :min="1" placeholder="请输入至少为 1 的速度" controls-position="right" :data-testid="`loiter-speed-${$index}`" @input="touchField(`loiterWaypoints[${$index}].speed`)" @update:model-value="touchField(`loiterWaypoints[${$index}].speed`); syncLoiterCircleFromPlatform()" /></el-form-item></template></el-table-column>
+              <el-table-column label="操作" width="260" class-name="waypoint-actions">
+                <template #default="{ $index }">
+                  <el-button link type="primary" :disabled="pending || locked" :data-testid="`pick-loiter-${$index}`" @click="openWaypointPicker($index, 'loiter')">地图选点</el-button>
+                  <el-button link :disabled="pending || locked || $index === 0" :aria-label="`上移第 ${$index + 1} 个航点`" :data-testid="`move-up-loiter-${$index}`" @click="moveTemplatePoint('loiter', $index, -1)">上移</el-button>
+                  <el-button link :disabled="pending || locked || $index === (editor.loiterWaypoints?.length ?? 0) - 1" :aria-label="`下移第 ${$index + 1} 个航点`" :data-testid="`move-down-loiter-${$index}`" @click="moveTemplatePoint('loiter', $index, 1)">下移</el-button>
+                  <el-button link type="danger" :disabled="pending || locked" :data-testid="`delete-loiter-${$index}`" @click="removeTemplatePoint('loiter', $index)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </details>
+        </template>
+      </section>
+
+      <section v-if="supportsReturn" class="platform-editor-section" aria-labelledby="platform-return-title" data-testid="return-section">
+        <div class="waypoint-heading">
+          <h4 id="platform-return-title" class="platform-editor-section__title">返航路线（{{ editor.returnPlan?.waypoints.length ?? 0 }}）</h4>
+          <el-switch :model-value="editor.returnPlan !== undefined" inline-prompt active-text="返航" inactive-text="不返航" aria-label="启用返航" data-testid="return-enabled" @change="toggleReturnPlan" />
+          <el-button v-if="editor.returnPlan" size="small" :disabled="pending || locked" data-testid="add-return-waypoint" @click="addReturnWaypoint">新增返航路线航点</el-button>
+        </div>
+        <p class="platform-editor-field__hint">开启后从返航时刻起沿返航路线依次飞行，飞完最后一个航点即结束；返航时刻须大于 0 且早于仿真结束时刻，返航路线至少 1 个航点，直飞回基地只需填 1 个。</p>
+        <div v-if="editor.returnPlan" class="position-grid">
           <el-form-item required label="返航时刻（仿真秒）" :error="fieldError('returnPlan.timeS', returnTimeValid(editor.returnPlan.timeS) ? '' : RETURN_TIME_ERROR)">
             <el-input-number v-model="editor.returnPlan.timeS" :min="0" placeholder="请输入返航时刻" controls-position="right" data-testid="return-time" @input="touchField('returnPlan.timeS')" @update:model-value="touchField('returnPlan.timeS')" />
           </el-form-item>
         </div>
-        <template v-if="list === 'loiter' || editor.returnPlan">
-          <p v-if="templateRouteListError(list)" class="platform-editor-field__error" :data-testid="`${list}-list-error`">{{ templateRouteListError(list) }}</p>
-          <el-table :data="templatePoints(list) ?? []" :empty-text="list === 'loiter' ? '暂无盘旋航点' : '返航路线暂无航点'" :data-testid="`${list}-table`">
-            <el-table-column label="经度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].longitude`)"><el-input-number v-model="row.longitude" :min="validate === undefined ? -180 : undefined" :max="validate === undefined ? 180 : undefined" controls-position="right" :data-testid="`${list}-longitude-${$index}`" @input="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].longitude`)" @update:model-value="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].longitude`)" /></el-form-item></template></el-table-column>
-            <el-table-column label="纬度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].latitude`)"><el-input-number v-model="row.latitude" :min="validate === undefined ? -90 : undefined" :max="validate === undefined ? 90 : undefined" controls-position="right" :data-testid="`${list}-latitude-${$index}`" @input="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].latitude`)" @update:model-value="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].latitude`)" /></el-form-item></template></el-table-column>
-            <el-table-column label="高度（m） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].altitude`)"><el-input-number v-model="row.altitude" :min="validate === undefined ? 0 : undefined" controls-position="right" :data-testid="`${list}-altitude-${$index}`" @input="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].altitude`)" @update:model-value="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].altitude`)" /></el-form-item></template></el-table-column>
-            <el-table-column label="速度（m/s）*" min-width="160"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].speed`, waypointSpeedError(row.speed) ? TEMPLATE_ROUTE_SPEED_ERROR : '')"><el-input-number v-model="row.speed" :min="1" placeholder="请输入至少为 1 的速度" controls-position="right" :data-testid="`${list}-speed-${$index}`" @input="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].speed`)" @update:model-value="touchField(`${TEMPLATE_ROUTE_FIELDS[list]}[${$index}].speed`)" /></el-form-item></template></el-table-column>
+        <template v-if="editor.returnPlan">
+          <p v-if="templateRouteListError('return')" class="platform-editor-field__error" data-testid="return-list-error">{{ templateRouteListError('return') }}</p>
+          <el-table :data="editor.returnPlan.waypoints" empty-text="返航路线暂无航点" data-testid="return-table">
+            <el-table-column label="经度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`returnPlan.waypoints[${$index}].longitude`)"><el-input-number v-model="row.longitude" :min="validate === undefined ? -180 : undefined" :max="validate === undefined ? 180 : undefined" controls-position="right" :data-testid="`return-longitude-${$index}`" @input="touchField(`returnPlan.waypoints[${$index}].longitude`)" @update:model-value="touchField(`returnPlan.waypoints[${$index}].longitude`)" /></el-form-item></template></el-table-column>
+            <el-table-column label="纬度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`returnPlan.waypoints[${$index}].latitude`)"><el-input-number v-model="row.latitude" :min="validate === undefined ? -90 : undefined" :max="validate === undefined ? 90 : undefined" controls-position="right" :data-testid="`return-latitude-${$index}`" @input="touchField(`returnPlan.waypoints[${$index}].latitude`)" @update:model-value="touchField(`returnPlan.waypoints[${$index}].latitude`)" /></el-form-item></template></el-table-column>
+            <el-table-column label="高度（m） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`returnPlan.waypoints[${$index}].altitude`)"><el-input-number v-model="row.altitude" :min="validate === undefined ? 0 : undefined" controls-position="right" :data-testid="`return-altitude-${$index}`" @input="touchField(`returnPlan.waypoints[${$index}].altitude`)" @update:model-value="touchField(`returnPlan.waypoints[${$index}].altitude`)" /></el-form-item></template></el-table-column>
+            <el-table-column label="速度（m/s）*" min-width="160"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`returnPlan.waypoints[${$index}].speed`, waypointSpeedError(row.speed) ? TEMPLATE_ROUTE_SPEED_ERROR : '')"><el-input-number v-model="row.speed" :min="1" placeholder="请输入至少为 1 的速度" controls-position="right" :data-testid="`return-speed-${$index}`" @input="touchField(`returnPlan.waypoints[${$index}].speed`)" @update:model-value="touchField(`returnPlan.waypoints[${$index}].speed`)" /></el-form-item></template></el-table-column>
             <el-table-column label="操作" width="260" class-name="waypoint-actions">
               <template #default="{ $index }">
-                <el-button link type="primary" :disabled="pending || locked" :data-testid="`pick-${list}-${$index}`" @click="openWaypointPicker($index, list)">地图选点</el-button>
-                <el-button link :disabled="pending || locked || $index === 0" :aria-label="`上移第 ${$index + 1} 个航点`" :data-testid="`move-up-${list}-${$index}`" @click="moveTemplatePoint(list, $index, -1)">上移</el-button>
-                <el-button link :disabled="pending || locked || $index === (templatePoints(list)?.length ?? 0) - 1" :aria-label="`下移第 ${$index + 1} 个航点`" :data-testid="`move-down-${list}-${$index}`" @click="moveTemplatePoint(list, $index, 1)">下移</el-button>
-                <el-button link type="danger" :disabled="pending || locked" :data-testid="`delete-${list}-${$index}`" @click="removeTemplatePoint(list, $index)">删除</el-button>
+                <el-button link type="primary" :disabled="pending || locked" :data-testid="`pick-return-${$index}`" @click="openWaypointPicker($index, 'return')">地图选点</el-button>
+                <el-button link :disabled="pending || locked || $index === 0" :aria-label="`上移第 ${$index + 1} 个航点`" :data-testid="`move-up-return-${$index}`" @click="moveTemplatePoint('return', $index, -1)">上移</el-button>
+                <el-button link :disabled="pending || locked || $index === editor.returnPlan.waypoints.length - 1" :aria-label="`下移第 ${$index + 1} 个航点`" :data-testid="`move-down-return-${$index}`" @click="moveTemplatePoint('return', $index, 1)">下移</el-button>
+                <el-button link type="danger" :disabled="pending || locked" :data-testid="`delete-return-${$index}`" @click="removeTemplatePoint('return', $index)">删除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -651,13 +799,14 @@ watch(() => props.modelValue, (visible) => {
     v-model="waypointPickerVisible"
     :route="waypointPickerRoute"
     :route-context="waypointPickerContext"
-    :title="pickingInitialPosition ? `地图选取${initialPositionLabel}` : undefined"
-    :hint="pickingInitialPosition ? `单击地图选择${initialPositionLabel}的经纬度。` : pickingReturnWaypoint ? undefined : '单击地图微调该航点的经纬度。'"
-    :empty-text="pickingInitialPosition ? `尚未选择${initialPositionLabel}` : undefined"
+    :title="waypointPickerTitle"
+    :hint="waypointPickerHint"
+    :empty-text="waypointPickerEmptyText"
     :show-altitude="pickingReturnWaypoint"
     :allow-zero-point="!pickingReturnWaypoint"
     :longitude="waypointPickerPoint.longitude"
     :latitude="waypointPickerPoint.latitude"
+    :preview-radius-meters="loiterPreviewRadiusMeters"
     :bounds="waypointPickerBounds"
     :existing-nodes="existingNodes"
     :fit-existing-nodes="pickingInitialPosition && !editing"
@@ -779,6 +928,18 @@ watch(() => props.modelValue, (visible) => {
 .waypoint-heading .platform-editor-section__title {
   flex: 1;
   margin-bottom: 0;
+}
+
+.loiter-points-details {
+  margin-top: 0.25rem;
+}
+
+.loiter-details-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
 }
 
 :global(.platform-editor-dialog .el-dialog__close) {

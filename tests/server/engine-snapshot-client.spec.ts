@@ -72,6 +72,34 @@ it.each([false, true])('同帧双包先合并再去重/归档，支持路由先�
   expect(saved.eventRows[0]!.value).toMatchObject({ newPathId: 'new-path', oldPathId: 'old-path' })
 })
 
+it('停止时慢盘积压的完整双包按序归档，末尾单包不覆盖最后完整帧', async () => {
+  const { server, url } = await upstream()
+  const root = await mkdtemp(join(tmpdir(), 'wrj-drain-final-frame-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  const archive = createEngineFrameArchive(root, () => '2026-11-24T00:00:00Z')
+  const session = await archive.begin({ ...run, scenarioId: 'SCN-TAIL', revision: 1, startedAt: '2026-11-24T00:00:00Z' })
+  let release!: () => void, entered!: () => void
+  const write = new Promise<void>(resolve => { release = resolve })
+  const first = new Promise<void>(resolve => { entered = resolve })
+  const client = new EngineSnapshotClient(url, async (_: string, frame: EngineFrameSnapshot) => {
+    entered(); await write; await session.append(frame)
+  }, vi.fn())
+  cleanups.push(async () => { release(); client.stop(); await session.close() })
+  const connected = once(server, 'connection')
+  client.start(run, manifest)
+  const [socket] = await connected
+  for (const time of [0, 0.25, 0.5]) for (const part of splitFrame(time)) socket.send(JSON.stringify(part))
+  socket.send(JSON.stringify(splitFrame(0.75)[0]))
+  await first
+  const drained = client.drainAndStop(run.runId)
+  release()
+  await drained
+  await session.close()
+  const saved = await archive.load(run.runId)
+  expect(saved).toMatchObject({ frameCount: 3, firstSimulationTime: 0, lastSimulationTime: 0.5 })
+  expect(client.diagnostics.rejected).toBe(1)
+})
+
 it('缺包不发布半帧；下一帧可继续，晚到旧包不破坏当前配对', async () => {
   const { server, url } = await upstream(), frames: EngineFrameSnapshot[] = []
   const client = new EngineSnapshotClient(url, (_id: string, frame: EngineFrameSnapshot) => { frames.push(frame) }, vi.fn())
@@ -547,10 +575,11 @@ it('本机 mission 同时接入 TXT 模拟引擎，经真实 WebSocket 转发质
   let finish!: (value: { code: number | null }) => void
   const completed = new Promise<{ code: number | null }>(resolve => { finish = resolve })
   const stop = vi.fn(async () => { finish({ code: 0 }) })
+  const reportStartupDiagnostic = vi.fn()
   const server = createMockServer({ port: 0, linkEngineWsUrl: engine.url,
     engineFrameArchive: createEngineFrameArchive(root, () => new Date().toISOString()),
     createEngineSnapshotClient: (url: string, publish: any, diagnose: any) => new EngineSnapshotClient(url, publish, undefined, diagnose),
-    missionExecution: { start: async () => ({ pid: 123, startedAt: '2026-11-14T00:00:00Z', entryPath: 'test/scenario.txt', completed, stop }) },
+    missionExecution: { start: async () => ({ pid: 123, startedAt: '2026-11-14T00:00:00Z', entryPath: 'test/scenario.txt', completed, stop, reportStartupDiagnostic }) },
   })
   cleanups.push(() => server.close())
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
@@ -571,6 +600,7 @@ it('本机 mission 同时接入 TXT 模拟引擎，经真实 WebSocket 转发质
   expect(started.canonical.processId).toBe(123)
   const frames = () => messages.filter(item => item.payload?.kind === 'ENGINE_FRAME')
   await vi.waitFor(() => expect(frames().length).toBeGreaterThanOrEqual(2))
+  expect(reportStartupDiagnostic).toHaveBeenCalledWith(expect.stringContaining('"event":"WebSocket 已连接"'))
   expect(frames().slice(0, 2).map(item => item.payload.frameId)).toEqual([0, 5])
   for (const [index, envelope] of frames().slice(0, 2).entries()) {
     expect(envelope).toMatchObject({ taskId: created.taskId, topic: 'link.metric', sequence: frames()[0].sequence + index,

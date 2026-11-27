@@ -247,6 +247,20 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
   }
 
   delete(id: string, revision: number): boolean {
-    return this.db.prepare('DELETE FROM scenarios WHERE id = ? AND revision = ?').run(id, revision).changes === 1
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const deleted = this.db.prepare('DELETE FROM scenarios WHERE id = ? AND revision = ?').run(id, revision).changes === 1
+      if (deleted && this.hasSources) {
+        const hasEquipmentRefs = this.db.prepare("SELECT 1 FROM equipment.sqlite_master WHERE type='table' AND name='equipment_references'").get()
+        if (hasEquipmentRefs) {
+          this.db.prepare('DELETE FROM equipment.equipment_references WHERE scenario_id = ?').run(id)
+        }
+      }
+      this.db.exec('COMMIT')
+      return deleted
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
   }
 }

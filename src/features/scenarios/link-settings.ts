@@ -1,6 +1,15 @@
-import type { Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings } from '../../contracts/domain-models'
+import type { Link, Platform, ScenarioConfig, ScenarioLinkSettings } from '../../contracts/domain-models'
 
-export const DEFAULT_LINK_PRIORITY: readonly LinkType[] = ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER']
+export const RETIRED_LINK_SETTINGS_KEYS = ['switchRules', 'priority'] as const
+
+/** 只移除旧场景里的废弃设置，保留已经选定的前向和返向热链。 */
+export function withoutRetiredLinkSettings<T extends Pick<ScenarioConfig, 'linkSettings'>>(config: T): T {
+  const settings = config.linkSettings
+  if (!settings || !RETIRED_LINK_SETTINGS_KEYS.some(key => Object.hasOwn(settings, key))) return config
+  const linkSettings = { ...settings }
+  for (const key of RETIRED_LINK_SETTINGS_KEYS) Reflect.deleteProperty(linkSettings, key)
+  return { ...config, linkSettings }
+}
 
 export const LINK_PARAMETER_DEFAULTS = {
   enabled: true,
@@ -26,13 +35,11 @@ export const LINK_DECISION_DEFAULTS = {
  * @returns 卫星启用和切换策略的配置副本；保留旧配置的兼容字段。
  */
 export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'linkSettings'>): ScenarioLinkSettings {
-  const stored = config.linkSettings === undefined ? undefined : { ...config.linkSettings }
-  if (stored !== undefined) delete (stored as { switchRules?: unknown }).switchRules
+  const stored = withoutRetiredLinkSettings(config).linkSettings
   const settings: ScenarioLinkSettings = stored !== undefined ? {
     ...stored,
     ...(stored.enabledTypes === undefined ? {} : { enabledTypes: { ...stored.enabledTypes } }),
     enabledSatellites: { ...stored.enabledSatellites },
-    priority: [...stored.priority],
     ...(stored.linkCalc === undefined ? {} : { linkCalc: { ...stored.linkCalc } }),
     ...(stored.hotLinks === undefined ? {} : { hotLinks: { ...stored.hotLinks,
       forward: stored.hotLinks.forward.map(chain => [...chain]), reverse: stored.hotLinks.reverse.map(chain => [...chain]) } }),
@@ -43,7 +50,6 @@ export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'lin
       SHENTONG: false,
     },
     ...LINK_DECISION_DEFAULTS,
-    priority: [...DEFAULT_LINK_PRIORITY],
   }
   // 旧双选/均未选收敛为默认天通；仅转换合法布尔值的副本，非法输入仍交给校验阻断。
   const { TIANTONG, SHENTONG } = settings.enabledSatellites

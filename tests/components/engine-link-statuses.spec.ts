@@ -56,6 +56,33 @@ function makeFrame(links: EngineLinkSegment[]): EngineFrameSnapshot {
 }
 
 describe('resolveEngineFrameConfiguredLinks', () => {
+  it('分段按场景 BER 门限显示，保留引擎上报与更严重的故障', () => {
+    const link = makeLink('L-1', 'A', 'B')
+    const segment = makeSegment({ linkId: 'SEG-1', linkIds: [link.id], sourcePlatformId: 'A', targetPlatformId: 'B' })
+    const frame = makeFrame([segment])
+    const display = (thresholds?: { warningThreshold: number; emergencyThreshold: number }) =>
+      resolveEngineFrameConfiguredLinks(frame, [link], thresholds).get(link.id)?.status
+
+    expect(display()).toBe('DEGRADED') // BER 恰好为 1e-6。
+    segment.quality.ber = 1e-5
+    expect(display()).toBe('DOWN')
+    const custom = { warningThreshold: 0.1, emergencyThreshold: 0.9 }
+    expect(display(custom)).toBe('UP')
+    segment.quality.ber = 0.1
+    expect(display(custom)).toBe('DEGRADED')
+    expect(display({ warningThreshold: 0.1, emergencyThreshold: 0.1 })).toBe('DOWN')
+    segment.quality.ber = 0.9
+    expect(display(custom)).toBe('DOWN')
+    expect(segment.status).toBe('UP')
+    segment.quality.ber = null
+    expect(display()).toBe('UP')
+    segment.status = 'DOWN'
+    segment.quality.ber = 0
+    expect(display()).toBe('DOWN')
+    segment.status = 'UNKNOWN'
+    expect(display()).toBeUndefined()
+  })
+
   it('聚合正常/劣化/中断两跳中继且不伪造多跳数值，拒绝缺测与错误段', () => {
     const links = [
       makeLink('L-DEG', 'CMD', 'U1', 'RELAY'),
@@ -63,10 +90,12 @@ describe('resolveEngineFrameConfiguredLinks', () => {
       makeLink('L-UNK', 'CMD', 'U3', 'RELAY'),
       makeLink('L-ERR', 'CMD', 'U4', 'RELAY'),
     ]
+    const secondHop = makeSegment({ linkId: 'H2-U2', linkIds: ['L-DOWN'], sourcePlatformId: 'RELAY', targetPlatformId: 'U2', status: 'UP', distanceM: null })
+    secondHop.quality.ber = 1e-5
     const resolved = resolveEngineFrameConfiguredLinks(makeFrame([
       makeSegment({ linkId: 'TRUNK', linkIds: ['L-DEG', 'L-DOWN', 'L-UNK', 'L-ERR'], sourcePlatformId: 'CMD', targetPlatformId: 'RELAY', status: 'DEGRADED', distanceM: 2400 }),
       makeSegment({ linkId: 'H2-U1', linkIds: ['L-DEG'], sourcePlatformId: 'RELAY', targetPlatformId: 'U1', status: 'UP' }),
-      makeSegment({ linkId: 'H2-U2', linkIds: ['L-DOWN'], sourcePlatformId: 'RELAY', targetPlatformId: 'U2', status: 'DOWN', distanceM: null }),
+      secondHop,
       makeSegment({ linkId: 'H2-U3', linkIds: ['L-UNK'], sourcePlatformId: 'RELAY', targetPlatformId: 'U3', status: 'UNKNOWN' }),
       makeSegment({ linkId: 'H2-U4', linkIds: ['L-ERR'], sourcePlatformId: 'RELAY', targetPlatformId: 'U4', status: 'UP', error: 'missing_snr' }),
     ]), links)

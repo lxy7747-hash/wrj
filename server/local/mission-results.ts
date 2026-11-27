@@ -2,22 +2,22 @@ import { engineNameMap, toScenarioDevices } from './engine-name-mapping.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile, readdir, lstat, realpath, rename, unlink } from 'node:fs/promises'
 import { join, resolve, relative, isAbsolute } from 'node:path'
-import { EVENTS_CSV_HEADER, type Report, type ScenarioDraft, type SimulationRun } from '../../src/contracts/domain-models.js'
+import type { Report, ScenarioDraft, SimulationRun } from '../../src/contracts/domain-models.js'
 import { fileReceptionMapping } from '../../src/features/situation/file-reception.js'
+import { snapshotReplayMap } from '../../src/features/replays/replay-map-config.js'
 import { isMissionResultId, isMissionResultRecord, isMissionResultSnapshot, normalizeMissionResultSnapshot, snapshotMissionResultParameters, type MissionResultParameters, type MissionResultRecord, type MissionResultSnapshot } from '../../src/features/results/mission-result.js'
 import { readLocalReplay } from './afsim-replay-reader.js'
 import { readLocalReport } from './report-file.js'
-import { readAfsimLogFile, readStableUtf8Lines, resolveManifestConnections } from './afsim-log-reader.js'
+import { readAfsimLogFile, resolveManifestConnections } from './afsim-log-reader.js'
 import { writeTimeSeries, type TimeSeriesContext } from './time-series.js'
-import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
 import type { EquipmentPublishedReference } from '../../src/features/admin/equipment-history-contract.js'
-import { filterMissionReport, publishReportFilterIndex } from './report-filter.js'
+import { filterMissionReport, publishReportFilterIndex, type ContinuousEventArchive } from './report-filter.js'
 import { isLocalReport, parseLocalReportFilter } from '../../src/features/reports/local-report.js'
 import type { LocalReportFilter, LocalReportFilterResult } from '../../src/contracts/domain-models.js'
 
 export interface MissionResults {
   list(): Promise<MissionResultRecord[]>
-  get(id: string): Promise<MissionResultSnapshot | null>
+  get(id: string, cacheSnapshot?: boolean): Promise<MissionResultSnapshot | null>
   filter?(id: string, reportId: string, filter: LocalReportFilter): Promise<LocalReportFilterResult>
   /** 报告视图：读取轻量快照（不含回放轨迹），避免为了看报告加载整份回放。 */
   getReportView?(id: string): Promise<MissionResultReportView | null>
@@ -33,7 +33,6 @@ export interface MissionResultReportView {
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
-const CANONICAL_ARCHIVE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 const MAX_CACHED_SNAPSHOTS = 4
 
 function lruSet<K, V>(cache: Map<K, V>, key: K, value: V, limit = MAX_CACHED_SNAPSHOTS): void {
@@ -51,10 +50,10 @@ async function regularFileSig(path: string, errorMessage: string): Promise<strin
   return `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}:${info.birthtimeNs}`
 }
 
-/** 大型事件日志仅接受 runner 传入的、已完成且逐项可核验的连续归档。 */
-async function validateContinuousEventArchive(
+/** 核验连续归档清单；建立索引时对同一遍读取的 CSV 校验行、任务和摘要。 */
+async function readContinuousEventArchive(
   archiveDirectory: string, context: TimeSeriesContext, eventSource: { bytes: number; sha256: string }, expectedRows: number,
-): Promise<void> {
+): Promise<ContinuousEventArchive> {
   const initial = await lstat(archiveDirectory)
   if (!initial.isDirectory() || initial.isSymbolicLink()) throw new Error('连续时序归档目录必须为普通目录。')
   const root = await realpath(archiveDirectory)
@@ -79,23 +78,10 @@ async function validateContinuousEventArchive(
   const eventsPath = join(root, 'events.csv')
   const eventsStat = await lstat(eventsPath)
   if (!eventsStat.isFile() || eventsStat.isSymbolicLink()) throw new Error('连续时序 events.csv 必须为普通文件。')
-  let rows = 0
-  let headerSeen = false
-  const canonical = await readStableUtf8Lines(eventsPath, line => {
-    if (!headerSeen) {
-      headerSeen = true
-      if (line !== EVENTS_CSV_HEADER) throw new Error('连续时序 events.csv 表头不符合规范。')
-      return
-    }
-    const fields = parseCsvLine(line)
-    if (!fields || fields.length !== EVENTS_CSV_HEADER.split(',').length || fields[0] !== context.taskId) {
-      throw new Error('连续时序 events.csv 含无效记录或其他任务数据。')
-    }
-    rows += 1
-  }, CANONICAL_ARCHIVE_LIMIT_BYTES)
-  if (!headerSeen || canonical.waitingForLine || rows !== expectedRows || canonical.source.sha256 !== events.sha256) {
-    throw new Error('连续时序 events.csv 实际行数与完整来源不一致。')
+  if (isObject(events.writeMetrics) && 'writtenBytes' in events.writeMetrics && events.writeMetrics.writtenBytes !== eventsStat.size) {
+    throw new Error('连续时序 events.csv 实际字节数与清单不一致。')
   }
+  return { path: eventsPath, taskId: context.taskId, sha256: events.sha256 }
 }
 
 /** 完成后的快照原子发布，与可变的配置文件路径隔离。目录可随部署包迁移。 */
@@ -161,14 +147,15 @@ export class LocalMissionResults implements MissionResults {
       ...(context === undefined ? {} : { runId: context.runId, taskId: context.taskId }),
     }
     // 只冻结 capture 时已保存草稿的可比输入；不得从输出 CSV 推断功率、频段或质量结果。
-    const snapshot = { record, replay: mappedReplay, report, parameters: snapshotMissionResultParameters(draft) }
+    const snapshot = { record, replay: mappedReplay, replayMap: snapshotReplayMap(draft.config), report, parameters: snapshotMissionResultParameters(draft) }
     if (!isMissionResultSnapshot(snapshot)) throw new Error('结果未完整结束，或回放与报告的来源不一致。')
     if (!canPublish()) return
     if (log.source.sha256 !== snapshot.report.localEvidence?.eventFile.sha256) throw new Error('筛选索引前事件来源已变化。')
+    let canonicalEvents: ContinuousEventArchive | undefined
     if (context) {
       if ('messageDetailsComplete' in log && log.messageDetailsComplete === false) {
         if (!continuousArchiveDirectory) throw new Error('大型事件来源缺少经核验的连续时序归档，拒绝发布不完整 CSV 快照。')
-        await validateContinuousEventArchive(continuousArchiveDirectory, context, log.source, log.summary.eventCount)
+        canonicalEvents = await readContinuousEventArchive(continuousArchiveDirectory, context, log.source, log.summary.eventCount)
       } else {
         await writeTimeSeries(output, context, log, log.source.sha256, names)
       }
@@ -176,11 +163,7 @@ export class LocalMissionResults implements MissionResults {
     if (!canPublish()) return
     // Index is published before the result snapshot. A read can therefore never mistake a partial index for a filterable result.
     await mkdir(this.directory, { recursive: true })
-    await publishReportFilterIndex(this.directory, record, snapshot.report, snapshot.replay, log, {
-      devices,
-      ...(('messageDetailsComplete' in log && log.messageDetailsComplete === false && continuousArchiveDirectory)
-        ? { canonicalEventsPath: join(continuousArchiveDirectory, 'events.csv') } : {}),
-    })
+    await publishReportFilterIndex(this.directory, record, snapshot.report, snapshot.replay, log, { devices, canonicalEvents })
     if (!canPublish()) return
     const payload = JSON.stringify(snapshot)
     const pending = join(this.directory, `${record.resultId}.pending`)

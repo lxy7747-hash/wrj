@@ -1,7 +1,7 @@
 import { toScenarioLog } from './engine-name-mapping.js'
 import { createHash } from 'node:crypto'
 import type { BigIntStats } from 'node:fs'
-import { open, stat } from 'node:fs/promises'
+import { lstat, open, stat } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import { parseAfsimEventLog, type AfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
 import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
@@ -47,19 +47,30 @@ const exceedsUtf8Bytes = (text: string, maxBytes: number): boolean =>
  * 因此大文件不会被复制成一个 Buffer 或字符串；未完成尾行由调用者明确决定是否接受。
  */
 export async function readStableUtf8Lines(
-  inputPath: string, onLine: (line: string, lineNumber: number) => void | Promise<void>, maxBytes = STREAM_SOURCE_LIMIT_BYTES,
+  inputPath: string, onLine: (line: string, lineNumber: number) => void | Promise<void>,
+  limit: number | { maxLines: number } = STREAM_SOURCE_LIMIT_BYTES,
   maxLineBytes = STREAM_LINE_LIMIT_BYTES,
 ): Promise<StableTextSource> {
   const sourcePath = resolve(inputPath)
+  if (typeof limit !== 'number' && !(await lstat(sourcePath)).isFile()) throw new Error('归档路径必须为普通文件。')
   const handle = await open(sourcePath, 'r')
   let waitingForLine = false
   const digest = createHash('sha256')
   try {
     const before = await handle.stat({ bigint: true })
     if (!before.isFile()) throw new Error('输入路径必须为普通文件。')
-    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > STREAM_MAX_LIMIT_BYTES) throw new Error('流式读取上限无效。')
     if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0 || maxLineBytes > STREAM_METADATA_LIMIT_BYTES) throw new Error('单行读取上限无效。')
-    if (before.size > BigInt(maxBytes)) throw new Error(`原始文件超过受保护流式读取上限 ${maxBytes / 1024 / 1024} MiB。`)
+    const maxLines = typeof limit === 'number' ? Infinity : limit.maxLines
+    if (typeof limit === 'number') {
+      if (!Number.isSafeInteger(limit) || limit <= 0 || limit > STREAM_MAX_LIMIT_BYTES) throw new Error('流式读取上限无效。')
+      if (before.size > BigInt(limit)) throw new Error(`原始文件超过受保护流式读取上限 ${limit / 1024 / 1024} MiB。`)
+    } else {
+      // 已核验来源的派生归档按记录数和单行字节数限量，计入 CRLF 和首行 UTF-8 BOM。
+      if (!Number.isSafeInteger(maxLines) || maxLines < 0) throw new Error('归档行数上限无效。')
+      if (before.size > BigInt(Number.MAX_SAFE_INTEGER) || before.size > BigInt(maxLines) * BigInt(maxLineBytes + 2) + 3n) {
+        throw new Error('归档文件大小超过来源行数与单行长度允许的范围。')
+      }
+    }
     const size = Number(before.size)
     const decoder = new TextDecoder('utf-8', { fatal: true })
     const chunkBuf = size > 0 ? new Uint8Array(Math.min(STREAM_CHUNK_BYTES, size)) : new Uint8Array(0)
@@ -82,6 +93,7 @@ export async function readStableUtf8Lines(
         lineStart = breakAt + 1
         if (exceedsUtf8Bytes(line, maxLineBytes)) throw new Error(`文件含超过 ${maxLineBytes / 1024} KiB 的单行记录，拒绝不受控解析。`)
         lineNumber += 1
+        if (lineNumber > maxLines) throw new Error('归档行数超过已核验的来源记录数。')
         const pendingResult = onLine(line, lineNumber)
         if (pendingResult !== undefined && typeof (pendingResult as Promise<void>).then === 'function') await pendingResult
         breakAt = pending.indexOf('\n', lineStart)
@@ -91,7 +103,7 @@ export async function readStableUtf8Lines(
     }
     try { pending += decoder.decode() } catch { throw new Error('文件末尾不是完整 UTF-8 文本。') }
     waitingForLine = pending.length > 0
-    const after = await stat(sourcePath, { bigint: true })
+    const after = typeof limit === 'number' ? await stat(sourcePath, { bigint: true }) : await lstat(sourcePath, { bigint: true })
     if (!sameFileVersion(before, after)) throw new Error('文件在读取期间发生变化，请在写入稳定后重试。')
     return { source: { fileName: basename(sourcePath), path: sourcePath, bytes: size, sha256: digest.digest('hex') }, waitingForLine }
   } finally { await handle.close() }

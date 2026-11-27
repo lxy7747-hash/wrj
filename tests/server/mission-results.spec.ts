@@ -11,6 +11,7 @@ const { mkdtemp, mkdir, readFile, writeFile, rm, readdir } = await import('node:
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
 const { once } = await import('node:' + 'events')
+const { setImmediate: yieldToReads } = await import('node:timers/' + 'promises')
 const { createHash } = await import('node:' + 'crypto')
 const { default: request } = await import('super' + 'test')
 const { LocalMissionResults } = await import('../../server/local/' + 'mission-results.js')
@@ -44,6 +45,40 @@ async function setup() {
 }
 
 describe('真实仿真结果闭环', () => {
+  it('新运行保存当时的地图，后续修改节点名称不会改变该回放', async () => {
+    const { entry, draft, results } = await setup()
+    const firstName = draft.config.platforms[0]!.name
+    await results.capture(entry, draft, start, end)
+    draft.config.platforms[0]!.name = '后续修订的节点名'
+    const [record] = await results.list()
+    const saved = await results.get(record!.resultId)
+    expect(saved!.replayMap!.platforms[0]!.name).toBe(firstName)
+    expect(saved!.replayMap!.links).toEqual(draft.config.links)
+    expect(saved!.replayMap!.scenario).toEqual({ id: record!.scenarioId, environment: draft.config.scenario.environment })
+    expect(saved!.replayMap).not.toHaveProperty('output')
+  })
+
+  it('旧结果的回放读取同修订的地图，修订变化后不套用新配置', async () => {
+    const { entry, draft, results } = await setup()
+    await results.capture(entry, draft, start, end)
+    const [record] = await results.list()
+    const snapshot = (await results.get(record!.resultId))!
+    const savedMap = snapshot.replayMap!
+    delete snapshot.replayMap
+    vi.spyOn(results, 'get').mockResolvedValue(snapshot)
+    const getReport = vi.spyOn(results, 'getReportView')
+    const server = createMockServer({ port: 0, missionResults: results })
+    cleanup.push(() => server.close())
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const api = request(server.httpServer)
+    const read = () => api.get(`/api/v1/mission-results/${record!.resultId}`).set({ ...headers, 'X-Mission-Result-View': 'replay' }).expect(200)
+    const first = await read()
+    expect(first.body.data).toEqual({ record, replay: snapshot.replay, replayMap: savedMap })
+    snapshot.record = { ...snapshot.record, revision: record!.revision + 1 }
+    expect((await read()).body.data).not.toHaveProperty('replayMap')
+    expect(getReport).not.toHaveBeenCalled()
+  })
+
   it.each([true, false])('历史参数接口仅读取已保存快照，不加载质量数据或重建 CSV（有参数=%s）', async hasParameters => {
     const { root, entry, output, draft, results } = await setup()
     await results.capture(entry, draft, start, end, () => true, { taskId: 'TASK-PARAMETERS', runId: 'RUN-PARAMETERS' })
@@ -119,6 +154,7 @@ describe('真实仿真结果闭环', () => {
       .send({ reportId: snapshot.report.reportId, format: 'HTML', filter: { stage: 'PH-1' } }).expect(200)
     expect(response.text).toContain('项目参考配置，未确认引擎实际执行版本')
     expect(response.text).toContain('阶段筛选按该参考计划')
+    expect(response.text).toContain(expected.scenarioId)
   })
   it.each([true, false])('文件与 WS 接收可发布可筛选快照，重建后仍保留来源；文件变化不能混入（源文件结束标记 %s）', async complete => {
     const { root, output, results } = await setup()
@@ -231,8 +267,10 @@ describe('真实仿真结果闭环', () => {
     expect(linkFiltered.links).toEqual(['L-FILE'])
     expect(linkFiltered.report.localEvidence?.nodes.map((node: { platformId: string }) => node.platformId).sort()).toEqual(['A', 'B'])
     const exported = await exportLocalReport(join(root, 'exports'), filtered.report, 'HTML', 'operator', undefined, [], filtered.filter)
-    expect(await readFile(exported.filePath, 'utf8')).toContain('已应用筛选')
-    expect(await readFile(exported.filePath, 'utf8')).toContain('<svg')
+    const html = await readFile(exported.filePath, 'utf8')
+    expect(html).toContain('已应用筛选')
+    expect(html).toContain('节点=A')
+    expect(html).toContain('五项评估指标')
     await writeFile(join(root, 'results', `${record.resultId}.report-index.ndjson`), '{}\n')
     await expect(results.filter(record.resultId, snapshot.report.reportId, {})).rejects.toThrow('FILTER_UNSUPPORTED')
     expect((await results.get(record.resultId))?.report.reportId).toBe(snapshot.report.reportId)
@@ -390,10 +428,16 @@ describe('真实仿真结果闭环', () => {
       // 跨源 UI 需读取附件头才能确认下载；暴露头须由服务端给出。
       expect(response.headers['access-control-expose-headers']).toBe('Content-Disposition')
       expect(response.text).toContain(record.resultId)
-      expect(response.text).toContain(first.resultId)
-      expect(response.text).toContain('同场景已完成运行参数对比')
       expect(response.text).toContain(draft.config.scenario.id)
       expect(response.text).toContain(snapshot.replay.sha256)
+      if (format === 'CSV') {
+        expect(response.text).toContain(first.resultId)
+        expect(response.text).toContain('同场景已完成运行参数对比')
+      } else {
+        expect(response.text).toContain('五项评估指标')
+        expect(response.text).not.toContain(first.resultId)
+        expect(response.text).not.toContain('同场景已完成运行参数对比')
+      }
     }
     await api.post(url + '&archiveId=bad').set(headers).set('Cookie', cookie).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(422)
     const wrongReport = `RPT-LOCAL-${'a'.repeat(64)}`
@@ -408,6 +452,53 @@ describe('真实仿真结果闭环', () => {
     await api.get(`/api/v1/mission-results/${record.resultId}/parameters`).set(headers).set('Cookie', cookie).expect(403)
     await api.post('/api/v1/auth/logout').set(headers).set('Cookie', cookie).send({ confirm: true }).expect(200)
     await api.post(url).set(headers).set('Cookie', cookie).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(401)
+  })
+
+  it('简版报告仅读取本次结果，统计 CSV 逐一读取同场景历史且不缓存回放', async () => {
+    const { root, entry, draft, results } = await setup()
+    await results.capture(entry, draft, start, end)
+    const [current] = await results.list()
+    const snapshot = (await results.get(current!.resultId))!
+    const history = Array.from({ length: 12 }, (_, index): MissionResultRecord => ({
+      ...snapshot.record, resultId: `RESULT-00000000-0000-0000-0000-${String(index + 1).padStart(12, '0')}`,
+    }))
+    const foreign = { ...history[11]!, scenarioId: 'OTHER' }
+    const broken = history[1]!
+    let reading = 0
+    let peakReading = 0
+    const get = vi.fn(async (id: string, _cacheSnapshot?: boolean) => {
+      if (id === snapshot.record.resultId) return snapshot
+      reading++
+      peakReading = Math.max(peakReading, reading)
+      try {
+        await yieldToReads()
+        if (id === broken.resultId) throw new Error('损坏的历史记录')
+        return { ...snapshot, record: history.find(record => record.resultId === id)! }
+      } finally { reading-- }
+    })
+    const render = vi.fn((report: Report, format: 'HTML' | 'PDF' | 'CSV', actor: string, record?: MissionResultRecord, comparisons?: MissionResultParameterComparison[]) =>
+      exportLocalReport(join(root, 'exports'), report, format, actor, record, comparisons))
+    const list = vi.fn(async () => [foreign, snapshot.record, history[0]!, ...history])
+    const server = createMockServer({ port: 0, missionResults: { get, list }, exportLocalReport: render })
+    cleanup.push(() => server.close())
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+
+    const url = `/api/v1/reports/${snapshot.report.reportId}/export?resultId=${snapshot.record.resultId}`
+    const download = (format: 'HTML' | 'CSV') => request(server.httpServer).post(url)
+      .set(headers).send({ reportId: snapshot.report.reportId, format }).expect(200)
+    await download('HTML')
+    expect(list).not.toHaveBeenCalled()
+    expect(get.mock.calls).toEqual([[snapshot.record.resultId, false]])
+    expect(peakReading).toBe(0)
+    get.mockClear()
+    render.mockClear()
+
+    await download('CSV')
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(peakReading).toBe(1)
+    expect(get.mock.calls).toEqual([snapshot.record, ...history.slice(0, 11)].map(record => [record.resultId, false]))
+    expect(render.mock.calls[0]?.[4]?.map(row => row.record.resultId)).toEqual([snapshot.record, ...history.slice(0, 11)]
+      .filter(record => record !== broken).map(record => record.resultId))
   })
 
   it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('实际引擎 → 结果 → 回放/报告 → 浏览器附件接口', async () => {
@@ -448,9 +539,12 @@ describe('真实仿真结果闭环', () => {
     expect(snapshot.replay.tracks.length).toBeGreaterThan(0)
     expect(snapshot.report.localEvidence.simulationComplete).toBe(true)
     expect(snapshot.report.localEvidence.positionFile.sha256).toBe(snapshot.replay.sha256)
-    const download = await api.post(`/api/v1/reports/${snapshot.report.reportId}/export?resultId=${records[0].resultId}&download=1`).set(headers).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(200)
+    const exportUrl = `/api/v1/reports/${snapshot.report.reportId}/export?resultId=${records[0].resultId}&download=1`
+    const download = await api.post(exportUrl).set(headers).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(200)
     expect(download.text).toContain(records[0].resultId)
-    expect(download.text).toContain('CMD-01')
+    expect(download.text).toContain(snapshot.replay.sha256)
+    const csv = await api.post(exportUrl).set(headers).send({ reportId: snapshot.report.reportId, format: 'CSV' }).expect(200)
+    expect(csv.text).toContain('CMD-01')
   })
 
   it('report 视图响应省略 replay 并预载空筛选；磁盘结果变更时立即失效缓存并校验完整性', async () => {

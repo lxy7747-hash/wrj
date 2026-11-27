@@ -1,32 +1,26 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { SituationLinkView } from '../../features/situation/situation-model'
+import { RUNTIME_STATUS_LABELS } from '../../features/situation/runtime-quality-view'
 
-const props = defineProps<{ link: SituationLinkView }>()
+const labels = { ...RUNTIME_STATUS_LABELS, NO_DATA: '关闭', DISABLED: '已停用' } as const
+defineProps<{ status: keyof typeof labels }>()
 
-const statusLabel = computed(() => ({
-  UP: '正常',
-  DEGRADED: '劣化',
-  DOWN: '中断',
-})[props.link.status])
-
-const tagType = computed(() => ({
+const tagTypes = {
   UP: 'success',
   DEGRADED: 'warning',
   DOWN: 'danger',
-} as const)[props.link.status])
+  UNKNOWN: 'info',
+  NO_DATA: 'info',
+  DISABLED: 'info',
+} as const
 </script>
 
 <template>
   <el-tag
-    :type="tagType"
+    :type="tagTypes[status]"
     effect="dark"
     disable-transitions
-    :class="`link-status link-status--${link.status.toLowerCase()}`"
-    :data-canonical-status="link.canonicalStatus"
-    :data-threshold-version="link.thresholdVersion ?? ''"
-    :title="`${link.linkId}：单击链路查看判定依据`"
-  >{{ statusLabel }}</el-tag>
+    :class="`link-status link-status--${status.toLowerCase()}`"
+  >{{ labels[status] }}</el-tag>
 </template>
 
 <style scoped>
@@ -53,5 +47,10 @@ const tagType = computed(() => ({
 .link-status--down {
   --el-tag-bg-color: #3a1620;
   --el-tag-text-color: #ff7b7b;
+}
+
+.link-status.el-tag--info {
+  --el-tag-bg-color: #28313a;
+  --el-tag-text-color: #b3bcc6;
 }
 </style>

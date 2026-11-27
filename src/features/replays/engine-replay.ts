@@ -1,5 +1,6 @@
 import type { EngineFrameSnapshot, Link } from '../../contracts/domain-models'
 import { isEngineFrameId, isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
+import type { EngineRouteResolution, EngineSwitchEntry } from '../situation/engine-route-highlights'
 
 export type EngineReplayTimelineMarkerKind = 'DETECTION' | 'JAMMING' | 'ALARM' | 'SWITCH'
 
@@ -18,7 +19,7 @@ type FrameItem<T> = { frameId: number; simulationTime: number } & T
 export interface EngineReplayEvidence {
   engineFrame: EngineFrameSnapshot | null
   engineEvents: FrameItem<{ event: EngineFrameSnapshot['events'][number] }>[]
-  engineSwitches: FrameItem<{ route: EngineFrameSnapshot['routing']['switches'][number] }>[]
+  engineSwitches: EngineSwitchEntry[]
   engineAlarms: FrameItem<{ alarm: EngineFrameSnapshot['routing']['alarms'][number] }>[]
 }
 export interface EngineReplaySnapshot extends EngineReplayEvidence {
@@ -50,6 +51,13 @@ function isTimelineMarker(value: unknown): value is EngineReplayTimelineMarker {
     && (m.actorIds === undefined || (Array.isArray(m.actorIds) && m.actorIds.every(id => typeof id === 'string')))
 }
 
+function isRouteResolution(value: EngineRouteResolution | undefined, nodeCount: number): boolean {
+  return !!value && value.totalHops === Math.max(0, nodeCount - 1)
+    && Number.isSafeInteger(value.resolvedHops) && value.resolvedHops >= 0 && value.resolvedHops <= value.totalHops
+    && Array.isArray(value.linkIds) && value.linkIds.length <= value.resolvedHops
+    && value.linkIds.every(id => typeof id === 'string' && id.length > 0) && new Set(value.linkIds).size === value.linkIds.length
+}
+
 export function isEngineReplaySnapshot(value: unknown): value is EngineReplaySnapshot {
   if (!value || typeof value !== 'object') return false
   const v = value as EngineReplaySnapshot
@@ -72,4 +80,6 @@ export function isEngineReplaySnapshot(value: unknown): value is EngineReplaySna
   // Reuse the frame's nested payload validation for historical event rows.
   return isEngineFrameSnapshot({ ...v.engineFrame, events: v.engineEvents.map(item => item.event),
     routing: { switches: v.engineSwitches.map(item => item.route), alarms: v.engineAlarms.map(item => item.alarm) } })
+    && v.engineSwitches.every(({ route, resolution }) => resolution === undefined || (
+      isRouteResolution(resolution?.before, route.oldNodes.length) && isRouteResolution(resolution?.after, route.nodes.length)))
 }

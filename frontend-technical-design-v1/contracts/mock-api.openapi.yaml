@@ -3584,10 +3584,17 @@
           "simulations"
         ],
         "summary": "Get run state",
+        "description": "The active local Mission controller may confirm that its page is still open during a WebSocket outage. Ordinary reads do not extend the page-disconnect grace period.",
         "x-rbac": "BUSINESS_READ",
         "parameters": [
           {
             "$ref": "#/components/parameters/RunId"
+          },
+          {
+            "in": "query",
+            "name": "pageOwner",
+            "description": "Use 1 only from the disconnected owning page. Requires simulation control permission.",
+            "schema": { "type": "string", "pattern": "^1$" }
           },
           {
             "$ref": "#/components/parameters/DemoRole"
@@ -3611,6 +3618,14 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorEnvelope"
                 }
+              }
+            }
+          },
+          "403": {
+            "description": "Page ownership confirmation requires simulation control permission.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
               }
             }
           },
@@ -6183,7 +6198,7 @@
           "websocket"
         ],
         "summary": "WebSocket upgrade on loopback only",
-        "description": "Canonical topics: simulation.frame, runtime.state, link.metric, jammer.event, switch.event, mission.log, position.update. jammer.event and switch.event additionally carry received EngineJammerFrameUpdate and EngineSwitchFrameUpdate, preserving their engine frame id/time. position.update carries mission-owned position-file generations with an independent journal cursor and no engine frame/time envelope; it must not be treated as co-framed engine data. mission.log carries either incremental MissionLogUpdate or EngineConnectionDiagnostic, task/run scoped with its own cursor and no simulationTime/frameId: process output has no engine-issued frame time. HTTP console/position retrieval provides initial/recovery compensation; live additions are WebSocket records. websocketNew frame_id advances by 5 per 5 simulation seconds; this is independent of the per-topic WS sequence. FRAME_ADVANCE_OBSERVED records a delta differing from 5 without claiming upstream retransmission support. New fields are optional; the original single jammerExecution remains required. Simulation commands use REST; node state is carried by simulation.frame payload. Envelope requires type, schemaVersion=1.0, topic, taskId, sequence, optional simulationTime/frameId, payload. Reject unauthorized transport, invalid envelope, unknown task, or forbidden topic with close 1008. Sequence is strictly increasing per task/topic. Client reconnects after 250 ms, 500 ms, 1000 ms, 2000 ms, then FAILED; it supplies lastSequences keyed by subscribed topic for deterministic replay, with legacy lastSequence accepted for compatible clients. The local deployment persists an ordered journal per task/topic, so replay outside the 128-event hot cache uses bounded disk pages. Run/reset boundaries, missing records, corrupt journals or failed persistence produce SEQUENCE_GAP rather than silently skipping events. Different registered tasks have isolated subscriptions and cursors. A zero-cursor subscription starts from the current snapshot; REST resynchronization after SEQUENCE_GAP does not claim to recover missing history. link.metric additionally accepts EngineFrameSnapshot (kind=ENGINE_FRAME), with locally bound run/task, device-segment statuses and cached initial routes; it requires no simulation.frame. Existing summary and QUALITY_UPDATED payloads remain valid.",
+        "description": "Canonical topics: simulation.frame, runtime.state, link.metric, jammer.event, switch.event, mission.log, position.update. jammer.event and switch.event additionally carry received EngineJammerFrameUpdate and EngineSwitchFrameUpdate, preserving their engine frame id/time. position.update carries mission-owned position-file generations with an independent journal cursor and no engine frame/time envelope; it must not be treated as co-framed engine data. mission.log carries either incremental MissionLogUpdate or EngineConnectionDiagnostic, task/run scoped with its own cursor and no simulationTime/frameId: process output has no engine-issued frame time. HTTP console/position retrieval provides initial/recovery compensation; live additions are WebSocket records. websocketNew frame_id advances by 5 per 5 simulation seconds; this is independent of the per-topic WS sequence. FRAME_ADVANCE_OBSERVED records a delta differing from 5 without claiming upstream retransmission support. New fields are optional; the original single jammerExecution remains required. Simulation commands use REST; node state is carried by simulation.frame payload. Envelope requires type, schemaVersion=1.0, topic, taskId, sequence, optional simulationTime/frameId, payload. Reject unauthorized transport, invalid envelope, unknown task, or forbidden topic with close 1008. Sequence is strictly increasing per task/topic. Client reconnects after 250 ms, 500 ms, 1000 ms, 2000 ms, then FAILED unless the owning local Mission page is confirming presence via HTTP, in which case it retries every 2000 ms; it supplies lastSequences keyed by subscribed topic for deterministic replay, with legacy lastSequence accepted for compatible clients. The local deployment persists an ordered journal per task/topic, so replay outside the 128-event hot cache uses bounded disk pages. Run/reset boundaries, missing records, corrupt journals or failed persistence produce SEQUENCE_GAP rather than silently skipping events. Different registered tasks have isolated subscriptions and cursors. A fresh zero-cursor subscription starts from the current snapshot. Acknowledgement identifies the run; resumeRunId with lastSequences replays that same run even with all-zero cursors. A confirmed retention gap reports its topic and missing range. A rejected resume for a replaced run carries runChanged=true; an unavailable journal preserves the last accepted cursors. Real Mission simulation.frame carries EngineFrameTick (runId, engineEpoch, sourceFrameId and simulationTime), sharing frameId and time with link.metric; the complete engine payload is sent only on link.metric. Fixed simulation.frame snapshots still carry TelemetryFrame; REST resynchronization after SEQUENCE_GAP does not claim to recover missing history. link.metric additionally accepts EngineFrameSnapshot (kind=ENGINE_FRAME), with locally bound run/task, device-segment statuses and cached initial routes; it requires no simulation.frame. Existing summary and QUALITY_UPDATED payloads remain valid.",
         "x-rbac": "AUTHENTICATED",
         "responses": {
           "101": {
@@ -10449,13 +10464,6 @@
             "exclusiveMinimum": 0,
             "default": 2
           },
-          "transmissionDistance": {
-            "type": "number",
-            "minimum": 150,
-            "maximum": 410,
-            "default": 300,
-            "description": "海峡宽度，单位 km；不是各条链路的实际通信距离。"
-          },
           "rainCloudAttenuation": {
             "type": "string",
             "enum": [
@@ -10698,65 +10706,125 @@
             "$ref": "#/components/schemas/ScenarioConfig"
           },
           {
-            "properties": {
-              "platforms": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/PlatformWrite"
+            "$ref": "#/components/schemas/ScenarioConfigWriteConstraints"
+          }
+        ]
+      },
+      "ScenarioConfigWriteConstraints": {
+        "properties": {
+          "platforms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlatformWrite"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkWrite"
+            }
+          },
+          "jammers": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Jammer"
+                },
+                {
+                  "properties": {
+                    "defaultPower": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  }
                 }
+              ]
+            }
+          },
+          "sensors": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Sensor"
+                },
+                {
+                  "properties": {
+                    "detectionRange": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "informationDemand": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InformationDemandWrite"
+            }
+          },
+          "linkSettings": {
+            "$ref": "#/components/schemas/ScenarioLinkSettingsWrite"
+          }
+        }
+      },
+      "ScenarioImportConfig": {
+        "allOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schemaVersion",
+              "scenario",
+              "platforms",
+              "links",
+              "jammers",
+              "sensors",
+              "output",
+              "informationDemand"
+            ],
+            "properties": {
+              "linkSettings": {
+                "$ref": "#/components/schemas/ScenarioConfig/properties/linkSettings"
+              },
+              "schemaVersion": {
+                "type": "string",
+                "pattern": "^[0-9]+\\.[0-9]+(?![\\s\\S])"
+              },
+              "scenario": {
+                "$ref": "#/components/schemas/ScenarioConfig/properties/scenario"
+              },
+              "platforms": {
+                "$ref": "#/components/schemas/ScenarioConfig/properties/platforms"
               },
               "links": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/LinkWrite"
-                }
+                "$ref": "#/components/schemas/ScenarioConfig/properties/links"
               },
               "jammers": {
-                "type": "array",
-                "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Jammer"
-                    },
-                    {
-                      "properties": {
-                        "defaultPower": {
-                          "type": "number",
-                          "exclusiveMinimum": 0
-                        }
-                      }
-                    }
-                  ]
-                }
+                "$ref": "#/components/schemas/ScenarioConfig/properties/jammers"
               },
               "sensors": {
-                "type": "array",
-                "items": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/Sensor"
-                    },
-                    {
-                      "properties": {
-                        "detectionRange": {
-                          "type": "number",
-                          "exclusiveMinimum": 0
-                        }
-                      }
-                    }
-                  ]
-                }
+                "$ref": "#/components/schemas/ScenarioConfig/properties/sensors"
+              },
+              "output": {
+                "$ref": "#/components/schemas/ScenarioConfig/properties/output"
               },
               "informationDemand": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/InformationDemandWrite"
-                }
+                "$ref": "#/components/schemas/ScenarioConfig/properties/informationDemand"
               },
-              "linkSettings": {
-                "$ref": "#/components/schemas/ScenarioLinkSettingsWrite"
+              "jammingEnabled": {
+                "$ref": "#/components/schemas/ScenarioConfig/properties/jammingEnabled"
+              },
+              "deviceParameters": {
+                "$ref": "#/components/schemas/ScenarioConfig/properties/deviceParameters"
               }
             }
+          },
+          {
+            "$ref": "#/components/schemas/ScenarioConfigWriteConstraints"
           }
         ]
       },
@@ -10811,11 +10879,6 @@
               "NEUTRAL"
             ],
             "description": "所属阵营（蓝/红/中立）；旧场景缺省时按平台类型推断，不自动回写。"
-          },
-          "communicationRangeM": {
-            "type": "number",
-            "exclusiveMinimum": 0,
-            "description": "节点通信能力范围（m）；是通信能力范围，不是几何距离或海峡宽度。缺失表示未配置。"
           },
           "category": {
             "type": "string",
@@ -11762,22 +11825,6 @@
           },
           {
             "properties": {
-              "priority": {
-                "type": "array",
-                "minItems": 5,
-                "maxItems": 5,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "SAT",
-                    "MICROWAVE",
-                    "DATALINK",
-                    "LASER",
-                    "FIBER"
-                  ]
-                }
-              },
               "enabledTypes": {
                 "deprecated": true,
                 "description": "仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。",
@@ -11907,8 +11954,7 @@
         "additionalProperties": false,
         "required": [
           "enabledSatellites",
-          "switchCooldownS",
-          "priority"
+          "switchCooldownS"
         ],
         "properties": {
           "enabledTypes": {
@@ -12062,6 +12108,9 @@
             }
           },
           "priority": {
+            "deprecated": true,
+            "writeOnly": true,
+            "description": "仅兼容旧场景输入；该字段在导入或保存时丢弃。",
             "type": "array",
             "minItems": 4,
             "maxItems": 5,
@@ -15618,7 +15667,7 @@
             "items": {
               "oneOf": [
                 {
-                  "$ref": "#/components/schemas/ScenarioConfigWrite"
+                  "$ref": "#/components/schemas/ScenarioImportConfig"
                 },
                 {
                   "type": "object",
@@ -15634,10 +15683,12 @@
                       "const": "wrj.scenario.snapshot"
                     },
                     "version": {
-                      "const": 1
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1.7976931348623157e+308
                     },
                     "config": {
-                      "$ref": "#/components/schemas/ScenarioConfigWrite"
+                      "$ref": "#/components/schemas/ScenarioImportConfig"
                     },
                     "uiExtensions": {
                       "$ref": "#/components/schemas/ScenarioUiExtensions"
@@ -20649,6 +20700,49 @@
             "description": "Raw upstream clock value in ms; clock origin unconfirmed. Not a latency measurement."
           }
         }
+      },
+      "EngineFrameTick": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "runId",
+          "engineEpoch",
+          "sourceFrameId",
+          "simulationTime"
+        ],
+        "properties": {
+          "kind": {
+            "const": "ENGINE_FRAME_TICK"
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "^RUN-.+"
+          },
+          "engineEpoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sourceFrameId": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "simulationTime": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      },
+      "SimulationFramePayload": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/TelemetryFrame"
+          },
+          {
+            "$ref": "#/components/schemas/EngineFrameTick"
+          }
+        ]
       },
       "LinkMetricPayload": {
         "oneOf": [

@@ -148,7 +148,12 @@ describe('导入质量报告投影', () => {
     expect(isLocalReport(tampered)).toBe(false)
     const { mkdtemp, readFile, rm } = await import('node:' + 'fs/promises'); const { tmpdir } = await import('node:' + 'os'); const { join } = await import('node:' + 'path'); const { exportLocalReport } = await import('../../server/local/' + 'report-file.js')
     const directory = await mkdtemp(join(tmpdir(), 'wrj-quality-radar-'))
-    try { expect(await readFile((await exportLocalReport(directory, attached, 'HTML', 'operator')).filePath, 'utf8')).toContain('各链路有效观测区间连通率') } finally { await rm(directory, { recursive: true, force: true }) }
+    try {
+      const html = await readFile((await exportLocalReport(directory, attached, 'HTML', 'operator')).filePath, 'utf8')
+      expect(html).toContain('aria-label="评估指标得分雷达图"')
+      expect(html).toContain(source.source.sha256)
+      expect(html).not.toContain('各链路有效观测区间连通率')
+    } finally { await rm(directory, { recursive: true, force: true }) }
   })
 
   it('非采样边界筛选保留裁剪后的连通率证据，但测量表绝不泄漏范围外样本', async () => {
@@ -216,19 +221,28 @@ describe('导入质量报告投影', () => {
     expect(() => qualityReportView(outside, evidence, { nodeId: 'A', from: 0, to: 9 })).toThrow('质量数据引用了当前报告范围外的节点。')
   })
 
-  it('HTML 和 CSV 导出复用筛选后的质量来源、测量表和实际曲线', async () => {
+  it('HTML 展示筛选后的质量指标曲线，CSV 保留同一范围内的测量明细', async () => {
     const { mkdtemp, readFile, rm } = await import('node:' + 'fs/promises')
     const { tmpdir } = await import('node:' + 'os')
     const { join } = await import('node:' + 'path')
     const { exportLocalReport } = await import('../../server/local/' + 'report-file.js')
     const directory = await mkdtemp(join(tmpdir(), 'wrj-quality-report-'))
     try {
-      const attached = attachQualityReport(report(), dataset(), { from: 5, to: 25 })
-      const html = await exportLocalReport(directory, attached, 'HTML', 'operator')
-      const csv = await exportLocalReport(directory, attached, 'CSV', 'operator')
-      expect(await readFile(html.filePath, 'utf8')).toContain('GXB 随时间变化')
-      expect(await readFile(csv.filePath, 'utf8')).toContain('质量数据来源')
-      expect(await readFile(csv.filePath, 'utf8')).toContain('cccccccc')
+      const source = dataset()
+      const filter = { from: 5, to: 25 }
+      const attached = attachQualityReport(report(), source, filter)
+      const html = await exportLocalReport(directory, attached, 'HTML', 'operator', undefined, [], filter)
+      const csv = await exportLocalReport(directory, attached, 'CSV', 'operator', undefined, [], filter)
+      const summary = await readFile(html.filePath, 'utf8')
+      expect(summary).toContain('干信比随时间变化')
+      expect(summary).toContain('<title>0分10秒: 20 dB</title>')
+      expect(summary).toContain(source.source.sha256)
+      expect(summary).not.toContain('链路质量测量')
+      const details = await readFile(csv.filePath, 'utf8')
+      expect(details).toContain('质量数据来源')
+      expect(details).toContain(source.source.sha256)
+      expect(details).toContain('"0分10秒","1","L-1","甲（A）","乙（B）","UP","20.000","2.000e-1","是"')
+      expect(details).not.toContain('"0分30秒","3","L-1"')
     } finally { await rm(directory, { recursive: true, force: true }) }
   })
 
@@ -286,8 +300,8 @@ describe('导入质量报告投影', () => {
     try {
       const attached = attachQualityReport(report(), source)
       const html = await readFile((await exportLocalReport(directory, attached, 'HTML', 'operator')).filePath, 'utf8')
-      expect(html).toContain('SNR 随时间变化 · L-1')
-      expect(html).toContain('SNR 随时间变化 · L-2')
+      expect(html).toContain(source.source.sha256)
+      expect(html).not.toContain('SNR 随时间变化')
     } finally { await rm(directory, { recursive: true, force: true }) }
   })
 
@@ -379,7 +393,7 @@ describe('导入质量报告投影', () => {
       const html = await exportLocalReport(directory, attached, 'HTML', 'operator')
       const pdf = await exportLocalReport(directory, attached, 'PDF', 'operator')
       const htmlText = await readFile(html.filePath, 'utf8')
-      const start = htmlText.indexOf('<h2>GXB 随时间变化 · L-2</h2>')
+      const start = htmlText.indexOf('<h2>干信比随时间变化</h2>')
       expect(start).toBeGreaterThanOrEqual(0)
       const next = htmlText.indexOf('<h2>', start + 1)
       const gxb = htmlText.slice(start, next < 0 ? undefined : next)
@@ -388,7 +402,7 @@ describe('导入质量报告投影', () => {
       expect(gxb).toContain('<title>0分1秒: 20 dB</title>')
       expect(gxb.indexOf('0分0秒: 30 dB')).toBeLessThan(gxb.indexOf('0分1秒: 20 dB'))
       // 坐标范围与单位
-      expect(gxb).toContain('横轴：0～1 秒；纵轴：20～30 dB')
+      expect(gxb).toContain('横轴：0～50 秒；纵轴：20～30 dB')
       // 无缺帧断点：单条连线
       expect((gxb.match(/<polyline/g) ?? []).length).toBe(1)
       expect((await readFile(pdf.filePath)).subarray(0, 5).toString()).toBe('%PDF-')
@@ -413,7 +427,7 @@ describe('导入质量报告投影', () => {
       expect(gxbSeries.map(item => item.frameId)).toEqual([0, 1, 3])
       const html = await exportLocalReport(directory, attached, 'HTML', 'operator')
       const htmlText = await readFile(html.filePath, 'utf8')
-      const start = htmlText.indexOf('<h2>GXB 随时间变化 · L-1</h2>')
+      const start = htmlText.indexOf('<h2>干信比随时间变化</h2>')
       expect(start).toBeGreaterThanOrEqual(0)
       const next = htmlText.indexOf('<h2>', start + 1)
       const gxb = htmlText.slice(start, next < 0 ? undefined : next)
@@ -423,7 +437,7 @@ describe('导入质量报告投影', () => {
       expect(gxb).toContain('<title>0分3秒: 7 dB</title>')
       expect(gxb.indexOf('0分0秒: 0 dB')).toBeLessThan(gxb.indexOf('0分1秒: -5 dB'))
       expect(gxb.indexOf('0分1秒: -5 dB')).toBeLessThan(gxb.indexOf('0分3秒: 7 dB'))
-      expect(gxb).toContain('横轴：0～3 秒；纵轴：-5～7 dB')
+      expect(gxb).toContain('横轴：0～50 秒；纵轴：-5～7 dB')
       // 缺帧不跨线：两段折线
       expect((gxb.match(/<polyline/g) ?? []).length).toBe(2)
     } finally { await rm(directory, { recursive: true, force: true }) }

@@ -367,6 +367,12 @@ export type TemplateRenderReport = {
   laserRenames: LaserRename[]
 }
 
+/** 修正模板中 `nxts2 != "" && nxts != "interrupted"` 变量名笔误（`nxts` 在前一循环作用域外，应为 `nxts2`）；若源模板已修正则保持原样。 */
+function fixInterruptedNxts2Typo(text: string): string {
+  return text.replace(/if\s*\(\s*nxts2\s*!=\s*""\s*&&\s*nxts\s*!=\s*"interrupted"\s*\)/gu, match =>
+    match.replace(/&&\s*nxts\s*!=/u, '&& nxts2 !='))
+}
+
 /** 生成 10 个执行 TXT：固定模板 + 受控替换。 */
 export function renderTemplate1112(input: TemplateRenderInput): TemplateRenderReport {
   const files = {} as Record<Template1112FileName, string>
@@ -382,12 +388,14 @@ export function renderTemplate1112(input: TemplateRenderInput): TemplateRenderRe
   files['comm_platform_REAR.txt'] = replaceArrayValues(files['comm_platform_REAR.txt'], 'comm_platform_REAR.txt', 'fw_sit_dst', input.rearSituationDestinations)
   files['comm_platform_REAR.txt'] = replaceArrayValues(files['comm_platform_REAR.txt'], 'comm_platform_REAR.txt', 'fw_tgt_dst', input.rearTargetDestinations)
   files['comm_platform_REAR.txt'] = replaceLinkCalcBlock(files['comm_platform_REAR.txt'], 'comm_platform_REAR.txt', input.linkCalcLines, input.linkCalcHeader)
+  files['comm_platform_REAR.txt'] = fixInterruptedNxts2Typo(files['comm_platform_REAR.txt'])
   files[uavFile] = replaceArrayValues(files[uavFile], uavFile, 'relayNames', input.relayNames)
   files[uavFile] = replaceArrayValues(files[uavFile], uavFile, 'rt_video_dsts', input.returnVideoDestinations)
   files[uavFile] = replaceArrayValues(files[uavFile], uavFile, 'rt_status_dsts', input.returnStatusDestinations)
   files[uavFile] = replaceUniqueLine(files[uavFile], uavFile, 'sat_link 接收频率',
     content => /^[ \t]*frequency 11\.8 MHz[ \t]*$/u.test(content),
     content => content.replace('11.8 MHz', '11.8 GHz'))
+  files[uavFile] = fixInterruptedNxts2Typo(files[uavFile])
   files['comm_SimSetup.txt'] = replaceSimulationSpeed(files['comm_SimSetup.txt'], 'comm_SimSetup.txt', input.realtimeEnabled, input.clockRate)
   return {
     files,

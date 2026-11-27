@@ -688,7 +688,8 @@ describe('P1 authentication and routing', () => {
     await wrapper.get('form.create-form').trigger('submit')
     await flushPromises()
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(wrapper.text()).toContain('VALIDATION_FAILED')
+    expect(wrapper.find('.result-section').exists()).toBe(false)
+    expect(useAdminStore().resultCode).toBe('VALIDATION_FAILED')
     expect(wrapper.text()).toContain('用户名')
     expect(wrapper.get('[data-testid="create-user-error"]').text()).toContain('请输入登录账号')
     expect(wrapper.findComponent({ name: 'ElDialog' }).props('modelValue')).toBe(true)
@@ -726,7 +727,8 @@ describe('P1 authentication and routing', () => {
       'http://127.0.0.1:4173/api/v1/admin/users/USR-OPERATOR',
       expect.objectContaining({ method: 'DELETE' }),
     )
-    expect(wrapper.text()).toContain('INVALID_RESPONSE')
+    expect(wrapper.find('.result-section').exists()).toBe(false)
+    expect(useAdminStore().resultCode).toBe('INVALID_RESPONSE')
     expect(wrapper.get('[data-testid="user-role-panel"]').text()).toContain('operator')
   })
 
@@ -750,14 +752,15 @@ describe('P1 authentication and routing', () => {
     await flushPromises()
     await wrapper.get('[data-testid="edit-user-dialog"] form').trigger('submit')
     await flushPromises()
-    expect(wrapper.text()).toContain('LAST_ADMIN_GUARD')
-    expect(wrapper.text()).toContain('不能变更最后一个管理员')
+    expect(wrapper.find('.result-section').exists()).toBe(false)
+    expect(useAdminStore().resultCode).toBe('LAST_ADMIN_GUARD')
     expect(wrapper.get('[data-testid="edit-user-error"]').text()).toBe('不能变更最后一个管理员')
     expect(useAdminStore().users).toEqual([...USERS, other])
     await useAdminStore().refreshUsers()
     await flushPromises()
-    expect(wrapper.text()).toContain('NETWORK_ERROR')
-    expect(wrapper.text()).toContain('Users offline')
+    expect(wrapper.find('.result-section').exists()).toBe(false)
+    expect(useAdminStore().resultCode).toBe('NETWORK_ERROR')
+    expect(useAdminStore().resultMessage).toContain('Users offline')
     expect(wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__body tbody tr')).toHaveLength(0)
   })
 
@@ -836,7 +839,8 @@ describe('P1 authentication and routing', () => {
 
     await flushPromises()
 
-    expect(wrapper.text()).toContain('INVALID_RESPONSE')
+    expect(wrapper.find('.result-section').exists()).toBe(false)
+    expect(useAdminStore().resultCode).toBe('INVALID_RESPONSE')
     expect(wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__body tbody tr')).toHaveLength(0)
     expect(wrapper.text()).not.toContain('broken')
   })

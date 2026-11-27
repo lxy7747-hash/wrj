@@ -3,7 +3,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useReplayStore } from '../../src/stores/replay'
 import { useRuntimeQualityStore } from '../../src/stores/runtime-quality'
 import { isEngineReplaySnapshot } from '../../src/features/replays/engine-replay'
-import { isMissionResultSnapshot } from '../../src/features/results/mission-result'
+import { isMissionResultReplayView, isMissionResultSnapshot } from '../../src/features/results/mission-result'
+import { snapshotReplayMap } from '../../src/features/replays/replay-map-config'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 import { ENGINE_RESULT, ENGINE_RESULT_ID, engineReplayAt } from '../fixtures/engine-frame/replay'
 const success = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data }) }) as Response
 beforeEach(() => { setActivePinia(createPinia()); vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }) })
@@ -15,6 +17,62 @@ function source() {
       : success(structuredClone(ENGINE_RESULT)))
   vi.stubGlobal('fetch', fetch); return fetch
 }
+
+it('运行回放只接受完整的轨迹快照', () => {
+  const { record, replay } = ENGINE_RESULT
+  expect(isMissionResultReplayView({ record, replay })).toBe(true)
+  expect(isMissionResultReplayView({ record, replay: null })).toBe(false)
+  expect(isMissionResultReplayView({ record, replay: { ...replay, waitingForLine: true } })).toBe(false)
+})
+
+it('优先用运行当时的地图，老结果只接受同场景、同修订的配置', async () => {
+  const store = useReplayStore()
+  const config = createTemplateScenario().config
+  config.scenario.id = 'SCN-HISTORY'
+  const legacySettings = { ...config.linkSettings!, priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'] }
+  const replayMap = snapshotReplayMap({ ...config, linkSettings: legacySettings })
+  expect(replayMap.linkSettings).toEqual(config.linkSettings)
+  expect(isMissionResultSnapshot({ ...ENGINE_RESULT, replayMap: { ...replayMap, linkSettings: legacySettings } })).toBe(true)
+  expect(isMissionResultSnapshot({ ...ENGINE_RESULT, replayMap: { ...replayMap, scenario: { ...replayMap.scenario, id: 'SCN-OTHER' } } })).toBe(false)
+  expect(isMissionResultSnapshot({ ...ENGINE_RESULT, replayMap: { ...replayMap, links: [{ ...replayMap.links[0], type: 'invalid' }] } })).toBe(false)
+  const savedName = replayMap.platforms[0]!.name
+  config.platforms[0]!.name = '场景修改后的名字'
+  let result: typeof ENGINE_RESULT = { ...ENGINE_RESULT, replayMap }
+  let revision = ENGINE_RESULT.record.revision + 1
+  const fetch = vi.fn(async (url: string) => {
+    if (url.includes('/engine-replay?')) return success(engineReplayAt(0))
+    if (url.includes('/api/v1/scenarios/')) return success({ config, revision })
+    return success(result)
+  })
+  vi.stubGlobal('fetch', fetch)
+  expect(await store.loadLocalFile(undefined, ENGINE_RESULT_ID)).toBe(true)
+  expect(store.scenarioConfig?.platforms[0]?.name).toBe(savedName)
+  expect(fetch.mock.calls.some(([url]) => url.includes('/api/v1/scenarios/'))).toBe(false)
+
+  result = ENGINE_RESULT
+  expect(await store.loadLocalFile(undefined, ENGINE_RESULT_ID)).toBe(true)
+  expect(store.scenarioConfig).toBeNull()
+  expect(store.localSnapshot).toBeTruthy()
+  revision = ENGINE_RESULT.record.revision
+  expect(await store.loadLocalFile(undefined, ENGINE_RESULT_ID)).toBe(true)
+  expect(store.scenarioConfig?.platforms[0]?.name).toBe('场景修改后的名字')
+  config.scenario.id = 'SCN-OTHER'
+  expect(await store.loadLocalFile(undefined, ENGINE_RESULT_ID)).toBe(true)
+  expect(store.scenarioConfig).toBeNull()
+})
+
+it('回放兼容旧事件，校验切换的两侧段数和链路编号', () => {
+  const data = engineReplayAt(10)
+  const latest = data.engineSwitches.at(-1)!
+  expect(isEngineReplaySnapshot(data)).toBe(true)
+  latest.resolution = {
+    before: { totalHops: Math.max(0, latest.route.oldNodes.length - 1), resolvedHops: 0, linkIds: [] },
+    after: { totalHops: Math.max(0, latest.route.nodes.length - 1), resolvedHops: 0, linkIds: [] },
+  }
+  expect(isEngineReplaySnapshot(data)).toBe(true)
+  latest.resolution.before.linkIds.push('unresolved')
+  expect(isEngineReplaySnapshot(data)).toBe(false)
+})
 
 it('历史质量、选路、告警随时间推进和回退，暂停冻结，不连接实时引擎', async () => {
   const fetch = source(), store = useReplayStore(), live = useRuntimeQualityStore()

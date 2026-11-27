@@ -1,10 +1,11 @@
 import { engineNameMap } from './engine-name-mapping.js'
 import { execFile, spawn } from 'node:child_process'
-import { createReadStream } from 'node:fs'
+import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
+import { finished } from 'node:stream/promises'
 import type { ScenarioDraft } from '../../src/contracts/domain-models.js'
 import { configuredScenarioOutput } from '../../src/config/app.config.js'
 import type { MissionExecution, MissionOutcome, MissionProcess } from '../simulations/mission-execution.js'
@@ -13,6 +14,7 @@ import { MissionGenerationError } from '../scripts/mission-generator.js'
 import type { LocalMissionResults } from './mission-results.js'
 import { MissionGuard } from './mission-guard.js'
 import { readMissionProcesses } from './mission-process-inspection.js'
+import { missionStartupMessage } from './mission-startup-diagnostics.js'
 import { MissionMessageReader } from './mission-message-reader.js'
 import { MissionPositionReader } from './mission-position-reader.js'
 import { ContinuousTimeSeriesWriter } from './continuous-time-series.js'
@@ -76,7 +78,7 @@ export async function terminateOwnedMissionProcess(child: OwnedChild, force = fa
 }
 
 // mission 的脚本异常不一定反映在退出码中，必须同时复核日志，且不整文件读入内存。
-async function inspectExecutionLog(path: string): Promise<boolean> {
+async function inspectExecutionLog(path: string, interrupted = false): Promise<boolean> {
   const input = createReadStream(path, { encoding: 'utf8' })
   const lines = createInterface({ input, crlfDelay: Infinity })
   let completed = false
@@ -85,7 +87,7 @@ async function inspectExecutionLog(path: string): Promise<boolean> {
       if (/^\s*\*{5}\s+(ERROR|FATAL):/.test(line)) return false
       if (line.trim() === 'Simulation complete') completed = true
     }
-    return completed
+    return completed || interrupted
   } finally { lines.close(); input.destroy() }
 }
 
@@ -176,6 +178,8 @@ export class LocalMissionRunner implements MissionExecution {
 
   async start(draft: ScenarioDraft, runId = 'RUN-LOCAL', taskId = 'TASK-LOCAL'): Promise<MissionProcess> {
     if (this.results && !configuredScenarioOutput(draft.config.scenario.timeStep).eventsEnabled) throw new MissionGenerationError('output.eventsEnabled', '请启用事件输出，以生成本次仿真的回放和报告。')
+    const run = { runId, taskId }
+    console.info(missionStartupMessage(run, '准备启动本机 Mission', { pid: null }))
     // 强制 stub 时不再探测外部插件；引擎有 WSF_LINK_CALC_PROCESSOR 时原样运行；找不到才在本次运行包中去掉 link_calc 段。
     const linkCalcAvailable = this.forceLinkStub ? false : await this.hasLinkCalc()
     const entryPath = await writeMissionPackage(this.directory, draft, !linkCalcAvailable, this.outputDirectory)
@@ -184,10 +188,23 @@ export class LocalMissionRunner implements MissionExecution {
     const cwd = dirname(entryPath)
     const logPath = join(cwd, 'mission-console.log')
     const log = await open(logPath, 'wx')
+    const startupLog = createWriteStream(join(cwd, 'mission-startup.log'), { flags: 'wx' })
+    const startupLogClosed = finished(startupLog).catch((error: Error) => {
+      console.warn(missionStartupMessage(run, '启动诊断文件写入失败', { error: error.message }))
+    })
+    const reportStartupDiagnostic = (line: string) => {
+      console.info(line)
+      if (!startupLog.destroyed && !startupLog.writableEnded) startupLog.write(line + '\n')
+    }
+    const closeLogs = () => {
+      startupLog.end()
+      return Promise.all([log.close(), startupLogClosed])
+    }
+    reportStartupDiagnostic(missionStartupMessage(run, '运行目录已就绪，等待创建进程', { pid: null }))
     const startedAt = new Date().toISOString()
     const record = { runId, scenarioId: draft.config.scenario.id, revision: draft.revision, executable: this.executable, startedAt, runDirectory: cwd }
     try { await this.guard.claim(this.directory, record); this.ownsGuard = true }
-    catch (error) { await log.close(); throw error }
+    catch (error) { await closeLogs(); throw error }
     let continuous: ContinuousTimeSeriesWriter | undefined
     let engineManifest: unknown
     let outputDirectory: string
@@ -198,7 +215,7 @@ export class LocalMissionRunner implements MissionExecution {
       outputDirectory = await resolveMissionOutputDirectory(entryPath)
       continuous = await ContinuousTimeSeriesWriter.create(this.directory, { taskId, runId }, outputDirectory, names)
     } catch (error) {
-      await log.close()
+      await closeLogs()
       await this.clearGuard()
       throw error
     }
@@ -209,7 +226,8 @@ export class LocalMissionRunner implements MissionExecution {
         cwd, shell: false, windowsHide: true, detached: globalThis.process.platform !== 'win32', stdio: ['ignore', log.fd, log.fd],
       })
     } catch (error) {
-      await log.close()
+      reportStartupDiagnostic(missionStartupMessage(run, '创建进程失败', { pid: null, error: String(error) }))
+      await closeLogs()
       try { await continuous.close('FAILED') } catch { /* 连续归档的失败清单已尝试发布；启动错误优先返回。 */ }
       await this.clearGuard()
       throw error
@@ -219,10 +237,22 @@ export class LocalMissionRunner implements MissionExecution {
     let stopError: string | undefined
     let timedOut = false
     let processError: Error | undefined
-    child.once('error', error => { processError = error })
-    child.once('exit', () => { exited = true })
+    child.once('error', error => {
+      processError = error
+      reportStartupDiagnostic(missionStartupMessage(run, '进程错误', { pid: child.pid ?? null, error: error.message }))
+    })
+    let terminationRequested = false
+    const processExited = new Promise<void>(resolve => {
+      const confirmExit = () => { exited = true; resolve() }
+      child.once('exit', (code, signal) => {
+        confirmExit()
+        reportStartupDiagnostic(missionStartupMessage(run, '进程已退出', { pid: child.pid ?? null, code, signal }))
+      })
+      child.once('close', confirmExit)
+    })
     const spawned = new Promise<void>((resolve, reject) => {
       child.once('spawn', () => {
+        reportStartupDiagnostic(missionStartupMessage(run, '进程已启动', { pid: child.pid! }))
         void this.guard.spawned({ ...record, pid: child.pid, startedAt, spawnedAt: new Date().toISOString(), runDirectory: cwd }).then(resolve, reject)
       })
       child.once('error', reject)
@@ -233,15 +263,14 @@ export class LocalMissionRunner implements MissionExecution {
       finish = async code => {
         if (finalized) return
         finalized = true
-        exited = true
         const outcome: MissionOutcome = { code, completedAt: new Date().toISOString() }
         let continuousArchiveDirectory: string | undefined
-        if (code !== 0 || processError) outcome.errorMessage = `mission 执行失败（${processError?.message ?? `退出码 ${code}`}），请查看 ${logPath}`
+        if ((code !== 0 && !terminationRequested) || processError) outcome.errorMessage = `mission 执行失败（${processError?.message ?? `退出码 ${code}`}），请查看 ${logPath}`
         if (timedOut && !stopError) stopError = `mission 运行超过 ${this.runTimeoutMs / 1000} 秒超时上限，已自动终止；请查看 ${logPath}`
         if (stopError) outcome.errorMessage = stopError
         try {
-          await log.close()
-          if (code === 0 && !await inspectExecutionLog(logPath)) {
+          await closeLogs()
+          if ((code === 0 || terminationRequested) && !await inspectExecutionLog(logPath, terminationRequested)) {
             outcome.errorMessage = `mission 日志含运行错误或缺少完成证据，请查看 ${logPath}`
           }
           if (stopError) outcome.errorMessage = stopError
@@ -259,7 +288,8 @@ export class LocalMissionRunner implements MissionExecution {
           if (code === 0 && !outcome.errorMessage && !stopped && this.results) {
             try { await this.results.capture(cwd, draft, startedAt, outcome.completedAt!, () => !stopped, { taskId, runId }, continuousArchiveDirectory) }
             catch (error) {
-              outcome.errorMessage = `仿真结果保存失败：${error instanceof Error ? error.message : '未知错误'}；未发布回放和报告。`
+              const reason = error instanceof Error ? error.message.replace(/[。；]+$/u, '') : '未知错误'
+              outcome.errorMessage = `仿真结果保存失败：${reason}。未发布回放和报告。`
               await writeFile(join(cwd, 'execution.json'), JSON.stringify({ ...receipt, ...outcome }, null, 2))
             }
           }
@@ -295,32 +325,35 @@ export class LocalMissionRunner implements MissionExecution {
       readMessages: (afterCursor = 0, options) => this.messages.read(runId, afterCursor, {
         simulationEnded: options?.simulationEnded ?? exited,
       }),
-      completed,
+      exited: processExited, completed,
       readConsoleLog: () => readConsoleLogTail(logPath),
+      reportStartupDiagnostic,
       ...(this.runTimeoutMs > 0 ? { timeoutMs: this.runTimeoutMs } : {}),
       dataFailure: continuous.failed.then(error => `连续时序留存失败：${error.message}；已请求停止本任务。`),
       stop: async () => {
         stopped = true
-        if (!exited) await terminateOwnedMissionProcess(child)
-        const waitForClose = async (): Promise<boolean> => {
+        if (!exited) {
+          terminationRequested = true
+          await terminateOwnedMissionProcess(child)
+        }
+        const waitForExit = async (): Promise<boolean> => {
           let timer: ReturnType<typeof setTimeout> | undefined
           try {
             return await Promise.race([
-              completed.then(() => true),
+              processExited.then(() => true),
               new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), STOP_WAIT_MS) }),
             ])
           } finally { if (timer) clearTimeout(timer) }
         }
-        if (!await waitForClose()) {
-          stopError = 'mission 停止超时，已请求强制终止；请检查本机进程与运行记录。'
+        if (!await waitForExit()) {
           if (!exited) await terminateOwnedMissionProcess(child, true)
-          if (!await waitForClose()) {
+          if (!await waitForExit()) {
             stopError = 'mission 强制终止后仍未关闭，可能残留进程；请检查本机进程与运行记录。'
             throw new Error(stopError)
           }
         }
         const outcome = await completed
-        if (stopError) throw new Error(outcome.errorMessage ?? stopError)
+        if (stopError || (terminationRequested && outcome.errorMessage)) throw new Error(outcome.errorMessage ?? stopError)
         if (this.safetyStatus()) throw new Error(outcome.errorMessage ?? 'mission 已关闭，但未结清记录未清除。')
       },
     }

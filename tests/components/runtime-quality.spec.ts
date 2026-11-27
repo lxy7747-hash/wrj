@@ -64,7 +64,7 @@ function detail(label: string): string {
 function cardValues(): string[] {
   const card = wrapper!.get('.quality-card')
   const metrics = Object.fromEntries(card.findAll('dl > div').map(row => [row.get('dt').text(), row.get('dd').text()]))
-  return [card.get('.quality-card-heading strong').text(), ...['干信比 GXB（dB）', '误码率', '发射辐射功率（dBW）', '距离（m）'].map(label => metrics[label]!)]
+  return [card.get('.quality-card-heading strong').text(), ...['干信比(GXB)（dB）', '误码率(BER)', '发射辐射功率（dBW）', '距离（m）'].map(label => metrics[label]!)]
 }
 
 beforeEach(() => {
@@ -112,11 +112,11 @@ describe('统一运行质量投影与展示', () => {
     await flushPromises()
     expect(cardValues()).toEqual(['发送节点 → 接收节点', '-7.50', '1.2e-4', '20.00', '12500.00'])
     expect(detail('质量测量时刻')).toBe('1分5.5秒')
-    expect(detail('误码率')).toBe(cardValues()[2])
+    expect(detail('误码率(BER)')).toBe(cardValues()[2])
     expect(detail('发射辐射功率')).toBe('20.00 dBW')
     expect(wrapper!.text()).not.toContain('接收功率')
     expect(detail('路径损耗')).toBe('107.00 dB')
-    expect(detail('干信比 GXB')).toBe('-7.50 dB')
+    expect(detail('干信比(GXB)')).toBe('-7.50 dB')
     expect(detail('传输距离')).toBe('12.50 km')
     expect(detail('计算输入速率')).toBe('1.60 Mbps')
     expect(detail('模型版本')).toBe('engine-model')
@@ -142,7 +142,7 @@ describe('统一运行质量投影与展示', () => {
     }, global: { plugins: [pinia, ElementPlus], stubs: { ElDialog: dialogStub } } })
     expect(wrapper.get('[data-testid="link-detail-engine-segments"]').text()).toContain('来源帧 18 · 源仿真时刻 1分12.25秒')
     expect(detail('引擎状态')).toBe('劣化')
-    expect(detail('干信比 GXB（信噪比）')).toBe('-7.50 dB')
+    expect(detail('干信比(GXB)')).toBe('-7.50 dB')
     expect(wrapper.get('[data-testid="link-detail-engine-segments"]').text()).not.toContain('信噪比 SNR')
     await wrapper.setProps({ engineSegments: [{
       linkId: 'segment-error', linkIds: [configured.id], sourceName: 'TX', sourcePlatformId: 'TX', sourcePort: 'TX-PORT', targetName: 'RX', targetPlatformId: 'RX', targetPort: 'RX-PORT',
@@ -165,7 +165,7 @@ describe('统一运行质量投影与展示', () => {
     }] })).toBe(true)
     await flushPromises()
     expect(cardValues().slice(1)).toEqual(Array(4).fill('暂无数据'))
-    for (const label of ['误码率', '发射辐射功率', '干信比 GXB', '路径损耗', '模型版本', '调制方式']) expect(detail(label)).toBe('暂无数据')
+    for (const label of ['误码率(BER)', '发射辐射功率', '干信比(GXB)', '路径损耗', '模型版本', '调制方式']) expect(detail(label)).toBe('暂无数据')
   })
 
   it('非法新帧使两处旧值消失，后续合法帧恢复，重复和迟到帧不回写', async () => {
@@ -179,12 +179,12 @@ describe('统一运行质量投影与展示', () => {
     await flushPromises()
     expect(cardValues().slice(1)).toEqual(Array(4).fill('暂无数据'))
     expect(wrapper!.find('[data-testid="link-detail-runtime"]').exists()).toBe(false)
-    expect(detail('误码率')).toBe('暂无数据')
+    expect(detail('误码率(BER)')).toBe('暂无数据')
     expect(store.acceptFrame(epoch, { frameId: 10, simulationTime: 65.5 }, qualityInput())).toBe(false)
     expect(store.state).toBe('ERROR')
     expect(store.acceptFrame(epoch, { frameId: 12, simulationTime: 67 }, qualityInput())).toBe(true)
     await flushPromises()
-    expect(detail('误码率')).toBe('1.2e-4')
+    expect(detail('误码率(BER)')).toBe('1.2e-4')
   })
 
   it.each(['重置', '登出', '换运行'] as const)('%s后清空两处旧测量，旧接收令牌不能恢复', async action => {
@@ -193,14 +193,14 @@ describe('统一运行质量投影与展示', () => {
     store.acceptFrame(epoch, { frameId: 10, simulationTime: 65.5 }, qualityInput())
     mountViews()
     await flushPromises()
-    expect(detail('误码率')).toBe('1.2e-4')
+    expect(detail('误码率(BER)')).toBe('1.2e-4')
     if (action === '重置') useUiStore().clearBusinessProjections()
     else if (action === '登出') useAuthStore().resetToSafeEmpty()
     else useSimulationStore().run = { ...useSimulationStore().run!, runId: 'RUN-NEW' }
     await flushPromises()
     expect(store.snapshot).toBeNull()
     expect(cardValues().slice(1)).toEqual(Array(4).fill('暂无数据'))
-    expect(detail('误码率')).toBe('暂无数据')
+    expect(detail('误码率(BER)')).toBe('暂无数据')
     expect(store.acceptFrame(epoch, { frameId: 11, simulationTime: 66 }, qualityInput())).toBe(false)
     expect(wrapper!.find('[data-testid="link-detail-runtime"]').exists()).toBe(false)
   })
@@ -220,7 +220,7 @@ describe('统一运行质量投影与展示', () => {
     await flushPromises()
     expect(wrapper!.findAll('.quality-card')).toHaveLength(1)
     expect(detail('质量测量时刻')).toBe('1分6秒')
-    expect(detail('误码率')).toBe(cardValues()[2])
+    expect(detail('误码率(BER)')).toBe(cardValues()[2])
   })
 
   it('统一投影精确匹配端点和端口，不按同名或相同 BER 错套，清空帧返回空映射', () => {

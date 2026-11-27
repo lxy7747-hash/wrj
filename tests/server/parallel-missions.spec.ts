@@ -74,13 +74,20 @@ describe('多任务API：重叠执行而非顺序任务', () => {
     }
     const original = await connect()
     const closed = once(original, 'close'); original[method](); await closed
+    if (method === 'terminate') {
+      await new Promise(resolve => setTimeout(resolve, 3_000))
+      await api.get(`/api/v1/simulations/${run.runId}?pageOwner=1`).set(headers).expect(200)
+      await new Promise(resolve => setTimeout(resolve, 2_300))
+      expect(mission.process.stop).not.toHaveBeenCalled()
+    }
     const resumed = await connect()
     try {
-      await new Promise(resolve => setTimeout(resolve, 5_200))
+      if (method === 'close') await new Promise(resolve => setTimeout(resolve, 5_200))
       expect(mission.process.stop).not.toHaveBeenCalled()
       expect(await read(run.runId)).toMatchObject({ uiStatus: 'RUNNING', configLocked: true })
     } finally { resumed.terminate() }
-    await expect.poll(() => read(run.runId), { timeout: 7_000 }).toMatchObject({ uiStatus: 'STOPPED', configLocked: false })
+    await expect.poll(async () => (await api.get(`/api/v1/simulations/${run.runId}?pageOwner=1`).set(admin)).body.data,
+      { timeout: 7_000 }).toMatchObject({ uiStatus: 'STOPPED', configLocked: false })
     expect(mission.process.stop).toHaveBeenCalledOnce()
     expect((await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data.locked).toBe(false)
   }, 15_000)

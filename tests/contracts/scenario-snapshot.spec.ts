@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ScenarioDraft } from '../../src/contracts/domain-models'
-import { createScenarioSnapshot, parseScenarioSnapshot, scenarioSnapshotId, scenarioImportMigrationNotes } from '../../src/features/scenarios/scenario-snapshot'
+import { createScenarioSnapshot, isScenarioImportSchemaVersion, parseScenarioSnapshot, scenarioSnapshotId, scenarioImportMigrationNotes } from '../../src/features/scenarios/scenario-snapshot'
 
 const config = {
   schemaVersion: '1.0', scenario: { id: 'SCN-ROUNDTRIP' },
@@ -14,16 +14,43 @@ describe('场景文件快照外壳', () => {
         esm: { sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 } }] },
     } as Pick<ScenarioDraft, 'config' | 'uiExtensions'>
     const snapshot = createScenarioSnapshot(draft)
-    expect(parseScenarioSnapshot(snapshot)).toMatchObject({ config: draft.config, uiExtensions: draft.uiExtensions, versioned: true })
+    expect(snapshot.version).toBe(1)
+    expect(parseScenarioSnapshot(snapshot)).toMatchObject({ config: draft.config, uiExtensions: draft.uiExtensions, versioned: true, snapshotVersion: 1 })
     expect(scenarioSnapshotId(snapshot)).toBe('SCN-ROUNDTRIP')
     snapshot.uiExtensions.sensors[0]!.enabled = false
     expect(draft.uiExtensions.sensors[0]!.enabled).toBe(true)
   })
 
-  it('兼容旧版纯配置，拒绝未知文件外壳', () => {
+  it('导出旧场景时清除链路排序，保留手选热链且不改动源场景', () => {
+    const hotLinks = { forward: [['L-2', 'L-1']], reverse: [['R-1']] }
+    const linkSettings = { enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5, hotLinks }
+    const legacy = { ...linkSettings, priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'] }
+    const snapshot = createScenarioSnapshot({ config: { ...config, linkSettings: legacy }, uiExtensions: { sensors: [], jammers: [] } })
+    expect(snapshot.config.linkSettings).toEqual(linkSettings)
+    expect(legacy.priority).toHaveLength(4)
+  })
+
+  it('识别纯配置及非负整数的文件版本', () => {
     expect(parseScenarioSnapshot(config)).toEqual({ config, versioned: false })
-    expect(parseScenarioSnapshot({ format: 'wrj.scenario.snapshot', version: 2, config, uiExtensions: { jammers: [], sensors: [] } })).toBeUndefined()
+    const importConfig = { ...config, schemaVersion: '17.25' }
+    const snapshot = { format: 'wrj.scenario.snapshot', config: importConfig, uiExtensions: { jammers: [], sensors: [] } }
+    expect(parseScenarioSnapshot(importConfig)).toEqual({ config: importConfig, versioned: false })
+    for (const version of [0, 3, 21]) {
+      const value = { ...snapshot, version }
+      expect(parseScenarioSnapshot(value)).toMatchObject({ config: importConfig, versioned: true, snapshotVersion: version })
+      expect(scenarioSnapshotId(value)).toBe('SCN-ROUNDTRIP')
+    }
+    for (const version of [-3, 3.5, '3', true, undefined, null, Infinity, NaN]) {
+      expect(parseScenarioSnapshot({ ...snapshot, version })).toBeUndefined()
+    }
     expect(scenarioSnapshotId({ config })).toBeUndefined()
+  })
+
+  it('配置版本须为以小数点连接的两组数字', () => {
+    for (const version of ['0.0', '1.0', '007.5', '12.345']) expect(isScenarioImportSchemaVersion(version)).toBe(true)
+    for (const version of [0, 1.2, null, true, '', '1', '1.', '.1', '1.2.3', '-1.2', '+1.2', '1.2e3', ' 1.2', '1.2\n', '1.2a']) {
+      expect(isScenarioImportSchemaVersion(version)).toBe(false)
+    }
   })
 
   it('旧版纯配置导入时列出被补齐的运动字段实际值，版本化快照不产生迁移提示', () => {
@@ -43,6 +70,7 @@ describe('场景文件快照外壳', () => {
     // 版本化外壳不视为可迁移旧配置。
     const versioned = { format: 'wrj.scenario.snapshot', version: 1, config: legacy, uiExtensions: { jammers: [], sensors: [] } }
     expect(scenarioImportMigrationNotes(versioned, imported)).toEqual([])
+    expect(scenarioImportMigrationNotes({ ...legacy, schemaVersion: '2.0' }, imported)).toEqual([])
   })
 
   it('激光链路 EIRP/G-T/噪声随快照透传，显式 0 不被丢弃', () => {

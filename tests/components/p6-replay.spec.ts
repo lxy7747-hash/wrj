@@ -15,7 +15,7 @@ vi.mock('../../src/components/situation/OfflineSituationMap.vue', () => ({
       'liveMessageFlows', 'liveFlowPlaying', 'liveFlowKey',
       'fileLinks', 'fileMessageLinks', 'fileDeviceEvents', 'fileTime',
       'filePlaying', 'fileSpeed', 'fileSeekRevision', 'links',
-      'selectedNodeId', 'focusTarget',
+      'selectedNodeId', 'focusTarget', 'selectNearbyLinks', 'separateLinkDirections',
     ],
     emits: ['select-node', 'select-configured-link', 'fullscreen-change'],
     template: '<div data-testid="offline-map-stub" />',
@@ -26,6 +26,10 @@ import ReplaysPage from '../../src/pages/replays/replays.vue'
 import { createAppRouter } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
 import { useReplayStore } from '../../src/stores/replay'
+import { useSimulationStore } from '../../src/stores/simulation'
+import { LINK_CALC_DEFAULTS } from '../../src/features/scenarios/link-calc-defaults'
+import { snapshotReplayMap } from '../../src/features/replays/replay-map-config'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import { ENGINE_RESULT, ENGINE_RESULT_ID, engineReplayAt } from '../fixtures/engine-frame/replay'
 import detected from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
@@ -41,10 +45,14 @@ function success(data: unknown): Response {
 }
 
 /** 创建带登录身份和工作区路由的页面挂载环境。 */
-async function mountPage(component: typeof ReplaysPage, path: string) {
+async function mountPage(component: typeof ReplaysPage, path: string, selectedScene?: ReturnType<typeof createTemplateScenario>) {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore(pinia).$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
+  if (selectedScene) {
+    useAuthStore(pinia).runtimeMode = 'LOCAL'
+    useSimulationStore(pinia).selectedScene = selectedScene
+  }
   const router = createAppRouter(createMemoryHistory(), pinia)
   await router.push(path)
   const wrapper = mount(component, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus] } })
@@ -53,7 +61,55 @@ async function mountPage(component: typeof ReplaysPage, path: string) {
 }
 
 describe('P6 历史回放页面', () => {
-  it('运行结果含场景配置与历史引擎帧时，按态势主界面一致渲染配置链路、状态、切换、环境与平滑轨迹', async () => {
+  it('从主导航进入回放只读取所选场景的运行，直接进入文件回放时仍按日志读取', async () => {
+    const scene = createTemplateScenario()
+    const record = { ...ENGINE_RESULT.record, scenarioId: scene.config.scenario.id, executionSource: undefined }
+    const other = { ...record, resultId: 'RESULT-22222222-2222-4222-8222-222222222222', scenarioId: 'SCN-OTHER' }
+    const replayMap = snapshotReplayMap(scene.config)
+    const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+      const path = new URL(url).pathname
+      if (path.endsWith('/mission-results')) return success([other, record])
+      if (path.endsWith('/engine-replay')) return success(engineReplayAt(0, record.runId, record.scenarioId))
+      if (path.endsWith(record.resultId)) {
+        expect(init.headers).toMatchObject({ 'X-Mission-Result-View': 'replay' })
+        return success({ record, replay: LOCAL_REPLAY, replayMap })
+      }
+      if (path.endsWith('/replays/local-file')) return success(LOCAL_REPLAY)
+      throw new Error(path)
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const { wrapper, router } = await mountPage(ReplaysPage, '/replays', scene)
+    try {
+      await vi.waitFor(() => expect(useReplayStore().state).toBe('PAUSED'))
+      expect(router.currentRoute.value.query).toEqual({ resultId: record.resultId })
+      expect(fetcher.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
+        '/api/v1/mission-results', `/api/v1/mission-results/${record.resultId}`, `/api/v1/mission-results/${record.resultId}/engine-replay`,
+      ])
+      expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('fileMessageLinks')).toEqual([])
+      await router.push('/replays?source=file')
+      await flushPromises()
+      expect(fetcher.mock.calls.at(-1)![0]).toContain('/replays/local-file')
+      expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('configuredLinks')).toBeUndefined()
+    } finally { wrapper.unmount() }
+  })
+
+  it.each([true, false])('场景结果缺少历史配置时不把投递画成链路（有归档帧=%s）', async hasFrames => {
+    const record = { ...ENGINE_RESULT.record, executionSource: undefined }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/engine-replay?')) return success(hasFrames ? engineReplayAt(0) : null)
+      return success({ record, replay: LOCAL_REPLAY })
+    }))
+    const { wrapper } = await mountPage(ReplaysPage, `/replays?resultId=${record.resultId}`)
+    try {
+      const map = wrapper.getComponent({ name: 'OfflineSituationMap' })
+      expect(map.props('configuredLinks')).toEqual([])
+      expect(map.props('fileMessageLinks')).toEqual([])
+      expect(map.props('initialNodes')).toHaveLength(2)
+      expect(wrapper.text()).toContain('该次运行缺少对应修订的地图配置')
+    } finally { wrapper.unmount() }
+  })
+
+  it('运行结果按态势主界面相同的时刻渲染节点、链路、切换、流向与环境', async () => {
     const resultSnapshot = structuredClone(ENGINE_RESULT)
     resultSnapshot.replay.durationS = 10
     resultSnapshot.replay.initial.platformDeletions = [{ sourceEventId: 'DEL-1', time: 10, platformId: 'B' }]
@@ -102,15 +158,18 @@ describe('P6 历史回放页面', () => {
             initialPosition: { longitude: 117, latitude: 25, altitude: 0 },
           },
         ],
+        linkSettings: { enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 0,
+          linkCalc: { ...LINK_CALC_DEFAULTS, warningThreshold: 0.1, emergencyThreshold: 0.9 } },
         links: [
           {
             id: 'LNK-MW-1', type: 'MICROWAVE', sourcePlatformId: 'A', targetPlatformId: 'B',
-            enabled: true,
+            direction: 'FORWARD', enabled: true,
           },
           {
             id: 'LNK-DL-2', type: 'DATALINK', sourcePlatformId: 'A', targetPlatformId: 'B',
             enabled: true,
           },
+          { id: 'LNK-MW-R', type: 'MICROWAVE', sourcePlatformId: 'B', targetPlatformId: 'A', direction: 'REVERSE', enabled: true },
         ],
         jammers: [
           { id: 'JAM-1', platformId: 'B', jammingRange: 30_000, detectionRange: 48_520 },
@@ -124,6 +183,7 @@ describe('P6 历史回放页面', () => {
       if (!url.includes('/engine-replay?')) return success(resultSnapshot)
       const time = Number(new URL(url).searchParams.get('time'))
       const history = engineReplayAt(time)
+      if (history.engineFrame?.frameId === 5) history.engineFrame.simulationTime = 5.25
       if (history.engineFrame) {
         const sample = history.engineFrame.links[0]!
         history.engineFrame.links = [
@@ -135,7 +195,8 @@ describe('P6 历史回放页面', () => {
             targetPlatformId: 'B',
             sourcePort: 'microwave_link',
             targetPort: 'microwave_link',
-            status: time >= 10 ? 'DOWN' : 'DEGRADED',
+            status: 'UP',
+            quality: { ...sample.quality, ber: time >= 10 ? 0.9 : 0.1 },
             distanceM: 12000,
             error: null,
           },
@@ -148,10 +209,14 @@ describe('P6 历史回放页面', () => {
             sourcePort: 'c_band_uplink',
             targetPort: 'c_band_uplink',
             status: 'UP',
+            quality: { ...sample.quality, ber: 0.05 },
             distanceM: 12000,
             error: null,
           },
         ]
+        history.engineFrame.links.push({
+          ...history.engineFrame.links[0]!, linkId: 'LNK-MW-R', linkIds: ['LNK-MW-R'], sourcePlatformId: 'B', targetPlatformId: 'A',
+        })
         if (time >= 10) {
           const sampleSwitch = history.engineFrame.routing.switches[0]!
           const route = {
@@ -179,6 +244,8 @@ describe('P6 历史回放页面', () => {
       const map = wrapper.getComponent({ name: 'OfflineSituationMap' })
 
       // t=0 首帧前：与态势主界面一致，配置链路为空、不绘制文件灰线、透传气象与干扰配置
+      expect([true, '']).toContain(map.props('separateLinkDirections'))
+      expect([true, '']).toContain(map.props('selectNearbyLinks'))
       expect(map.props('configuredLinks')).toEqual([])
       expect(map.props('configuredEnvironment')).toEqual({ rainEnabled: true, rainRateMmPerHour: 12 })
       expect(map.props('configuredJammers')).toEqual([{ id: 'JAM-1', platformId: 'B', jammingRange: 30_000, detectionRange: 48_520 }])
@@ -187,16 +254,31 @@ describe('P6 历史回放页面', () => {
       expect(map.props('initialNodes')[0]).toMatchObject({ platformId: 'A', name: '前出中继 1 号', type: 'FORWARD_RELAY_NODE', side: 'blue' })
       expect(wrapper.text()).not.toContain('图中通信关联不代表链路已接通')
 
-      // t=2 中间时刻：按相邻轨迹点平滑插值（-78 到 -79 的中点 -78.5）
+      // t=2 首个引擎帧前：只显示已记录的位置，不能借用第 3 秒的未来样本。
       await store.seek(2); await flushPromises()
-      expect(map.props('initialNodes')[0].longitude).toBeCloseTo(-78.5, 5)
+      expect(map.props('initialNodes')[0].longitude).toBe(-78)
 
-      // t=5 到达引擎帧：配置链路、劣化/正常状态与流向车道同步到地图
-      await store.seek(5); await flushPromises()
-      expect(map.props('configuredLinks').map((l: { id: string }) => l.id)).toEqual(['LNK-MW-1', 'LNK-DL-2'])
+      // 到达小数秒引擎帧后，链路和流向同步到该帧。
+      await store.seek(5.25); await flushPromises()
+      expect(map.props('configuredLinks').map((l: { id: string }) => l.id)).toEqual(['LNK-MW-1', 'LNK-DL-2', 'LNK-MW-R'])
       expect(map.props('configuredLinkStatuses').get('LNK-MW-1')).toBe('DEGRADED')
       expect(map.props('configuredLinkStatuses').get('LNK-DL-2')).toBe('UP')
       expect(map.props('liveMessageFlows')).toHaveLength(1)
+
+      // 两个引擎帧之间，地图位置及轨迹停在已显示的帧，时间轴可以继续前进。
+      const nodesAtFive = map.props('initialNodes')
+      await store.seek(7); await flushPromises()
+      expect(map.props('fileTime')).toBe(5.25)
+      expect(wrapper.get('.replay-view__badge').text()).toContain('00:00:05.25')
+      expect(map.props('initialNodes')).toEqual(nodesAtFive)
+      map.vm.$emit('select-configured-link', scenarioDetail.config.links[0], scenarioDetail.config.links[2])
+      await flushPromises()
+      const pairedDialog = wrapper.getComponent({ name: 'LinkQualityDialog' })
+      expect(pairedDialog.props('directions').map((link: { id: string }) => link.id)).toEqual(['LNK-MW-1', 'LNK-MW-R'])
+      pairedDialog.vm.$emit('select-direction', 'LNK-MW-R')
+      await flushPromises()
+      expect(pairedDialog.props('configuredLink').id).toBe('LNK-MW-R')
+      expect(pairedDialog.props('engineSegments')[0].sourcePlatformId).toBe('B')
 
       // t=10 链路中断 + 切换高亮 + 平台删除不回退初始坐标
       await store.seek(10); await flushPromises()
@@ -211,6 +293,7 @@ describe('P6 历史回放页面', () => {
       const dialog = wrapper.getComponent({ name: 'LinkQualityDialog' })
       expect(dialog.props('modelValue')).toBe(true)
       expect(dialog.props('configuredLink')).toMatchObject({ id: 'LNK-MW-1', enabled: true })
+      expect(dialog.props('directions')).toEqual([])
       expect(dialog.props('engineSegments')).toHaveLength(1)
     } finally { wrapper.unmount() }
   })
@@ -230,7 +313,7 @@ describe('P6 历史回放页面', () => {
       expect(tab).toBeDefined(); await tab.trigger('click')
       const panel = wrapper.get('[data-testid="engine-jammers"]')
       expect(panel.isVisible()).toBe(true)
-      for (const value of ['历史引擎数据 · 帧 10', '200 W', '18.52 km', '已探测']) expect(panel.text()).toContain(value)
+      for (const value of ['历史引擎数据 · 帧 10', '200 W', '18.52 km', '已侦测']) expect(panel.text()).toContain(value)
       await store.seek(5); await flushPromises()
       expect(panel.text()).toContain('帧 5')
       expect(panel.text()).toContain('暂无数据')
@@ -299,7 +382,10 @@ describe('P6 历史回放页面', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountPage(ReplaysPage, '/replays')
     const map = wrapper.findComponent({ name: 'OfflineSituationMap' })
-    expect(wrapper.text()).toContain('positions.csv')
+    expect(useReplayStore().localSnapshot?.fileName).toBe('positions.csv')
+    expect(wrapper.find('.replays-page__source').exists()).toBe(false)
+    expect(wrapper.get('.replays-page__header').find('.replay-controls').exists()).toBe(true)
+    expect(wrapper.get('.replays-page__body').find('.replay-controls').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('F-00042')
     expect(wrapper.text()).not.toContain('SW-004')
     expect(map.props('frame')).toBeNull()
@@ -329,7 +415,7 @@ describe('P6 历史回放页面', () => {
     await flushPromises()
     expect(map.props('initialNodes')[0].longitude).toBe(-77)
     expect(fetchSpy).toHaveBeenCalledOnce()
-    await wrapper.get('.replays-page__header button').trigger('click')
+    await wrapper.get('.replays-page__reload').trigger('click')
     await flushPromises()
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expect(useReplayStore().replay?.currentTimeS).toBe(0)
@@ -384,10 +470,10 @@ describe('P6 历史回放页面', () => {
       expect(map.props('fileLinks')[0].records).toEqual([satellite])
       expect(map.props('initialNodes')[0].longitude).toBe(-77)
       expect(fetchSpy).toHaveBeenCalledOnce()
-      await wrapper.get('.replays-page__header button').trigger('click')
+      await wrapper.get('.replays-page__reload').trigger('click')
       await flushPromises()
       expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('fileLinks')).toEqual([])
-      await wrapper.get('.replays-page__header button').trigger('click')
+      await wrapper.get('.replays-page__reload').trigger('click')
       await flushPromises()
       expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(false)
     } finally {
@@ -414,7 +500,7 @@ describe('P6 历史回放页面', () => {
       await wrapper.get('[role="slider"]').trigger('keydown', { key: 'Home', code: 'Home' })
       await flushPromises()
       expect(map.props('fileTime')).toBe(0)
-      await wrapper.get('.replays-page__header button').trigger('click')
+      await wrapper.get('.replays-page__reload').trigger('click')
       await flushPromises()
       expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('fileDeviceEvents')).toBeUndefined()
     } finally { wrapper.unmount() }
@@ -474,11 +560,11 @@ describe('P6 历史回放页面', () => {
       expect(wrapper.find('[data-testid="replay-play"]').exists()).toBe(false)
       expect(wrapper.text()).not.toContain('F-00042')
       expect(fetchSpy).toHaveBeenCalledOnce()
-      await wrapper.get('.replays-page__header button').trigger('click')
+      await wrapper.get('.replays-page__reload').trigger('click')
       await flushPromises()
-      expect(wrapper.text()).toContain('positions.csv')
+      expect(useReplayStore().localSnapshot?.fileName).toBe('positions.csv')
       expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(true)
-      await wrapper.get('.replays-page__header button').trigger('click')
+      await wrapper.get('.replays-page__reload').trigger('click')
       await flushPromises()
       expect(wrapper.text()).toContain('暂无本地回放数据')
       expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(false)
@@ -516,7 +602,7 @@ describe('P6 历史回放页面', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountPage(ReplaysPage, '/replays')
     try {
-      await wrapper.get('.replays-page__header button').trigger('click')
+      await wrapper.get('.replays-page__reload').trigger('click')
       await flushPromises()
       expect(wrapper.text()).toContain('回放数据损坏')
       expect(wrapper.text()).toContain('历史回放数据格式不正确。')

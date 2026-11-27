@@ -36,8 +36,8 @@ describe('业务编辑弹框', () => {
       global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } } })
     await flushPromises()
     const component = (name: string, id: string) => wrapper.findAllComponents({ name }).find(item => item.attributes('data-testid') === id)!
-    expect(wrapper.find('[data-testid="demand-rate"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="demand-latency"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="demand-rate"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="demand-latency"]').exists()).toBe(false)
     expect(wrapper.text()).not.toMatch(/trans_freq|不写入脚本/)
     const direction = component('ElSelect', 'demand-direction')
     direction.vm.$emit('change', 'REVERSE')

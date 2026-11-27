@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path'
 import type { EngineFrameEvent, EngineFrameSnapshot, EngineRouteAlarm, EngineRouteSwitch } from '../../src/contracts/domain-models.js'
 import { isEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot.js'
 import { formatCommunicationPortLabel } from '../../src/features/situation/file-message-links.js'
+import { buildFrameRouteEvidence, resolveSwitchFromPriorFrames, ROUTE_EVIDENCE_FRAME_LIMIT, type EngineSwitchEntry, type EngineSwitchHighlights } from '../../src/features/situation/engine-route-highlights.js'
 import { isEngineReplaySnapshot, type EngineReplaySnapshot, type EngineReplayTimelineMarker } from '../../src/features/replays/engine-replay.js'
 import type { EngineFrameArchiveScope } from './engine-frame-archive.js'
 import type { EngineLinkBinding } from './engine-frame-csv.js'
@@ -12,6 +13,12 @@ import { ENGINE_JSONL_LINE_LIMIT_BYTES } from './engine-frame-csv.js'
 
 const sha = (value: string) => createHash('sha256').update(value).digest('hex')
 const identity = (s: EngineFrameArchiveScope) => JSON.stringify([s.taskId, s.runId, s.scenarioId, s.revision, s.startedAt])
+
+function readVerifiedFrame(row: Record<string, unknown>): EngineFrameSnapshot {
+  const payload = String(row.payload)
+  if (sha(payload) !== row.digest) throw new Error('引擎历史帧摘要校验失败。')
+  return JSON.parse(payload) as EngineFrameSnapshot
+}
 
 function compactPortMedium(port: string): string {
   const lower = port.toLowerCase()
@@ -34,7 +41,7 @@ function formatEngineActorName(raw: string): string {
   if (uav) return `无人节点 ${Number(uav[1])}`
   const groundJammer = /^jammer_station_(\d+)$/i.exec(trimmed)
   if (groundJammer) return `地面干扰站 ${Number(groundJammer[1])}`
-  const airJammer = /^jammer_airborne_(\d+)$/i.exec(trimmed)
+  const airJammer = /^jammer_(?:airborne|airbround)_(\d+)$/i.exec(trimmed)
   if (airJammer) return `机载干扰平台 ${Number(airJammer[1])}`
   return trimmed
 }
@@ -145,12 +152,13 @@ export class EngineFrameSqliteStorage {
   private readonly db: DatabaseSync
   // Node 22.14 的迭代器不保留 Statement；持有引用，避免扫描大归档时被 GC 提前释放。
   private readonly framePayloads: ReturnType<DatabaseSync['prepare']>
+  private lastMapSwitch?: { runId: string; epoch: number; frameId: number; resolution: EngineSwitchHighlights }
   private tail: Promise<unknown> = Promise.resolve()
   constructor(path: string) {
     if (!isAbsolute(path)) throw new Error('引擎历史数据库路径必须为绝对路径。')
     this.db = new DatabaseSync(path)
     try {
-      this.db.exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=1000; PRAGMA synchronous=FULL;
+      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
         CREATE TABLE IF NOT EXISTS engine_runs (
           run_id TEXT PRIMARY KEY, scenario_id TEXT NOT NULL, scope_json TEXT NOT NULL,
           bindings_json TEXT NOT NULL, source_sha256 TEXT, frame_count INTEGER
@@ -253,7 +261,10 @@ export class EngineFrameSqliteStorage {
     this.db.prepare('UPDATE engine_runs SET source_sha256=?,frame_count=? WHERE run_id=?').run(sourceSha256, frameCount, scope.runId)
   }
   complete(scope: EngineFrameArchiveScope, sourceSha256: string, frameCount: number): Promise<void> {
-    return this.serial(() => this.finish(scope, sourceSha256, frameCount))
+    return this.serial(() => {
+      this.finish(scope, sourceSha256, frameCount)
+      try { this.db.exec('PRAGMA wal_checkpoint(PASSIVE)') } catch { /* 并发读取时跳过非阻塞 checkpoint，不影响数据一致性。 */ }
+    })
   }
   ensureLegacy(scope: EngineFrameArchiveScope, bindings: Readonly<Record<string, EngineLinkBinding>>, rawPath: string, sourceSha256: string, frameCount: number): Promise<void> {
     return this.serial(async () => {
@@ -275,6 +286,31 @@ export class EngineFrameSqliteStorage {
     })
   }
 
+  private *priorRouteEvidence(frame: EngineFrameSnapshot) {
+    const frames = this.db.prepare(`SELECT payload,digest FROM engine_frames WHERE run_id=? AND engine_epoch=? AND frame_id<?
+      ORDER BY frame_id DESC LIMIT ?`)
+    for (const row of frames.iterate(frame.runId, frame.engineEpoch, frame.frameId, ROUTE_EVIDENCE_FRAME_LIMIT)) {
+      yield buildFrameRouteEvidence(readVerifiedFrame(row))
+    }
+  }
+
+  /** 已完成归档的同一轮次、同一帧只有一个末次切换，连续播放时复用它。 */
+  private latestSwitchResolution(current: EngineFrameSnapshot, latest: EngineSwitchEntry): EngineSwitchHighlights {
+    const { runId, engineEpoch: epoch } = current
+    const cached = this.lastMapSwitch
+    if (cached && cached.runId === runId && cached.epoch === epoch && cached.frameId === latest.frameId) return cached.resolution
+    let eventFrame = current
+    if (latest.frameId !== current.frameId) {
+      const row = this.db.prepare('SELECT payload,digest FROM engine_frames WHERE run_id=? AND engine_epoch=? AND frame_id=?')
+        .get(runId, epoch, latest.frameId)
+      if (!row) throw new Error('引擎切换事件缺少对应的历史帧。')
+      eventFrame = readVerifiedFrame(row)
+    }
+    const resolution = resolveSwitchFromPriorFrames(eventFrame, latest.route.oldNodes, latest.route.nodes, this.priorRouteEvidence(eventFrame))
+    this.lastMapSwitch = { runId, epoch, frameId: latest.frameId, resolution }
+    return resolution
+  }
+
   replay(scope: EngineFrameArchiveScope, time: number, requestedEpoch?: number): Promise<EngineReplaySnapshot> {
     return this.serial(() => {
       const run = this.scope(scope)
@@ -283,8 +319,7 @@ export class EngineFrameSqliteStorage {
       const engineEpoch = requestedEpoch ?? epochs[0]?.engineEpoch ?? 0
       if (epochs.length && !epochs.some(e => e.engineEpoch === engineEpoch)) throw new Error('所选引擎轮次不存在。')
       const row = this.db.prepare('SELECT payload,digest FROM engine_frames WHERE run_id=? AND engine_epoch=? AND simulation_time<=? ORDER BY simulation_time DESC,frame_id DESC LIMIT 1').get(scope.runId, engineEpoch, time)
-      if (row && sha(String(row.payload)) !== row.digest) throw new Error('引擎历史帧摘要校验失败。')
-      const engineFrame = row ? JSON.parse(String(row.payload)) as EngineFrameSnapshot : null
+      const engineFrame = row ? readVerifiedFrame(row) : null
       const next = this.db.prepare('SELECT MIN(simulation_time) AS time FROM engine_frames WHERE run_id=? AND engine_epoch=? AND simulation_time>?').get(scope.runId, engineEpoch, time)!
       let historyTruncated = false
       const items = (kind: string) => {
@@ -301,12 +336,14 @@ export class EngineFrameSqliteStorage {
         ORDER BY f.simulation_time ASC,f.frame_id ASC,i.item_index ASC LIMIT 600`).all(scope.runId, engineEpoch)
       const timelineMarkers = buildReplayTimelineMarkers(timelineRows)
       const bindings = JSON.parse(String(run.bindings_json)) as Record<string, EngineLinkBinding>
-      const value = { runId: scope.runId, scenarioId: scope.scenarioId, sourceSha256: run.source_sha256,
+      const value: unknown = { runId: scope.runId, scenarioId: scope.scenarioId, sourceSha256: run.source_sha256,
         frameCount: run.frame_count, epochs, engineEpoch, time, nextFrameTime: next.time, engineFrame,
         engineEvents: items('event'), engineSwitches: items('route'), engineAlarms: items('alarm'), historyTruncated,
         timelineMarkers,
         links: Object.entries(bindings).map(([id, binding]) => ({ id, type: binding.type, sourcePlatformId: binding.sourcePlatformId, targetPlatformId: binding.targetPlatformId })) }
       if (!isEngineReplaySnapshot(value)) throw new Error('引擎历史数据不符合回放契约。')
+      const latest = value.engineSwitches.at(-1)
+      if (engineFrame && latest) latest.resolution = structuredClone(this.latestSwitchResolution(engineFrame, latest))
       return value
     })
   }

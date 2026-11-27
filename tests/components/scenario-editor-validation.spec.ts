@@ -58,9 +58,9 @@ async function loadPage() {
 }
 
 describe('节点弹框确认校验', () => {
-  it('高级配置默认折叠，已有值随节点保留并且展开后可以修改', async () => {
-    const { wrapper, store, select, number, confirm } = await loadPage()
-    Object.assign(store.draft!.config.platforms[0]!, { faction: 'RED', communicationRangeM: 50_000.25 })
+  it('高级配置默认折叠，已有阵营随节点保留并且展开后可以修改，不再展示通信范围', async () => {
+    const { wrapper, store, select, confirm } = await loadPage()
+    Object.assign(store.draft!.config.platforms[0]!, { faction: 'RED' })
     const platform = () => store.draft!.config.platforms[0]!
     const openEditor = async () => {
       await wrapper.get('#tab-platforms').trigger('click')
@@ -79,15 +79,12 @@ describe('节点弹框确认校验', () => {
     advanced.querySelector('summary')!.click()
     expect(advanced.open).toBe(true)
     expect(advanced.textContent).toContain('所属阵营')
-    expect(advanced.textContent).toContain('节点通信范围（km）')
-    expect(advanced.querySelector('[data-testid="platform-communication-range"] input')).toHaveProperty('value', '50')
+    expect(advanced.querySelector('[data-testid="platform-communication-range"]')).toBeNull()
     select('platform-faction', '')
     await flushPromises()
     expect(advanced.textContent).toContain('默认（按节点类型推断）')
-    number('platform-communication-range', 80.5)
     await confirm('apply-platform')
     expect(platform()).not.toHaveProperty('faction')
-    expect(platform().communicationRangeM).toBe(80_500)
 
     const reopened = await openEditor()
     expect(reopened.open).toBe(false)
@@ -97,9 +94,9 @@ describe('节点弹框确认校验', () => {
     expect(platform().faction).toBe('BLUE')
   })
 
-  it('定位节点通信范围错误时展开高级配置并聚焦字段', async () => {
+  it('定位节点阵营错误时展开高级配置并聚焦字段', async () => {
     const { wrapper, store } = await loadPage()
-    store.draft!.config.platforms[0]!.communicationRangeM = 0
+    Object.assign(store.draft!.config.platforms[0]!, { faction: 'INVALID' })
     store.markDirty()
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
@@ -107,8 +104,7 @@ describe('节点弹框确认校验', () => {
     await vi.waitFor(() => {
       const advanced = document.querySelector<HTMLDetailsElement>('[data-testid="platform-advanced"]')
       expect(advanced?.open).toBe(true)
-      expect(advanced?.textContent).toContain('节点通信范围必须为大于 0 的有限数值。')
-      expect(document.activeElement).toBe(advanced?.querySelector('[data-testid="platform-communication-range"] input'))
+      expect(advanced?.textContent).toContain('所属阵营请选择蓝方、红方或中立。')
     })
   })
 
@@ -483,17 +479,13 @@ describe('5.2.2 输入时字段下即时校验', () => {
     await new Promise(resolve => setTimeout(resolve, 120))
   }
 
-  it('隐藏的旧参数异常时显示修复入口，其他环境字段仍即时校验', async () => {
+  it('已废弃的传输距离字段不再显示或阻断，其他环境字段仍即时校验', async () => {
     const { store, wrapper } = await loadPage()
     expect(wrapper.find('[data-testid="scenario-trans-distance"]').exists()).toBe(false)
-    store.draft!.config.scenario.environment.transmissionDistance = 500
+    Object.assign(store.draft!.config.scenario.environment, { transmissionDistance: 500 })
     await flushPromises()
     await new Promise(resolve => setTimeout(resolve, 120))
-    expect(errorFor('scenario-trans-distance')).toContain('150～410')
-    await input('scenario-trans-distance', '200')
-    expect(errorFor('scenario-trans-distance')).toBe('')
     expect(wrapper.find('[data-testid="scenario-trans-distance"]').exists()).toBe(false)
-    expect(store.draft!.config.scenario.environment.transmissionDistance).toBe(200)
     await input('scenario-env-rainAltitudeLimitM', '30001')
     expect(errorFor('scenario-env-rainAltitudeLimitM')).toContain('30000')
     await input('scenario-env-rainAltitudeLimitM', '1000')

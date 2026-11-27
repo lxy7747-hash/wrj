@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { HotLinkSettings, Link, LinkCalcSettings, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
-import { DEFAULT_LINK_PRIORITY, isConfiguredLinkEnabled, LINK_DECISION_DEFAULTS, readLinkSettings } from '../../features/scenarios/link-settings'
+import { isConfiguredLinkEnabled, LINK_DECISION_DEFAULTS, readLinkSettings } from '../../features/scenarios/link-settings'
 import { hotLinkChainError, readHotLinks } from '../../features/scenarios/hot-links'
 import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LINK_CALC_DEFAULTS, readLinkCalcSettings } from '../../features/scenarios/link-calc-defaults'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
@@ -22,8 +22,6 @@ const emit = defineEmits<{
 }>()
 const settings = computed(() => readLinkSettings({ platforms: props.platforms, linkSettings: props.modelValue }))
 const satellites = [{ value: 'TIANTONG', label: '天通卫星' }, { value: 'SHENTONG', label: '神通卫星' }] as const
-const draggedType = ref<LinkType | null>(null)
-const dropTarget = ref<LinkType | null>(null)
 
 /** 单选本场景使用的卫星；type 为天通或神通，同步两个底层开关且不删除卫星实体。 */
 function selectSatellite(type: SatelliteType): void {
@@ -60,57 +58,10 @@ function setConsistency(value: string | number | boolean): void {
   if (!props.disabled) emit('update:modelValue', { ...settings.value, switchConsistencyCheck: value === true })
 }
 
-/** 移动优先级；type 为待移动类型，index 为目标顺位（从零开始），其余类型按原顺序顺延。 */
-function movePriority(type: LinkType, index: number): void {
-  if (props.disabled) return
-  const priority = [...settings.value.priority]
-  const previousIndex = priority.indexOf(type)
-  if (previousIndex < 0 || previousIndex === index || index < 0 || index >= priority.length) return
-  priority.splice(previousIndex, 1)
-  priority.splice(index, 0, type)
-  emit('update:modelValue', { ...settings.value, priority })
-}
-
-const isDefaultPriority = computed(() => (
-  settings.value.priority.length === DEFAULT_LINK_PRIORITY.length
-  && DEFAULT_LINK_PRIORITY.every((type, index) => settings.value.priority[index] === type)
-))
-
-/** 一键恢复默认链路优先级顺序。 */
-function resetPriority(): void {
-  if (props.disabled || isDefaultPriority.value) return
-  emit('update:modelValue', { ...settings.value, priority: [...DEFAULT_LINK_PRIORITY] })
-}
-
-/** 开始原生拖拽；type 为当前类型，event 提供浏览器拖放数据，仅记录来源，不提前修改配置。 */
-function startDrag(type: LinkType, event: DragEvent): void {
-  if (props.disabled) {
-    event.preventDefault()
-    return
-  }
-  draggedType.value = type
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', type)
-  }
-}
-
-/** 松开后将本列表拖拽的类型移到 index 顺位；外部拖入不修改配置。 */
-function dropPriority(index: number): void {
-  if (draggedType.value !== null) movePriority(draggedType.value, index)
-  resetDrag()
-}
-
-/** 拖拽完成或取消时清除来源和目标高亮，不修改优先级。 */
-function resetDrag(): void {
-  draggedType.value = null
-  dropTarget.value = null
-}
-
 const linkCalc = computed(() => readLinkCalcSettings(settings.value.linkCalc))
 const thresholdFields = [
-  { key: 'emergencyThreshold', label: '紧急阈值', hint: '误码率超限时判为链路失效/中断并触发切换' },
-  { key: 'warningThreshold', label: '告警阈值', hint: '误码率超限时判为链路劣化/告警' },
+  { key: 'emergencyThreshold', label: '紧急阈值', hint: '误码率达到或超过紧急阈值时，链路显示中断' },
+  { key: 'warningThreshold', label: '告警阈值', hint: '误码率达到告警阈值且低于紧急阈值时，链路显示劣化' },
   { key: 'valueThresholdBer', label: '质量阈值', hint: '误码率不高于此值时满足优质链路门限' },
 ] as const
 type ThresholdKey = (typeof thresholdFields)[number]['key']
@@ -187,12 +138,6 @@ function typeText(type: LinkType): string {
 }
 /** 参与本次场景的链路（链路启用且卫星可用）；热链逐跳下拉和快捷生成只用这些。 */
 const enabledHotLinks = computed(() => props.links.filter(link => isConfiguredLinkEnabled(link, settings.value, props.platforms)))
-/** 按链路类型统计当前参与本次场景的启用链路条数，辅助判断优先级调整是否影响现有拓扑。 */
-const enabledLinkCountByType = computed<Record<LinkType, number>>(() => {
-  const counts: Record<LinkType, number> = { SAT: 0, MICROWAVE: 0, DATALINK: 0, LASER: 0, FIBER: 0 }
-  for (const link of enabledHotLinks.value) counts[link.type] += 1
-  return counts
-})
 const hotLinks = computed(() => readHotLinks(settings.value.hotLinks))
 const hotLinkCount = computed(() => [...hotLinks.value.forward, ...hotLinks.value.reverse].filter(chain => chain.length > 0).length)
 
@@ -320,14 +265,10 @@ function platformChoices(direction: Link['direction'], end: boolean): { value: s
   const ids = new Set(enabledHotLinks.value.filter(link => link.direction === direction).map(link => end ? link.targetPlatformId : link.sourcePlatformId))
   return [...ids].map(id => ({ value: id, label: scenarioPlatformLabel(props.platforms, id) }))
 }
-function priorityRank(link: Link): number {
-  const index = settings.value.priority.indexOf(link.type)
-  return index < 0 ? settings.value.priority.length : index
-}
-/** 按链路优先级做广度优先，取跳数最少、同层优先级的连通路径。 */
+/** 按跳数查找连通路径，同层按链路编号遍历。 */
 function findHotLinkPath(direction: Link['direction'], start: string, end: string): string[] | null {
   const links = enabledHotLinks.value.filter(link => link.direction === direction)
-    .sort((left, right) => priorityRank(left) - priorityRank(right) || left.id.localeCompare(right.id))
+    .sort((left, right) => left.id.localeCompare(right.id))
   const queue = [start]
   const visited = new Set([start])
   const previous = new Map<string, { platform: string; linkId: string }>()
@@ -380,7 +321,7 @@ function generateReverse(index: number): void {
     const candidates = enabledHotLinks.value
       .filter(item => item.direction === 'REVERSE' && item.sourcePlatformId === link.targetPlatformId && item.targetPlatformId === link.sourcePlatformId)
       .sort((left, right) => (left.type === link.type ? 0 : 1) - (right.type === link.type ? 0 : 1)
-        || priorityRank(left) - priorityRank(right) || left.id.localeCompare(right.id))
+        || left.id.localeCompare(right.id))
     if (candidates.length === 0) {
       hotNotice.value.forward = `第 ${position + 1} 跳没有对应的返向链路：${scenarioPlatformLabel(props.platforms, link.targetPlatformId)} → ${scenarioPlatformLabel(props.platforms, link.sourcePlatformId)}。`
       return
@@ -437,72 +378,10 @@ defineExpose({ revealField })
     <el-button :disabled="disabled" data-testid="open-link-settings" @click="emit('update:dialogVisible', true)">链路设置</el-button>
   </div>
   <el-dialog :model-value="dialogVisible" class="link-settings-dialog scenario-dialog" title="链路设置" width="max(80vw, min(760px, calc(100vw - 2rem)))" top="5vh"
-    destroy-on-close append-to-body data-testid="link-settings-dialog" @closed="resetDrag" @update:model-value="onDialogVisible">
+    destroy-on-close append-to-body data-testid="link-settings-dialog" @update:model-value="onDialogVisible">
     <el-form label-position="top" :disabled="disabled" class="link-settings__fields">
       <!-- 左列：选路策略与全局计算参数；右列：热链。 -->
       <div class="link-settings__column" data-testid="link-settings-left">
-      <el-form-item class="link-settings__strategy" :error="fieldMessage?.('priority') ?? ''">
-        <div class="link-settings__priority-head">
-          <div class="link-settings__heading">
-            <span class="link-settings__priority-title">链路优先级</span>
-            <small>越靠上越优先，支持拖拽、按钮或方向键排序</small>
-          </div>
-          <el-button v-if="!isDefaultPriority" link type="primary" size="small" :disabled="disabled"
-            data-testid="priority-reset-default" @click="resetPriority">恢复默认</el-button>
-        </div>
-        <ol class="link-settings__priority" aria-label="链路优先级，从高到低">
-          <li v-for="(type, index) in settings.priority" :key="type" class="link-settings__priority-row"
-            :class="{
-              'is-top': index === 0,
-              'is-dragging': draggedType === type,
-              'is-drop-target': !disabled && dropTarget === type && draggedType !== type,
-            }"
-            @dragover.prevent="!disabled && draggedType !== null && (dropTarget = type)" @drop.prevent="dropPriority(index)">
-            <button type="button" class="link-settings__priority-item" :disabled="disabled" :draggable="!disabled"
-              :data-testid="`link-priority-${index}`"
-              :aria-label="`${typeText(type)}，优先级 ${index + 1}，使用上下方向键调整`"
-              title="拖拽调整顺序，也可使用上下方向键"
-              @dragstart="startDrag(type, $event)" @dragend="resetDrag"
-              @keydown.up.prevent="movePriority(type, index - 1)" @keydown.down.prevent="movePriority(type, index + 1)">
-              <svg class="link-settings__drag-handle" viewBox="0 0 16 20" aria-hidden="true" fill="currentColor">
-                <circle v-for="n in 6" :key="n" :cx="n % 2 ? 5 : 11" :cy="4 + Math.floor((n - 1) / 2) * 6" r="1.5" />
-              </svg>
-              <span class="link-settings__rank" :class="{ 'is-top': index === 0 }">{{ index + 1 }}</span>
-              <span class="link-settings__priority-name">{{ typeText(type) }}</span>
-              <span class="link-settings__priority-meta">
-                <el-tag v-if="index === 0" size="small" type="primary" effect="plain" class="link-settings__priority-badge">最高优先</el-tag>
-                <span v-if="links.length > 0" class="link-settings__priority-count"
-                  :class="{ 'is-empty': enabledLinkCountByType[type] === 0 }">
-                  {{ enabledLinkCountByType[type] > 0 ? `${enabledLinkCountByType[type]} 条参与` : '无启用链路' }}
-                </span>
-              </span>
-            </button>
-            <div class="link-settings__priority-actions" role="group" :aria-label="`${typeText(type)}排序操作`">
-              <button type="button" class="link-settings__priority-action" :disabled="disabled || index === 0"
-                :data-testid="`priority-move-top-${index}`" :aria-label="`将${typeText(type)}置顶`" title="置顶"
-                @click="movePriority(type, 0)">
-                <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M3.5 3.5h9M8 12.5v-6M5.25 8.75L8 6l2.75 2.75" />
-                </svg>
-              </button>
-              <button type="button" class="link-settings__priority-action" :disabled="disabled || index === 0"
-                :data-testid="`priority-move-up-${index}`" :aria-label="`上移${typeText(type)}`" title="上移"
-                @click="movePriority(type, index - 1)">
-                <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M4.5 9.75L8 6.25l3.5 3.5" />
-                </svg>
-              </button>
-              <button type="button" class="link-settings__priority-action" :disabled="disabled || index === settings.priority.length - 1"
-                :data-testid="`priority-move-down-${index}`" :aria-label="`下移${typeText(type)}`" title="下移"
-                @click="movePriority(type, index + 1)">
-                <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M4.5 6.25L8 9.75l3.5-3.5" />
-                </svg>
-              </button>
-            </div>
-          </li>
-        </ol>
-      </el-form-item>
       <el-form-item label="本场景选用卫星" :error="fieldMessage?.('enabledSatellites') ?? ''">
         <el-select :model-value="settings.enabledSatellites.TIANTONG ? 'TIANTONG' : settings.enabledSatellites.SHENTONG ? 'SHENTONG' : undefined"
           placeholder="请先在节点配置中配置卫星" aria-label="本场景选用卫星" data-testid="link-relay-satellite" @change="selectSatellite">
@@ -697,121 +576,7 @@ defineExpose({ revealField })
 .link-settings__column { display: grid; align-content: start; gap: 0.75rem; min-width: 0; }
 .link-settings__hint { display: block; width: 100%; margin-top: 4px; color: var(--console-text-muted); font-size: 12px; line-height: 1.4; }
 .link-settings__hint--error { color: var(--el-color-danger); }
-.link-settings__strategy { min-width: 0; margin-bottom: 1rem; }
-.link-settings__strategy :deep(.el-form-item__content) { display: block; line-height: normal; }
-.link-settings__priority-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.55rem; }
-.link-settings__priority-head .link-settings__heading { margin-bottom: 0; }
-.link-settings__priority-title { color: var(--console-text); font-weight: 600; }
 .link-settings__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
-.link-settings__heading small { color: var(--console-text-muted); font-size: 12px; }
-.link-settings__priority { display: grid; gap: 0.45rem; margin: 0; padding: 0.5rem; border: 1px solid var(--console-border); border-radius: var(--console-radius); background: var(--console-surface); list-style: none; }
-.link-settings__priority-row {
-  display: flex;
-  align-items: stretch;
-  border: 1px solid var(--console-border);
-  border-radius: 6px;
-  background: var(--console-bg-elevated);
-  overflow: hidden;
-  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease;
-}
-.link-settings__priority-row.is-top {
-  border-color: color-mix(in srgb, var(--console-cyan) 42%, var(--console-border));
-  background: color-mix(in srgb, var(--console-cyan) 7%, var(--console-bg-elevated));
-  box-shadow: inset 3px 0 0 var(--console-cyan);
-}
-.link-settings__priority-row:hover { border-color: var(--console-border-strong); background: var(--console-surface-raised); }
-.link-settings__priority-row.is-top:hover { border-color: color-mix(in srgb, var(--console-cyan) 65%, var(--console-border)); }
-.link-settings__priority-row.is-dragging { opacity: 0.48; border-style: dashed; }
-.link-settings__priority-row.is-drop-target {
-  border-color: var(--console-cyan);
-  background: color-mix(in srgb, var(--console-cyan) 12%, var(--console-surface-raised));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--console-cyan) 28%, transparent);
-}
-.link-settings__priority-item {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex: 1;
-  min-width: 0;
-  padding: 0.5rem 0.65rem;
-  border: 0;
-  background: transparent;
-  color: var(--console-text);
-  font: inherit;
-  text-align: left;
-  cursor: grab;
-}
-.link-settings__priority-item:active { cursor: grabbing; }
-.link-settings__priority-item:disabled { opacity: 0.55; cursor: not-allowed; }
-.link-settings__priority-item:focus-visible { outline: 2px solid var(--console-cyan); outline-offset: -2px; }
-.link-settings__drag-handle { width: 14px; height: 18px; flex-shrink: 0; color: var(--console-text-dim); transition: color 0.16s ease; }
-.link-settings__priority-row:hover .link-settings__drag-handle { color: var(--console-text-muted); }
-.link-settings__rank {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  border: 1px solid var(--console-border);
-  border-radius: 50%;
-  background: var(--console-surface);
-  color: var(--console-text-muted);
-  font-size: 12px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.link-settings__rank.is-top {
-  border-color: color-mix(in srgb, var(--console-cyan) 60%, transparent);
-  background: color-mix(in srgb, var(--console-cyan) 18%, transparent);
-  color: var(--console-cyan);
-}
-.link-settings__priority-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.link-settings__priority-meta { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: auto; flex-shrink: 0; }
-.link-settings__priority-badge { flex-shrink: 0; }
-.link-settings__priority-count {
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--console-teal) 14%, transparent);
-  color: var(--console-teal);
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.link-settings__priority-count.is-empty {
-  background: var(--console-surface);
-  color: var(--console-text-dim);
-}
-.link-settings__priority-actions {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: 0 0.25rem;
-  border-left: 1px solid color-mix(in srgb, var(--console-border) 75%, transparent);
-  background: color-mix(in srgb, var(--console-surface) 55%, transparent);
-}
-.link-settings__priority-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--console-text-muted);
-  cursor: pointer;
-  transition: color 0.14s ease, background-color 0.14s ease;
-}
-.link-settings__priority-action svg { width: 14px; height: 14px; }
-.link-settings__priority-action:not(:disabled):hover {
-  background: color-mix(in srgb, var(--console-cyan) 14%, transparent);
-  color: var(--console-cyan);
-}
-.link-settings__priority-action:focus-visible { outline: 2px solid var(--console-cyan); outline-offset: -2px; }
-.link-settings__priority-action:disabled { opacity: 0.28; cursor: not-allowed; }
 .link-settings__fields :deep(.el-input-number) { width: 100%; }
 .link-settings__rules { display: grid; gap: 0.75rem; min-width: 0; }
 .link-settings__disclosure { margin: 0; padding: 0; border-radius: var(--console-radius); background: var(--console-surface); }

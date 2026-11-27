@@ -180,7 +180,7 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(rows()).toHaveLength(2)
     expect(rows()[0]!.get('.quality-card-heading strong').text()).toBe('无人机01 → 后方通信车')
     const metrics = Object.fromEntries(rows()[0]!.findAll('dl > div').map(row => [row.get('dt').text(), row.get('dd').text()]))
-    for (const label of ['干信比 GXB（dB）', '误码率', '发射辐射功率（dBW）', '距离（m）']) {
+    for (const label of ['干信比(GXB)（dB）', '误码率(BER)', '发射辐射功率（dBW）', '距离（m）']) {
       expect(metrics[label], label).toBe('暂无数据')
     }
     wrapper.findAllComponents(ElSelect)[0]!.vm.$emit('update:modelValue', '无人机02')

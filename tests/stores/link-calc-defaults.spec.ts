@@ -29,7 +29,7 @@ describe('《与前端字段确认说明》默认值', () => {
     expect(linkTypeDefaults('FIBER')).toMatchObject({ frequency: 1300, dataRate: 100 })
     expect(datalinkRateTiers('C', 'FORWARD')).toEqual([0.0256, 2, 4])
     expect(datalinkRateTiers('C', 'REVERSE')).toEqual([0.0512, 2, 4, 8, 16])
-    expect(datalinkRateTiers('L', 'FORWARD')).toEqual([0.0064, 0.0128])
+    expect(datalinkRateTiers('L', 'FORWARD')).toEqual([0.0064, 0.0128, 1])
     expect(datalinkRateTiers('L', 'REVERSE')).toEqual([0.0128, 0.0256, 2, 4, 8])
   })
 
@@ -42,19 +42,19 @@ describe('《与前端字段确认说明》默认值', () => {
     expect(fixedLinkDataRate({ ...link, type: 'DATALINK' }, [])).toBeNull()
   })
 
-  it('激光缺省采用 1112 lazer_link 参数集：681300 GHz→681300000 MHz、带宽 1000、功率 0.1、速率 2500、收发增益 45', () => {
-    expect(LASER_LINK_DEFAULTS.frequency).toBe(681_300_000)
-    // 681300 GHz 换算为前端 MHz 口径：681300 × 1000 = 681300000 MHz。
-    expect(LASER_LINK_DEFAULTS.frequency / 1000).toBe(681_300)
+  it('激光缺省采用最新 lazer_link 参数集：发射 193500 GHz、接收 681300 GHz、带宽 1000、功率 0.1、速率 2500、收发增益 45', () => {
+    expect(LASER_LINK_DEFAULTS.frequency).toBe(193_500_000)
+    expect(LASER_LINK_DEFAULTS.rxFrequency).toBe(681_300_000)
+    expect(LASER_LINK_DEFAULTS.frequency / 1000).toBe(193_500)
     expect(LASER_LINK_DEFAULTS.bandwidth).toBe(1_000)
     expect(LASER_LINK_DEFAULTS.txPower).toBe(0.1)
     expect(LASER_LINK_DEFAULTS.dataRate).toBe(2_500)
-    expect(LASER_LINK_DEFAULTS.eirpDbw).toBe(20)
-    expect(LASER_LINK_DEFAULTS.gtDbk).toBe(15)
+    expect(LASER_LINK_DEFAULTS.eirpDbw).toBe(0)
+    expect(LASER_LINK_DEFAULTS.gtDbk).toBe(0)
     expect(LASER_LINK_DEFAULTS.noiseFigureDb).toBe(5)
     expect(linkTypeDefaults('LASER')).toMatchObject({
-      frequency: 681_300_000, rxFrequency: 681_300_000, bandwidth: 1_000, rxBandwidth: 1_000,
-      txPower: 0.1, dataRate: 2_500, antennaGain: { tx: 45, rx: 45 }, eirpDbw: 20, gtDbk: 15, noiseFigureDb: 5,
+      frequency: 193_500_000, rxFrequency: 681_300_000, bandwidth: 1_000, rxBandwidth: 1_000,
+      txPower: 0.1, dataRate: 2_500, antennaGain: { tx: 45, rx: 45 }, eirpDbw: 0, gtDbk: 0, noiseFigureDb: 5,
     })
   })
 

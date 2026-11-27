@@ -141,8 +141,6 @@ export interface Environment {
   seaState: number; rainRateMmPerHour: number; multipathEnabled: boolean;
   /** 仿真时钟倍速；旧场景缺省时使用文档默认值 2。 */
   simClockSpeed?: number;
-  /** 海峡宽度，单位 km；不是各条链路的实际通信距离。 */
-  transmissionDistance?: number;
   /** 雨强档位；界面选择后同步写入 rainRateMmPerHour（0/10/25/50/100 mm/h）。 */
   rainCloudAttenuation?: 'none' | 'lightRain' | 'moderateRain' | 'heavyRain' | 'stormRain';
   /** 云层高度范围（m）与云中液态水密度（g/m³）；旧场景缺省时采用对接示例值 500/2000/0.5。 */
@@ -194,8 +192,6 @@ export interface Platform {
   returnPlan?: ReturnPlan;
   /** 所属阵营（蓝/红/中立）；旧场景缺省时按平台类型推断，不自动回写。 */
   faction?: Faction;
-  /** 节点通信能力范围（m）；是通信能力范围，不是几何距离或海峡宽度（Environment.transmissionDistance）。缺失表示未配置。 */
-  communicationRangeM?: Meters;
   waypoints: Waypoint[]; linkIds: Identifier[]; sensorIds: Identifier[]; jammerIds: Identifier[];
 }
 export interface Link {
@@ -259,7 +255,6 @@ export interface ScenarioLinkSettings {
   minimumReceivedPowerDbm?: Decibels;
   failureGxbDb?: Decibels;
   failureBer?: Ratio01;
-  priority: LinkType[];
   /** link_calc 全局阈值与编码；缺省时按《与前端字段确认说明》默认值生成。 */
   linkCalc?: LinkCalcSettings;
   /** 热链配置（全局）；缺省表示未配置，由用户显式添加。 */
@@ -411,13 +406,16 @@ export interface SensorUiExtension { sensorId: Identifier; type: 'ESM'; directio
 export interface ScenarioUiExtensions { jammers: JammerUiExtension[]; sensors: SensorUiExtension[]; }
 /** 本地场景文件格式，与纯 ScenarioConfig 导入保持兼容。 */
 export interface ScenarioSnapshot { format: 'wrj.scenario.snapshot'; version: 1; config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; }
+/** 导入服务校验 X.Y 格式的版本字符串，并映射为内部 ScenarioConfig。 */
+export type ScenarioImportConfig = Omit<ScenarioConfig, 'schemaVersion'> & { schemaVersion: string };
+export type ScenarioImportSnapshot = Omit<ScenarioSnapshot, 'version' | 'config'> & { version: number; config: ScenarioImportConfig };
 export interface ScenarioDraftUpdate { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; expectedRevision: number; }
 export interface ScenarioDraft { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; revision: number; createdAt?: Iso8601Utc; officialLibraryChanged: false; locked: boolean; }
 export interface ScenarioTemplate { templateId: Identifier; name: string; version: string; official: boolean; config: ScenarioConfig; referenceCount: number; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface ScriptContract { scriptId: Identifier; taskId: TaskId; scenarioId: ScenarioId; configVersion: string; target: 'AFSIM 2.9.0'; checksum: string; preview: string; generatedTime: Iso8601Utc; }
 export interface ScenarioValidationRequest { config: ScenarioConfig; }
 export interface MutationRequest { expectedRevision: number; }
-export interface ScenarioImportRequest { items: Array<ScenarioConfig | ScenarioSnapshot>; }
+export interface ScenarioImportRequest { items: Array<ScenarioImportConfig | ScenarioImportSnapshot>; }
 export interface ScenarioImportResult { imported: number; rejected: number; drafts: ScenarioDraft[]; }
 export interface TemplateMutationRequest { name: string; config: ScenarioConfig; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface CopyTemplateRequest { name: string; scenarioId?: ScenarioId; }
@@ -647,6 +645,11 @@ export interface EngineFrameSnapshot {
   events: EngineFrameEvent[]; initRouting: EngineRoute[] | null;
 }
 export type LinkMetricPayload = LinkStatusSummary[] | QualityDatasetUpdate | EngineFrameSnapshot;
+/** 真实 Mission 的帧时标，与 link.metric 共用引擎帧身份。 */
+export interface EngineFrameTick {
+  kind: 'ENGINE_FRAME_TICK'; runId: string; engineEpoch: number; sourceFrameId: number; simulationTime: Seconds;
+}
+export type SimulationFramePayload = TelemetryFrame | EngineFrameTick;
 /**
  * Incremental mission-console output.  It deliberately carries no simulated
  * timestamp or frame identifier: a process log is wall-clock output and the
@@ -891,8 +894,11 @@ export interface ContractDescriptor { name: string; version: string; sourceRef: 
 export type WsTopic = 'simulation.frame' | 'runtime.state' | 'link.metric' | 'jammer.event' | 'switch.event' | 'mission.log' | 'position.update';
 export type WsConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'SUBSCRIBED' | 'RETRYING' | 'FAILED';
 export interface RealtimeEnvelope<T> { type: string; schemaVersion: '1.0'; topic: WsTopic; taskId: TaskId; sequence: SequenceNumber; simulationTime?: Seconds; frameId?: FrameId; payload: T; }
-export interface WsSubscribeRequest { type: 'subscribe'; schemaVersion: '1.0'; taskId: TaskId; topics: WsTopic[]; lastSequence?: SequenceNumber; lastSequences?: Partial<Record<WsTopic, SequenceNumber>>; }
-export interface WsRejection { type: 'rejected'; code: 'LOOPBACK_ONLY' | 'TOPIC_FORBIDDEN' | 'INVALID_ENVELOPE' | 'SEQUENCE_GAP'; message: string; closeCode: 1008; }
+export interface WsSubscribeRequest { type: 'subscribe'; schemaVersion: '1.0'; taskId: TaskId; topics: WsTopic[]; lastSequence?: SequenceNumber; lastSequences?: Partial<Record<WsTopic, SequenceNumber>>; resumeRunId?: RunId; }
+export interface WsRejection {
+  type: 'rejected'; code: 'LOOPBACK_ONLY' | 'TOPIC_FORBIDDEN' | 'INVALID_ENVELOPE' | 'SEQUENCE_GAP'; message: string; closeCode: 1008;
+  runChanged?: true; gap?: { runId: RunId; topic: WsTopic; missingFrom: number; missingThrough: number };
+}
 
 export interface FixtureValidationLink {
   openApiDocument: 'mock-api.openapi.yaml'; rootSchema: '#/components/schemas/DeterministicFixtures';

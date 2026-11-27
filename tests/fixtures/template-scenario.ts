@@ -193,7 +193,6 @@ export function createTemplateScenario(): ScenarioDraft {
           rainRateMmPerHour: 10,
           rainCloudAttenuation: 'lightRain',
           simClockSpeed: 2,
-          transmissionDistance: 300,
           multipathEnabled: true,
           rainEnabled: true,
           rainAltitudeLimitM: 3000,
@@ -243,7 +242,6 @@ export function createTemplateScenario(): ScenarioDraft {
       linkSettings: {
         enabledSatellites: { TIANTONG: true, SHENTONG: true },
         switchCooldownS: 5,
-        priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'],
         linkCalc: { emergencyThreshold: 1e-5, warningThreshold: 1e-6, valueThresholdBer: 1e-7, jammingRangeKm: 30, channelEncodingScheme: 0 },
         hotLinks: {
           forward: [['fiber_forward', 'c_forward_uav2'], ['fiber_forward', 'c_forward_uav3']],

@@ -133,11 +133,17 @@ export async function createEngineCsvSession(directory: string, taskId: string, 
     try { await writeAll(handle, header); handles.set(name, handle); return handle }
     catch (error) { await handle.close().catch(() => undefined); throw error }
   }
-  const write = async (name: typeof names[number], line: string) => {
-    if (line.includes(CSV_NO_DATA)) reasons.get(name)!.add('缺测或无法唯一对应的字段已写入“暂无数据”，未补零或推算。')
-    const text = `${line}\r\n`
+  const writeRows = async (name: typeof names[number], lines: readonly string[]) => {
+    if (lines.length === 0) return
+    let text = ''
+    for (const line of lines) {
+      if (line.includes(CSV_NO_DATA)) reasons.get(name)!.add('缺测或无法唯一对应的字段已写入“暂无数据”，未补零或推算。')
+      text += `${line}\r\n`
+    }
     account(name, text)
-    const handle = await ensure(name); await writeAll(handle, text); counts.set(name, counts.get(name)! + 1)
+    const handle = await ensure(name)
+    await writeAll(handle, text)
+    counts.set(name, counts.get(name)! + lines.length)
   }
   let frames = 0
   let closed = false
@@ -151,12 +157,10 @@ export async function createEngineCsvSession(directory: string, taskId: string, 
       if (closed) throw new Error('规范 CSV 会话已关闭。')
       frames += 1
       const projected = segmentRows(frame, taskId, bindings)
-      for (const row of projected) {
-        await write('link_state.csv', row.state)
-        await write('link_loss.csv', row.losses)
-      }
+      await writeRows('link_state.csv', projected.map(row => row.state))
+      await writeRows('link_loss.csv', projected.map(row => row.losses))
       reasons.get('link_quality.csv')!.add('上游帧未提供规范质量行所需 SNR、带宽、功率、天线增益、BER门限等完整真实字段。')
-      for (const value of frame.routing.switches) await write('link_switch.csv', switchRow(frame, value, taskId, bindings))
+      await writeRows('link_switch.csv', frame.routing.switches.map(value => switchRow(frame, value, taskId, bindings)))
       reasons.get('events.csv')!.add('上游事件未提供规范 events.csv 所需明确来源平台及完整事件字段。')
     },
     async close(sourceSha256, options) {

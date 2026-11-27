@@ -135,11 +135,12 @@ describe('链路补项保存与快照', () => {
     disabledLink!.enabled = false
     enabledLink!.enabled = true
     config.linkSettings.switchCooldownS = 12
-    config.linkSettings.priority = ['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER']
     const satellite = config.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!
     const link = config.links.find(l => l.type === 'SAT')!
     Object.assign(link, { antennaGainCorrectionDb: -2, antiJammingGainDb: 6, spatialIsolationDb: 3, relayPlatformId: satellite.id })
-    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    config.linkSettings.hotLinks = { forward: [[enabledLink!.id]], reverse: [] }
+    const legacyConfig = { ...config, linkSettings: { ...config.linkSettings, priority: ['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'] } }
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config: legacyConfig, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config.linkSettings).toEqual(config.linkSettings)
     expect(saved.config.links).toEqual(config.links)
     expect(saved.config.links.find(link => link.id === disabledLink!.id)?.enabled).toBe(false)
@@ -147,7 +148,7 @@ describe('链路补项保存与快照', () => {
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
     const template = await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '链路配置模板', config: saved.config }).expect(201)
     expect((template.body as ApiSuccess<ScenarioTemplate>).data.config).toEqual(saved.config)
-    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [saved.config] }).expect(200)
+    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [legacyConfig] }).expect(200)
     const importedDraft = (imported.body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!
     expect(importedDraft.config).toEqual(saved.config)
     const reset = await request(baseUrl).post(`${path}/reset`).set(headers).send({ expectedRevision: importedDraft.revision }).expect(200)
@@ -933,7 +934,7 @@ describe('P0 deterministic mock server', () => {
     expect(original).toMatchObject({
       revision: 4,
       config: { scenario: { name: '跨海通联演示', duration: 1200, environment: {
-        simClockSpeed: 2, transmissionDistance: 300, rainCloudAttenuation: 'lightRain', multipathEnabled: true,
+        simClockSpeed: 2, rainCloudAttenuation: 'lightRain', multipathEnabled: true,
       } } },
       uiExtensions: {
         jammers: [{ jammerId: 'JAM-WB-01-TX' }],
@@ -946,7 +947,6 @@ describe('P0 deterministic mock server', () => {
     changed.scenario.name = '台海通联验证场景'
     changed.scenario.environment.seaState = 4
     changed.scenario.environment.simClockSpeed = 3
-    changed.scenario.environment.transmissionDistance = 350
     changed.scenario.environment.rainCloudAttenuation = 'heavyRain'
     const saved = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
@@ -957,7 +957,7 @@ describe('P0 deterministic mock server', () => {
     expect((saved.body as { data: ScenarioDraft }).data).toMatchObject({
       revision: 5,
       config: { scenario: { name: '台海通联验证场景', environment: {
-        seaState: 4, simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain',
+        seaState: 4, simClockSpeed: 3, rainCloudAttenuation: 'heavyRain',
       } } },
     })
     const reloaded = await load().expect(200)
@@ -1326,6 +1326,8 @@ describe('P0 deterministic mock server', () => {
     const warningConfig = structuredClone(original.config)
     Object.assign(warningConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     warningConfig.scenario.environment.rainRateMmPerHour = 101
+    // 演示场景启用了海面多径；框选海面区域，使本用例只验证雨强封顶警告。
+    warningConfig.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }, { longitude: 119, latitude: 25 }]
     const warningResponse = await request(baseUrl)
       .post('/api/v1/scenarios/SCN-001/validate')
       .set('Origin', ORIGIN)

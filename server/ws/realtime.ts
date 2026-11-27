@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
   RealtimeEnvelope,
   EngineFrameSnapshot,
+  EngineFrameTick,
   EngineConnectionDiagnostic,
   EngineJammerFrameUpdate,
   EngineSwitchFrameUpdate,
@@ -25,7 +26,7 @@ import type {
 import { assertLoopbackRequest, assertLanRequest, type DeploymentAccess } from '../http/loopback.js'
 import type { MockProjection } from '../state/projection.js'
 import { fixedFrameForRun, ownsFixedEvidence } from '../simulations/projection.js'
-import { MemoryRealtimeJournal, REALTIME_TOPICS, type RealtimeJournalStore } from './realtime-journal.js'
+import { MemoryRealtimeJournal, REALTIME_TOPICS, type JournalRead, type RealtimeJournalStore } from './realtime-journal.js'
 
 const CANONICAL_TOPICS = new Set(REALTIME_TOPICS)
 const MAX_SUBSCRIPTION_BYTES = 16_384
@@ -65,6 +66,7 @@ interface SubscriptionAcknowledgement {
   topics: WsTopic[]
   lastSequence: number
   nextSequence: number
+  runId?: SimulationRun['runId']
   lastSequences?: Partial<Record<WsTopic, number>>
 }
 
@@ -96,7 +98,7 @@ function parseSubscription(data: RawData, isBinary: boolean):
   }
 
   const record = value as Record<string, unknown>
-  const allowedKeys = new Set(['type', 'schemaVersion', 'taskId', 'topics', 'lastSequence', 'lastSequences'])
+  const allowedKeys = new Set(['type', 'schemaVersion', 'taskId', 'topics', 'lastSequence', 'lastSequences', 'resumeRunId'])
   if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
     return { accepted: false, code: 'INVALID_ENVELOPE', message: 'The subscription contains unknown fields.' }
   }
@@ -133,6 +135,9 @@ function parseSubscription(data: RawData, isBinary: boolean):
   }
 
   let lastSequences: Partial<Record<WsTopic, number>> | undefined
+  if (record.resumeRunId !== undefined && (record.lastSequences === undefined || typeof record.resumeRunId !== 'string' || !/^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(record.resumeRunId))) {
+    return { accepted: false, code: 'INVALID_ENVELOPE', message: 'resumeRunId requires a valid run and per-topic cursors.' }
+  }
   if (record.lastSequences !== undefined) {
     if (typeof record.lastSequences !== 'object' || record.lastSequences === null || Array.isArray(record.lastSequences)) {
       return { accepted: false, code: 'INVALID_ENVELOPE', message: 'lastSequences must be an object keyed by subscribed topic.' }
@@ -155,20 +160,28 @@ function parseSubscription(data: RawData, isBinary: boolean):
       topics: topics as WsTopic[],
       ...(record.lastSequence === undefined ? {} : { lastSequence: record.lastSequence as number }),
       ...(lastSequences === undefined ? {} : { lastSequences }),
+      ...(record.resumeRunId === undefined ? {} : { resumeRunId: record.resumeRunId as SimulationRun['runId'] }),
     },
   }
 }
 
-function reject(client: WebSocket, code: WsRejection['code'], message: string): void {
+function reject(client: WebSocket, code: WsRejection['code'], message: string, details?: Pick<WsRejection, 'gap' | 'runChanged'>): void {
   const rejection: WsRejection = {
     type: 'rejected',
     code,
     message,
     closeCode: 1008,
+    ...details,
   }
 
   client.send(JSON.stringify(rejection))
   client.close(1008, code)
+}
+
+function rejectJournal(client: WebSocket, read: Extract<JournalRead, { ok: false }>, topic: WsTopic, runId?: SimulationRun['runId']): void {
+  reject(client, 'SEQUENCE_GAP', read.missingFrom === undefined ? read.reason : `Outside retained realtime event window: ${read.reason}`,
+    runId && read.missingFrom !== undefined && read.missingThrough !== undefined
+      ? { gap: { runId, topic, missingFrom: read.missingFrom, missingThrough: read.missingThrough } } : undefined)
 }
 
 interface ClientSubscription { taskId?: TaskId; topics: Set<WsTopic> }
@@ -279,13 +292,13 @@ export function attachRealtimeServer(
     // 没有运行时仍按无运行处理：依赖运行的主题各自缺失，静态链路摘要照常返回。
     const run = currentRun(taskId)
     const fixedEvidence = run === undefined || ownsFixedEvidence(run)
-    if (!['runtime.state', 'link.metric', 'mission.log', 'position.update', 'jammer.event', 'switch.event'].includes(topic) && !fixedEvidence) return
     const ownsRunScopedMessage = (message: string): boolean => {
-      if (fixedEvidence || !['link.metric', 'mission.log', 'position.update', 'jammer.event', 'switch.event'].includes(topic)) return true
+      if (fixedEvidence || topic === 'runtime.state') return true
       try {
         const { payload } = JSON.parse(message)
         const active = currentRun(taskId)
         if (active === undefined) return false
+        if (topic === 'simulation.frame') return payload?.kind === 'ENGINE_FRAME_TICK' && payload.runId === active.runId
         if (['mission.log', 'position.update', 'jammer.event', 'switch.event'].includes(topic)) return payload?.runId === active.runId
         return payload?.kind === 'ENGINE_FRAME' && payload.runId === active.runId
           || payload?.kind === 'QUALITY_UPDATED' && payload.scope?.runId === active.runId
@@ -308,7 +321,7 @@ export function attachRealtimeServer(
         if (!clients.has(client)) { finish(); return }
         if (page.length === 0) {
           const read = journal.readAfter(taskId, topic, cursor, replayPageSize)
-          if (!read.ok) { finish(); reject(client, 'SEQUENCE_GAP', read.reason); return }
+          if (!read.ok) { finish(); rejectJournal(client, read, topic, run?.runId); return }
           page = read.events
         }
         const event = page.shift()
@@ -351,14 +364,6 @@ export function attachRealtimeServer(
     if (message !== undefined) send(client, message)
   }
 
-  const canResume = (taskId: TaskId, topics: WsTopic[], cursors: Partial<Record<WsTopic, number>>, resumesAnyTopic: boolean): string | undefined => {
-    for (const topic of topics) {
-      const read = journal.canResume(taskId, topic, cursors[topic] ?? 0, resumesAnyTopic)
-      if (!read.ok) return read.reason
-    }
-    return undefined
-  }
-
   const trackClient = (client: WebSocket, request: IncomingMessage): void => {
     let unsubscribe: (() => void) | undefined
     client.once('close', () => unsubscribe?.())
@@ -377,14 +382,21 @@ export function attachRealtimeServer(
         if (run !== undefined && journal.prepareRun(taskId, run.runId)) forgetTask(taskId)
       } catch (error) { reject(client, 'SEQUENCE_GAP', error instanceof Error ? error.message : String(error)); return }
       const lastSequence = parsed.request.lastSequence ?? 0
+      const resumeRunId = parsed.request.resumeRunId
+      if (resumeRunId !== undefined && resumeRunId !== run?.runId) { reject(client, 'SEQUENCE_GAP', 'The subscribed run has changed.', { runChanged: true }); return }
       const lastSequences = parsed.request.lastSequences ?? (Object.fromEntries(parsed.request.topics.map(topic => [topic, lastSequence])) as Partial<Record<WsTopic, number>>)
-      const resumesAnyTopic = parsed.request.topics.some(topic => (lastSequences[topic] ?? 0) > 0)
-      const gap = canResume(taskId, parsed.request.topics, lastSequences, resumesAnyTopic)
-      if (gap !== undefined) { reject(client, 'SEQUENCE_GAP', `The requested sequence is outside the retained realtime event window: ${gap}`); return }
+      const resumesAnyTopic = resumeRunId !== undefined || parsed.request.topics.some(topic => (lastSequences[topic] ?? 0) > 0)
+      for (const topic of parsed.request.topics) {
+        const read = journal.canResume(taskId, topic, lastSequences[topic] ?? 0, resumesAnyTopic)
+        if (!read.ok) { rejectJournal(client, read, topic, run?.runId); return }
+      }
       subscribed = true
       clients.set(client, { taskId, topics: new Set(parsed.request.topics) })
       if (run) unsubscribe = onSubscribe?.(run, request)
-      send(client, JSON.stringify({ type: 'subscribed', schemaVersion: '1.0', taskId, topics: [...parsed.request.topics], lastSequence, nextSequence: lastSequence + 1, ...(parsed.request.lastSequences === undefined ? {} : { lastSequences }) } satisfies SubscriptionAcknowledgement))
+      send(client, JSON.stringify({
+        type: 'subscribed', schemaVersion: '1.0', taskId, topics: [...parsed.request.topics], lastSequence, nextSequence: lastSequence + 1,
+        ...(parsed.request.lastSequences && { lastSequences, runId: run?.runId }),
+      } satisfies SubscriptionAcknowledgement))
       for (const topic of parsed.request.topics) replayTopic(client, taskId, topic, lastSequences[topic] ?? 0, resumesAnyTopic && (lastSequences[topic] ?? 0) === 0)
     })
   }
@@ -523,13 +535,18 @@ export function attachRealtimeServer(
         // 高频大帧使用 journal 按发送完成回调推进，避免突发填满 socket 缓冲；不丢帧。
         if (subscription.taskId === run.taskId && subscription.topics.has('link.metric')) replayTopic(client, run.taskId, 'link.metric', envelope.sequence - 1, true)
       }
-      const publishFrameTopic = <T>(topic: 'jammer.event' | 'switch.event', framePayload: T): void => {
+      const publishFrameTopic = <T>(topic: 'simulation.frame' | 'jammer.event' | 'switch.event', framePayload: T): void => {
         const event = createEnvelope(run.taskId, topic, framePayload, payload.simulationTime, `F-ENGINE-${payload.frameId}`)
         const serialized = retain(event)
         if (serialized === undefined) return
         for (const [client, subscription] of clients) {
           if (subscription.taskId === run.taskId && subscription.topics.has(topic)) replayTopic(client, run.taskId, topic, event.sequence - 1, true)
         }
+      }
+      if (run.executionSource !== 'REMOTE_WS' && !run.fileSource) {
+        publishFrameTopic('simulation.frame', {
+          kind: 'ENGINE_FRAME_TICK', runId, engineEpoch: payload.engineEpoch, sourceFrameId: payload.frameId, simulationTime: payload.simulationTime,
+        } satisfies EngineFrameTick)
       }
       if (payload.jammers.length || payload.events.length) {
         const jammerUpdate: EngineJammerFrameUpdate = {

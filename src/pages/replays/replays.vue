@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
@@ -7,9 +7,11 @@ import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import ReplayTimeline from '../../components/replays/ReplayTimeline.vue'
 import MissionResults from '../../components/situation/MissionResults.vue'
 import EngineFramePanel from '../../components/situation/EngineFramePanel.vue'
-import type { Link, ReplayState } from '../../contracts/domain-models'
+import type { Link } from '../../contracts/domain-models'
 import { useReplayStore } from '../../stores/replay'
+import { useAuthStore } from '../../stores/auth'
 import { selectFileCommunicationLinks } from '../../features/situation/file-communication-links'
+import { formatSimulationTime } from '../../features/situation/situation-model'
 import { readLinkEnabled } from '../../features/scenarios/link-settings'
 import {
   localizeReplayTimelineMarkers,
@@ -21,6 +23,7 @@ import type { PositionUpdate } from '../../features/situation/position-updates'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 
 const replayStore = useReplayStore()
+const auth = useAuthStore()
 const route = useRoute()
 const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
 const resultId = computed(() => typeof route.query.resultId === 'string' ? route.query.resultId : undefined)
@@ -34,26 +37,29 @@ const {
   localSnapshot,
   engineHistory,
   engineLoading,
-  configuredJammers,
   scenarioConfig,
 } = storeToRefs(replayStore)
 const historyTab = ref('quality')
 const currentTimeS = computed(() => replay.value?.currentTimeS ?? 0)
-const useSceneSituationMode = computed(() => Boolean(scenarioConfig.value && engineHistory.value?.frameCount))
+const choosingResult = computed(() => auth.runtimeMode === 'LOCAL' && !resultId.value && !archiveId.value && route.query.source !== 'file')
+const useSceneSituationMode = computed(() => Boolean(scenarioConfig.value || (replayStore.resultRecord && !replayStore.resultRecord.executionSource)))
 const nodeNames = computed(() => Object.fromEntries([
   ...(localSnapshot.value?.initial.nodes ?? []).map(node => [node.platformId, node.name] as const),
   ...(scenarioConfig.value?.platforms ?? []).map(platform => [platform.id, platform.name] as const),
 ]))
-const mapNodes = computed(() => selectReplayMapNodes(localSnapshot.value, scenarioConfig.value, currentTimeS.value, Boolean(scenarioConfig.value)))
+const mapFrame = computed(() => useSceneSituationMode.value ? engineHistory.value?.engineFrame : null)
+const mapTimeS = computed(() => mapFrame.value?.simulationTime ?? currentTimeS.value)
+const mapNodes = computed(() => selectReplayMapNodes(localSnapshot.value, scenarioConfig.value, mapTimeS.value))
 const sceneLinkView = computed(() => (useSceneSituationMode.value && scenarioConfig.value && engineHistory.value
   ? selectReplayConfiguredLinks(scenarioConfig.value, engineHistory.value)
   : null))
-const mapConfiguredLinks = computed(() => sceneLinkView.value?.configuredLinks)
+// 传入空数组仍使用场景图层，缺帧时不能把累计投递画成当前链路。
+const mapConfiguredLinks = computed(() => useSceneSituationMode.value ? sceneLinkView.value?.configuredLinks ?? [] : undefined)
 const mapFocusLinks = computed(() => sceneLinkView.value?.focusLinks ?? [])
 const configuredLinkStatuses = computed(() => sceneLinkView.value?.statuses)
 const configuredLinkSwitches = computed(() => sceneLinkView.value?.switches)
 const liveMessageFlows = computed(() => (useSceneSituationMode.value && engineHistory.value?.engineFrame
-  ? selectReplayLiveMessageFlows(localSnapshot.value?.initial.messageLinks, currentTimeS.value, speed.value, state.value === 'PLAYING')
+  ? selectReplayLiveMessageFlows(localSnapshot.value?.initial.messageLinks, mapTimeS.value, speed.value, state.value === 'PLAYING')
   : []))
 const localizedTimelineMarkers = computed(() => localizeReplayTimelineMarkers(
   engineHistory.value?.timelineMarkers,
@@ -67,6 +73,7 @@ const fileLinks = computed(() => (useSceneSituationMode.value
 const focusTarget = ref<SituationMapFocusTarget | null>(null)
 const selectedNodeId = ref('')
 const selectedLinkId = ref('')
+const linkDetailDirections = shallowRef<readonly Pick<Link, 'id' | 'direction'>[]>([])
 const linkDialogVisible = ref(false)
 const mapFullscreen = ref(false)
 const sliderTime = ref(0)
@@ -79,7 +86,7 @@ const selectedConfiguredLink = computed(() => {
 })
 const selectedEngineSegments = computed(() => engineHistory.value?.engineFrame?.links.filter(segment => segment.linkIds.includes(selectedLinkId.value)) ?? [])
 const linkNodePositions = computed<PositionUpdate[]>(() => mapNodes.value.map(node => ({
-  time: typeof node.time === 'number' ? node.time : currentTimeS.value,
+  time: typeof node.time === 'number' ? node.time : mapTimeS.value,
   platformId: node.platformId,
   longitude: node.longitude,
   latitude: node.latitude,
@@ -88,38 +95,22 @@ const linkNodePositions = computed<PositionUpdate[]>(() => mapNodes.value.map(no
   heading: node.heading,
 })))
 
-function openConfiguredLinkDetails(link: Link): void {
+function openConfiguredLinkDetails(link: Link, paired?: Link): void {
+  linkDetailDirections.value = paired ? (link.direction === 'FORWARD' ? [link, paired] : [paired, link]) : []
   selectedLinkId.value = link.id
   linkDialogVisible.value = true
+}
+
+function selectLinkDetailDirection(id: string): void {
+  if (linkDetailDirections.value.some(link => link.id === id)) selectedLinkId.value = id
 }
 
 watch(selectedConfiguredLink, link => {
   if (!link) linkDialogVisible.value = false
 })
 
-/** 将回放状态转换为中文。 */
-function replayStateLabel(value: ReplayState): string {
-  return ({
-    EMPTY: '空', LOADING: '加载中', PAUSED: '已暂停', PLAYING: '播放中', SEEKING: '定位中',
-    COMPLETED: '已完成', CORRUPT: '数据损坏', ERROR: '错误',
-  } as const)[value]
-}
-
-/** 返回回放状态对应的标签类型。 */
-function replayStateType(value: ReplayState): 'success' | 'warning' | 'danger' | 'info' {
-  if (value === 'PLAYING') return 'success'
-  if (value === 'CORRUPT' || value === 'ERROR') return 'danger'
-  if (value === 'PAUSED' || value === 'SEEKING') return 'warning'
-  return 'info'
-}
-
-/** 把秒数格式化为 HH:MM:SS。 */
 function formatTime(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds))
-  const hours = Math.floor(total / 3_600)
-  const minutes = Math.floor(total % 3_600 / 60)
-  const remainder = total % 60
-  return [hours, minutes, remainder].map((part) => String(part).padStart(2, '0')).join(':')
+  return formatSimulationTime(seconds).replace('T+ ', '')
 }
 
 /** 在播放与暂停之间切换。 */
@@ -158,8 +149,10 @@ async function reload(): Promise<void> {
   sliderDragging.value = false
   focusTarget.value = null
   selectedLinkId.value = ''
+  linkDetailDirections.value = []
   linkDialogVisible.value = false
-  await replayStore.loadLocalFile(archiveId.value, resultId.value)
+  if (choosingResult.value) replayStore.resetToSafeEmpty()
+  else await replayStore.loadLocalFile(archiveId.value, resultId.value)
 }
 
 /** 选中节点仍存在时保留高亮；时间变化不自动重置视图或选择。 */
@@ -173,8 +166,11 @@ function locateFileNode(platformId: string): void {
   focusTarget.value = { kind: 'node', targetId: platformId }
 }
 
+const hasReplayControls = computed(() => !loading.value && state.value !== 'CORRUPT' && state.value !== 'ERROR' && Boolean(replay.value && localSnapshot.value))
+const hasTimelineItems = computed(() => localizedTimelineMarkers.value.length > 0 || events.value.length > 0)
+
 onMounted(() => { void reload() })
-watch([archiveId, resultId], () => { void reload() })
+watch([archiveId, resultId, () => route.query.source, choosingResult], () => { void reload() })
 onBeforeUnmount(() => {
   replayStore.resetToSafeEmpty()
 })
@@ -184,16 +180,52 @@ onBeforeUnmount(() => {
   <section class="replays-page" :class="{ 'replays-page--map-fullscreen': mapFullscreen }" aria-label="历史回放">
     <header class="replays-page__header">
       <MissionResults view="replay" />
-<!--      <div>-->
-<!--        <p class="eyebrow">运行快照与事件复盘</p>-->
-<!--        <h2 id="replays-title">历史回放</h2>-->
-<!--        <p>只读回放不会修改仿真运行、场景配置或实时遥测。</p>-->
-<!--      </div>-->
-      <div class="replays-page__source">
-        <span v-if="localSnapshot">{{ localSnapshot.fileName }}</span>
-        <span v-else>本地文件回放</span>
-        <el-tag :type="replayStateType(state)" effect="plain">{{ replayStateLabel(state) }}</el-tag>
-      </div>
+      <section v-if="hasReplayControls && replay" class="replay-controls" aria-label="回放控制">
+        <div class="replay-controls__bar">
+          <div class="replay-controls__toolbar">
+            <el-button
+              class="replay-controls__step"
+              size="small"
+              title="后退 1 秒"
+              aria-label="后退 1 秒"
+              :disabled="replay.currentTimeS <= 0"
+              @click="replayStore.step('back')"
+            >-1s</el-button>
+            <el-button size="small" type="primary" data-testid="replay-play" :disabled="replay.durationS === 0" @click="togglePlayback">{{ state === 'PLAYING' ? '暂停' : '播放' }}</el-button>
+            <el-button
+              class="replay-controls__step"
+              size="small"
+              title="前进 1 秒"
+              aria-label="前进 1 秒"
+              :disabled="replay.currentTimeS >= replay.durationS"
+              @click="replayStore.step('forward')"
+            >+1s</el-button>
+            <el-select size="small" :model-value="speed" aria-label="回放倍速" @update:model-value="changeSpeed">
+              <el-option :value="1" label="倍速 ×1" />
+              <el-option :value="2" label="×2" />
+              <el-option :value="4" label="×4" />
+              <el-option :value="8" label="×8" />
+              <el-option :value="16" label="×16" />
+              <el-option :value="32" label="×32" />
+            </el-select>
+          </div>
+          <div class="replay-controls__slider">
+            <span>{{ formatTime(replay.currentTimeS) }}</span>
+            <el-slider
+              v-model="sliderTime"
+              :min="0"
+              :max="replay.durationS"
+              :disabled="replay.durationS === 0"
+              :step="1"
+              :show-tooltip="false"
+              aria-label="回放进度"
+              @input="sliderDragging = true"
+              @change="seek"
+            />
+            <span>{{ formatTime(replay.durationS) }}</span>
+          </div>
+        </div>
+      </section>
       <el-button class="replays-page__reload" :loading="loading" :disabled="loading" @click="reload">重新加载</el-button>
     </header>
 
@@ -206,9 +238,25 @@ onBeforeUnmount(() => {
     >
       <template #extra><el-button type="primary" @click="reload">重新加载</el-button></template>
     </el-result>
+    <el-empty v-else-if="choosingResult" description="请选择要回放的运行结果。" />
     <el-empty v-else-if="!replay || !localSnapshot" description="暂无本地回放数据，请配置数据文件后重新加载。" />
 
-    <main v-else class="replays-page__body" :class="{ 'replays-page__body--engine': engineHistory?.frameCount }">
+    <main
+      v-else
+      class="replays-page__body"
+      :class="{ 'replays-page__body--engine': engineHistory?.frameCount, 'replays-page__body--timeline': hasTimelineItems }"
+    >
+      <section v-if="hasTimelineItems" class="replay-timeline-strip" aria-label="事件时序条">
+        <ReplayTimeline
+          :replay="replay"
+          :events="events"
+          :engine-markers="localizedTimelineMarkers"
+          :selected-event-id="selectedEventId"
+          @select="selectedEventId = $event"
+          @seek="seek"
+        />
+      </section>
+
       <section class="replay-view" aria-label="回放视窗">
         <OfflineSituationMap
           :key="`${localSnapshot.initial.sha256}:${localSnapshot.sha256}`"
@@ -216,58 +264,58 @@ onBeforeUnmount(() => {
           :frame="null"
           :engine-frame="engineHistory?.engineFrame"
           engine-source-label="历史引擎数据"
+          :viewport-key="useSceneSituationMode && replayStore.resultRecord ? `${auth.principal?.userId}:${replayStore.resultRecord.scenarioId}:${replayStore.resultRecord.revision}` : undefined"
           :position-replay="localSnapshot"
           :initial-nodes="mapNodes"
           :configured-links="mapConfiguredLinks"
           :focus-links="mapFocusLinks"
+          :configured-scenario="scenarioConfig"
           :configured-link-statuses="configuredLinkStatuses"
           :configured-link-switches="configuredLinkSwitches"
-          :configured-jammers="configuredJammers ?? undefined"
+          :latest-switch="engineHistory?.engineSwitches.at(-1)"
+          :recent-switches="engineHistory?.engineSwitches"
+          :configured-jammers="scenarioConfig?.jammers"
           :configured-environment="scenarioConfig?.scenario?.environment"
+          :link-calc-thresholds="scenarioConfig?.linkSettings?.linkCalc"
           :live-message-flows="liveMessageFlows"
           :live-flow-playing="state === 'PLAYING'"
           :live-flow-key="`${localSnapshot.initial.sha256}:${localSnapshot.sha256}:${fileSeekRevision}`"
           :file-links="fileLinks"
           :file-message-links="useSceneSituationMode ? [] : localSnapshot.initial.messageLinks"
           :file-device-events="useSceneSituationMode ? [] : localSnapshot?.initial.deviceEvents"
-          :file-time="currentTimeS"
+          :file-time="mapTimeS"
           :file-playing="state === 'PLAYING'"
           :file-speed="speed"
           :file-seek-revision="fileSeekRevision"
           :links="[]"
+          select-nearby-links
+          separate-link-directions
           :selected-node-id="selectedNodeId"
           :focus-target="focusTarget"
           @select-node="selectedNodeId = $event"
           @select-configured-link="openConfiguredLinkDetails"
           @fullscreen-change="mapFullscreen = $event"
         />
-        <div class="replay-view__badge">{{ engineHistory?.frameCount ? '历史回放' : '文件回放' }} · {{ formatTime(replay.currentTimeS) }}</div>
+        <div class="replay-view__badge">{{ useSceneSituationMode || engineHistory?.frameCount ? '历史回放' : '文件回放' }} · {{ formatTime(mapTimeS) }}</div>
       </section>
 
       <aside class="replay-event-detail" :class="{ 'replay-event-detail--engine': Boolean(engineHistory) }" aria-label="回放数据" data-testid="replay-event-detail">
         <div class="replay-summary">
+          <p v-if="useSceneSituationMode && !scenarioConfig" role="status">该次运行缺少对应修订的地图配置，仅显示已记录的节点位置。</p>
           <div class="panel-title">
             <div class="panel-title__left">
-              <strong>回放数据</strong>
-              <span v-if="resultId" class="panel-title__hint">正在回放所选运行</span>
-              <span v-else-if="!archiveId" class="panel-title__hint">可重新加载新增记录</span>
+              <strong>{{ engineHistory ? '历史引擎数据' : '回放数据' }}</strong>
             </div>
-            <span class="panel-title__meta">{{ mapNodes.length }} 个节点</span>
+            <div class="replay-history__meta">
+              <span v-if="engineLoading" class="replay-history__loading" role="status">读取中…</span>
+              <el-select v-if="engineHistory && engineHistory.epochs.length > 1" size="small" class="replay-history__epoch" :model-value="engineHistory.engineEpoch" aria-label="引擎轮次" @update:model-value="replayStore.selectEngineEpoch">
+                <el-option v-for="epoch in engineHistory.epochs" :key="epoch.engineEpoch" :value="epoch.engineEpoch" :label="`轮次 ${epoch.engineEpoch + 1} · ${epoch.frameCount} 帧`" />
+              </el-select>
+              <span class="panel-title__meta">
+                {{ mapNodes.length }} 个节点<template v-if="engineHistory"> · {{ engineHistory.frameCount }} 帧</template><template v-else> · 位置记录 {{ localSnapshot.recordCount }} 条</template>
+              </span>
+            </div>
           </div>
-          <dl class="replay-summary__stats">
-            <div :title="localSnapshot.initial.fileName">
-              <dt>初始化来源</dt>
-              <dd>{{ localSnapshot.initial.fileName }}</dd>
-            </div>
-            <div>
-              <dt>位置记录</dt>
-              <dd>{{ localSnapshot.recordCount }} 条</dd>
-            </div>
-            <div>
-              <dt>位置更新节点</dt>
-              <dd>{{ localSnapshot.tracks.length }} 个</dd>
-            </div>
-          </dl>
           <div class="replay-node-field">
             <label for="replay-node-select">节点定位</label>
             <div class="replay-node-location">
@@ -278,86 +326,39 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <p v-if="archiveId" class="replay-summary__note" data-testid="replay-archive-source">归档：{{ archiveId }}。重新加载仍查看此归档。</p>
-          <p v-if="!useSceneSituationMode" class="replay-summary__note">图中通信关联不代表链路已接通。</p>
+          <p v-if="!engineHistory && !useSceneSituationMode" class="replay-summary__note">图中通信关联不代表链路已接通。</p>
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
           <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"
             :description="localSnapshot.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`).join('；')" type="warning" :closable="false" />
         </div>
 
         <section v-if="engineHistory" class="replay-history" aria-label="历史引擎数据" data-testid="replay-engine-history">
-          <div class="panel-title replay-history__title">
-            <strong>历史引擎数据</strong>
-            <div class="replay-history__meta">
-              <span v-if="engineLoading" class="replay-history__loading" role="status">读取中…</span>
-              <el-select v-if="engineHistory.epochs.length > 1" size="small" class="replay-history__epoch" :model-value="engineHistory.engineEpoch" aria-label="引擎轮次" @update:model-value="replayStore.selectEngineEpoch">
-                <el-option v-for="epoch in engineHistory.epochs" :key="epoch.engineEpoch" :value="epoch.engineEpoch" :label="`轮次 ${epoch.engineEpoch + 1} · ${epoch.frameCount} 帧`" />
-              </el-select>
-              <span class="panel-title__meta">{{ engineHistory.frameCount }} 帧</span>
-            </div>
-          </div>
           <p v-if="!engineHistory.engineFrame" class="replay-history__empty">{{ engineHistory.frameCount ? '当前时刻尚未收到引擎帧。' : '本次运行没有收到引擎帧。' }}</p>
           <template v-else>
             <p v-if="engineHistory.historyTruncated" class="replay-history__note">事件、切换和告警分别显示游标前最近 200 条；完整数据仍保存在历史归档中。</p>
             <el-tabs v-model="historyTab" class="replay-history__tabs">
-              <el-tab-pane label="质量指标" name="quality"><EngineFramePanel section="quality" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+              <el-tab-pane label="质量指标" name="quality"><EngineFramePanel section="quality" :ber-thresholds="scenarioConfig?.linkSettings?.linkCalc" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
               <el-tab-pane label="干扰与探测" name="jammers"><EngineFramePanel section="jammers" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
-              <el-tab-pane label="选路与告警" name="decisions"><EngineFramePanel section="decisions" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+              <el-tab-pane label="选路与告警" name="decisions"><EngineFramePanel section="decisions" :ber-thresholds="scenarioConfig?.linkSettings?.linkCalc" :node-platforms="mapNodes" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
               <el-tab-pane label="事件" name="events"><EngineFramePanel section="events" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
             </el-tabs>
           </template>
         </section>
         <p v-else-if="resultId && !engineLoading" class="replay-summary__note">本次结果没有引擎帧归档，保留文件轨迹回放。</p>
       </aside>
-
-      <section class="replay-controls" aria-label="回放控制">
-        <ReplayTimeline
-          :replay="replay"
-          :events="events"
-          :engine-markers="localizedTimelineMarkers"
-          :selected-event-id="selectedEventId"
-          @select="selectedEventId = $event"
-          @seek="seek"
-        />
-        <div class="replay-controls__slider">
-          <span>{{ formatTime(replay.currentTimeS) }}</span>
-          <el-slider
-            v-model="sliderTime"
-            :min="0"
-            :max="replay.durationS"
-            :disabled="replay.durationS === 0"
-            :step="1"
-            :show-tooltip="false"
-            aria-label="回放进度"
-            @input="sliderDragging = true"
-            @change="seek"
-          />
-          <span>{{ formatTime(replay.durationS) }}</span>
-        </div>
-        <div class="replay-controls__toolbar">
-          <el-button :disabled="replay.currentTimeS <= 0" @click="replayStore.step('back')">后退 1 秒</el-button>
-          <el-button type="primary" data-testid="replay-play" :disabled="replay.durationS === 0" @click="togglePlayback">{{ state === 'PLAYING' ? '暂停' : '播放' }}</el-button>
-          <el-button :disabled="replay.currentTimeS >= replay.durationS" @click="replayStore.step('forward')">前进 1 秒</el-button>
-          <el-select :model-value="speed" aria-label="回放倍速" @update:model-value="changeSpeed">
-            <el-option :value="1" label="倍速 ×1" />
-            <el-option :value="2" label="×2" />
-            <el-option :value="4" label="×4" />
-            <el-option :value="8" label="×8" />
-            <el-option :value="16" label="×16" />
-            <el-option :value="32" label="×32" />
-          </el-select>
-        </div>
-      </section>
     </main>
 
     <LinkQualityDialog
       v-model="linkDialogVisible"
       :link="null"
       :configured-link="selectedConfiguredLink"
+      :directions="linkDetailDirections"
       :engine-segments="selectedEngineSegments"
       :engine-frame="engineHistory?.engineFrame"
       engine-source-label="历史引擎数据"
       :node-positions="linkNodePositions"
       :platforms="scenarioConfig?.platforms ?? []"
+      @select-direction="selectLinkDetailDirection"
     />
   </section>
 </template>
@@ -380,7 +381,7 @@ onBeforeUnmount(() => {
   width: 100vw;
   height: 100dvh;
 }
-/* 全屏时隐藏右侧回放数据栏，让地图占满主区域；顶部运行结果和底部回放控制保留。 */
+/* 全屏时隐藏右侧回放数据栏，让地图占满主区域；顶部运行结果和回放控制保留。 */
 .replays-page--map-fullscreen .replay-event-detail {
   display: none;
 }
@@ -392,9 +393,24 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
-  padding: 0.85rem 1rem;
+  gap: 0.45rem 0.65rem;
+  padding: 0.35rem 0.75rem;
   border-bottom: 1px solid var(--console-border);
+}
+
+.replays-page__header :deep(.mission-results) {
+  flex: 0 1 auto;
+  padding: 0;
+  gap: 0.5rem;
+}
+
+.replays-page__header :deep(.mission-results .el-select) {
+  width: clamp(11rem, 16vw, 17rem) !important;
+}
+
+.replays-page__header :deep(.mission-results) + .replay-controls {
+  padding-inline-start: 0.65rem;
+  border-inline-start: 1px solid var(--console-border);
 }
 
 .replays-page__header h2 {
@@ -408,27 +424,18 @@ onBeforeUnmount(() => {
   font-size: var(--console-font-size-min);
 }
 
-.replays-page__source,
 .panel-title,
+.replay-controls__bar,
 .replay-controls__slider,
 .replay-controls__toolbar {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-}
-
-.replays-page__source :deep(.el-select) {
-  width: 15rem;
-}
-
-.replays-page__source {
-  flex: 1 1 12rem;
-  min-width: 0;
-  overflow-wrap: anywhere;
+  gap: 0.45rem;
 }
 
 .replays-page__reload {
   margin-inline-start: auto;
+  flex-shrink: 0;
 }
 
 .replays-page__body {
@@ -436,20 +443,24 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   grid-template-columns: minmax(0, 1fr) 18rem;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  padding: 0.75rem;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem 0.65rem;
+}
+
+.replays-page__body--timeline {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .replays-page__loading {
   padding: 1rem;
 }
 
-.replays-page__body--engine { grid-template-columns: minmax(0, 1fr) minmax(24rem, 36%); }
+.replays-page__body--engine { grid-template-columns: minmax(0, 1fr) clamp(22.5rem, 25vw, 27rem); }
 
 .replay-view,
 .replay-event-detail,
-.replay-controls {
+.replay-timeline-strip {
   border: 1px solid var(--console-border);
   border-radius: 6px;
   background: var(--console-surface);
@@ -483,7 +494,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 0.65rem 0.75rem;
+  padding: 0.55rem 0.7rem;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
@@ -495,14 +506,14 @@ onBeforeUnmount(() => {
 .replay-summary {
   flex: 0 0 auto;
   display: grid;
-  gap: 0.5rem;
-  padding-bottom: 0.6rem;
+  gap: 0.4rem;
+  padding-bottom: 0.45rem;
   border-bottom: 1px solid var(--console-border);
 }
 
 .panel-title {
   justify-content: space-between;
-  padding-bottom: 0.45rem;
+  padding-bottom: 0.35rem;
   border-bottom: 1px solid var(--console-border);
 }
 
@@ -511,14 +522,6 @@ onBeforeUnmount(() => {
   align-items: baseline;
   gap: 0.5rem;
   min-width: 0;
-}
-
-.panel-title__hint {
-  color: var(--console-text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .panel-title__meta {
@@ -531,38 +534,6 @@ onBeforeUnmount(() => {
   font-size: var(--console-font-size-min);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-}
-
-.replay-summary__stats {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 0.85fr);
-  gap: 0.45rem;
-  margin: 0;
-}
-
-.replay-summary__stats > div {
-  min-width: 0;
-  padding: 0.35rem 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--console-border) 80%, transparent);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--console-bg-elevated) 72%, transparent);
-}
-
-.replay-summary__stats dt {
-  color: var(--console-text-muted);
-  font-size: 11px;
-  line-height: 1.3;
-  white-space: nowrap;
-}
-
-.replay-summary__stats dd {
-  margin: 0.15rem 0 0;
-  font-size: 12px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .replay-node-field {
@@ -611,14 +582,8 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
-  margin-top: 0.6rem;
-}
-
-.replay-history__title {
-  flex: 0 0 auto;
-  min-height: 1.75rem;
-  padding-bottom: 0.4rem;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
 }
 
 .replay-history__meta {
@@ -651,7 +616,7 @@ onBeforeUnmount(() => {
 
 .replay-history__tabs :deep(.el-tabs__header) {
   flex: 0 0 auto;
-  margin: 0 0 0.45rem;
+  margin: 0 0 0.35rem;
 }
 
 .replay-history__tabs :deep(.el-tabs__item) {
@@ -694,23 +659,48 @@ onBeforeUnmount(() => {
 }
 
 .replay-controls {
-  grid-column: 1 / -1;
-  display: grid;
-  gap: 0.6rem;
-  padding: 0.75rem;
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+
+.replay-controls__bar {
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  width: 100%;
+}
+
+.replay-controls__slider {
+  flex: 1 1 11rem;
+  min-width: 9rem;
 }
 
 .replay-controls__slider :deep(.el-slider) {
-  min-width: 8rem;
+  min-width: 5.5rem;
   flex: 1;
 }
 
 .replay-controls__toolbar {
-  justify-content: center;
+  flex: 0 0 auto;
+  gap: 0.3rem;
+}
+
+.replay-controls__toolbar :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.replay-controls__step {
+  padding-inline: 0.45rem;
+  min-width: 2.3rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .replay-controls__toolbar :deep(.el-select) {
-  width: 6.8rem;
+  width: 5.8rem;
+}
+
+.replay-timeline-strip {
+  grid-column: 1 / -1;
+  padding: 0.4rem 0.7rem;
 }
 
 @media (max-width: 900px) {
@@ -719,13 +709,18 @@ onBeforeUnmount(() => {
     min-height: 100%;
   }
 
+  .replays-page__header :deep(.mission-results) + .replay-controls {
+    padding-inline-start: 0;
+    border-inline-start: 0;
+  }
+
   .replays-page__body,
   .replays-page__body--engine {
     grid-template-columns: 1fr;
   }
 
   .replay-event-detail,
-  .replay-controls {
+  .replay-timeline-strip {
     grid-column: 1;
   }
 

@@ -100,10 +100,10 @@ describe('新模板通信参数', () => {
     const first = readDeviceParameters(old)
     const second = readDeviceParameters(old)
     expect(first.ports.MISSION_UAV_PLATFORM!.microwave_link?.transferRate).toBe(80)
-    expect(first.ports.TIAN_TONG_SAT!.sat_link?.transferRate).toBe(0.016)
+    expect(first.ports.TIAN_TONG_SAT!.sat_link?.transferRate).toBe(16)
     expect(first.antennaGains.LASER_COMM_ANTENNA).toBe(40)
     first.ports.MISSION_UAV_PLATFORM!.microwave_link!.txPower = 99
-    expect(second.ports.MISSION_UAV_PLATFORM!.microwave_link?.txPower).toBe(20)
+    expect(second.ports.MISSION_UAV_PLATFORM!.microwave_link?.txPower).toBe(300)
     expect(readPortParameters(old, 'COMMAND_VEHICLE_PLATFORM', 'fiber_link')?.transferRate).toBe(1000)
   })
 
@@ -306,9 +306,9 @@ it('11-06 可选参数兼容旧场景，读取仅补副本且显式值优先', a
   expect(readLinkCalcSettings(old.linkSettings?.linkCalc).updateIntervalS).toBe(5)
   expect(readJammerParameters(old.jammers[0]!)).toMatchObject(JAMMER_CALC_DEFAULTS)
   const parameters = readDeviceParameters(old)
-  expect(parameters.ports.MISSION_UAV_PLATFORM!.microwave_link).toMatchObject({ txBandwidth: 50, rxBandwidth: 50, eirpDbw: 30, gtDbk: -3 })
-  expect(parameters.ports.MISSION_UAV_PLATFORM!.sat_link).toMatchObject({ eirpDbw: 5, gtDbk: -14 })
-  expect(parameters.ports.COMMAND_VEHICLE_PLATFORM!.l_band_uplink).toMatchObject({ eirpDbw: 26, gtDbk: -6 })
+  expect(parameters.ports.MISSION_UAV_PLATFORM!.microwave_link).toMatchObject({ txBandwidth: 10, rxBandwidth: 10, eirpDbw: 30, gtDbk: -3 })
+  expect(parameters.ports.MISSION_UAV_PLATFORM!.sat_link).toMatchObject({ eirpDbw: 64, gtDbk: 12 })
+  expect(parameters.ports.COMMAND_VEHICLE_PLATFORM!.l_band_uplink).toMatchObject({ txFrequency: 1500, eirpDbw: 26, gtDbk: -6 })
   expect(parameters.ports.COMMAND_VEHICLE_PLATFORM!.fiber_link).not.toHaveProperty('eirpDbw')
   expect(parameters.antennaGains).toMatchObject({ OMNI_ANTENNA: 30, L_BAND_DIRECTIONAL_VEHICLE_ANTENNA: 25, L_BAND_DIRECTIONAL_UAV_ANTENNA: 25 })
   old.deviceParameters = { ports: { MISSION_UAV_PLATFORM: { microwave_link: { ...parameters.ports.MISSION_UAV_PLATFORM!.microwave_link!, txBandwidth: 50, eirpDbw: -2, gtDbk: 0 } } } }

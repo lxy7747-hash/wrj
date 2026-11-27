@@ -112,22 +112,25 @@ defineEmits<{
       <slot name="timeline" />
     </div>
 
-    <div v-if="wsControl" class="simulation-toolbar__runtime" data-testid="engine-control-status" role="status">
-      <small :title="engineControlMessage(wsControl)">{{ controlSummary }}</small>
-      <small v-if="combined && capabilityState !== 'ERROR'">{{ feedback }}</small>
-      <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">{{ feedback }}</small>
-    </div>
-    <div v-else-if="remoteEngine && status === 'STOPPED' && engineControl" class="simulation-toolbar__runtime" role="status">
-      <small :title="stoppedReceptionMessage(engineControl)">{{ stoppedReceptionMessage(engineControl) }}</small>
-    </div>
-    <div v-else-if="readOnly || filePlayback" class="simulation-toolbar__runtime" aria-live="polite">
-      <small>{{ feedback }}</small>
-    </div>
-    <div v-else-if="capabilityState === 'ERROR'" class="simulation-toolbar__runtime" role="alert">
-      <small class="simulation-toolbar__error">{{ feedback || '运行控制异常' }}</small>
-    </div>
-    <div v-else-if="runtimeUnknown" class="simulation-toolbar__runtime" aria-live="polite">
-      <small>运行模式尚未确认，暂不开放暂停和继续。</small>
+    <div class="simulation-toolbar__right">
+      <div v-if="wsControl" class="simulation-toolbar__runtime" data-testid="engine-control-status" role="status">
+        <small :title="engineControlMessage(wsControl)">{{ controlSummary }}</small>
+        <small v-if="combined && capabilityState !== 'ERROR'">{{ feedback }}</small>
+        <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">{{ feedback }}</small>
+      </div>
+      <div v-else-if="remoteEngine && status === 'STOPPED' && engineControl" class="simulation-toolbar__runtime" role="status">
+        <small :title="stoppedReceptionMessage(engineControl)">{{ stoppedReceptionMessage(engineControl) }}</small>
+      </div>
+      <div v-else-if="readOnly || filePlayback" class="simulation-toolbar__runtime" aria-live="polite">
+        <small>{{ feedback }}</small>
+      </div>
+      <div v-else-if="capabilityState === 'ERROR'" class="simulation-toolbar__runtime" role="alert">
+        <small class="simulation-toolbar__error">{{ feedback || '运行控制异常' }}</small>
+      </div>
+      <div v-else-if="runtimeUnknown" class="simulation-toolbar__runtime" aria-live="polite">
+        <small>运行模式尚未确认，暂不开放暂停和继续。</small>
+      </div>
+      <slot name="status" />
     </div>
     <MissionRecovery v-if="realMission" class="simulation-toolbar__recovery" :refresh-key="feedback" @resolved="$emit('recovered')" />
   </header>
@@ -221,8 +224,17 @@ defineEmits<{
   font-size: 13px;
 }
 
+.simulation-toolbar__right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
 .simulation-toolbar__runtime {
   display: grid;
+  min-width: 0;
   grid-template-columns: auto auto;
   align-items: center;
   justify-content: end;

@@ -23,7 +23,7 @@ import { hotLinkChainError } from './hot-links'
 import { PLATFORM_POSITION_RULES, SATELLITE_GEO_POSITION } from './platform-position-rules'
 import { taskPhaseIssue } from './task-phases'
 import { isLinkParameterSource } from './link-parameter-source'
-import { isConfiguredLinkEnabled, readLinkSettings } from './link-settings'
+import { isConfiguredLinkEnabled, readLinkSettings, RETIRED_LINK_SETTINGS_KEYS } from './link-settings'
 import { scenarioPlatformLabel } from './scenario-basic'
 import { formatSpectrumConflictLink } from './validation-field-labels'
 import { TEMPLATE_ANTENNA_NAMES, TEMPLATE_COMM_PORT_META, TEMPLATE_PLATFORM_TYPES, TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS, readPortParameters, resolveLinkRequiredCommPorts, resolveTemplateLinkPorts } from './template-defaults'
@@ -44,8 +44,8 @@ const ENVIRONMENT_KEYS = [
   'rainRateMmPerHour',
   'multipathEnabled',
 ] as const
-const RETIRED_ENVIRONMENT_KEYS = ['temperatureC', 'humidityPercent', 'rainLossDbPerKm'] as const
-const OPTIONAL_ENVIRONMENT_KEYS = [...RETIRED_ENVIRONMENT_KEYS, 'simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation',
+const RETIRED_ENVIRONMENT_KEYS = ['temperatureC', 'humidityPercent', 'rainLossDbPerKm', 'transmissionDistance'] as const
+const OPTIONAL_ENVIRONMENT_KEYS = [...RETIRED_ENVIRONMENT_KEYS, 'simClockSpeed', 'rainCloudAttenuation',
   'cloudAltitudeMinM', 'cloudAltitudeMaxM', 'cloudWaterDensityGM3', 'seaPolygon',
   'rainEnabled', 'rainAltitudeLimitM', 'rainAttenuationDb', 'cloudEnabled', 'atmosphereModel', 'simplifiedAttenuationDbPerKm',
   'polarizationMismatchDb', 'pointingErrorDb', 'seaLowAltitudeThresholdM', 'seaPathOverSeaThresholdKm', 'seaModel',
@@ -68,9 +68,9 @@ const GEO_POINT_KEYS = ['longitude', 'latitude'] as const
 /** 海面区域至少需要 3 个顶点才能围成多边形；上限防止误操作生成过大的脚本参数。 */
 export const SEA_POLYGON_LIMITS = { minPoints: 3, maxPoints: 64 } as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
-/** 已删除的平台字段（初始航向）：旧数据中接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
-const RETIRED_PLATFORM_KEYS = ['heading'] as const
-const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'faction', 'communicationRangeM', 'loiterWaypoints', 'returnPlan', ...RETIRED_PLATFORM_KEYS] as const
+/** 已删除的平台字段（初始航向、节点通信范围）：旧数据中接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
+const RETIRED_PLATFORM_KEYS = ['heading', 'communicationRangeM'] as const
+const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'faction', 'loiterWaypoints', 'returnPlan', ...RETIRED_PLATFORM_KEYS] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
 /** 已删除的链路字段（链路级信道编码）：旧数据接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
 const RETIRED_LINK_KEYS = ['coding'] as const
@@ -78,8 +78,6 @@ const OPTIONAL_LINK_KEYS = ['enabled', 'inheritPortParameters', 'antennaGainCorr
   'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb', 'eirpDbw', 'gtDbk', 'laser', 'parameterSource', 'forwardDataRate', 'reverseDataRate', ...RETIRED_LINK_KEYS] as const
 const LASER_KEYS = ['txApertureDiameterM', 'rxApertureDiameterM', 'pulseWidthS', 'modulation'] as const
 export const DATALINK_BANDS = ['C', 'L'] as const
-/** 已删除的阶段切换规则：旧数据接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
-const RETIRED_LINK_SETTINGS_KEYS = ['switchRules'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'detectionRange', 'jammingRange'] as const
 const JAMMER_BAND_KEYS = ['frequency', 'bandwidth'] as const
 const OPTIONAL_JAMMER_BAND_KEYS = ['mode', 'spotBandwidthMHz', 'sweepDutyCycle'] as const
@@ -227,7 +225,9 @@ export function dropRetiredScenarioFields<T>(config: T): T {
   // 热链已去掉“终点平台类型”配置；旧数据里残留的 endPlatformType 在读入/校验/保存前统一丢弃。
   const linkSettings = typeof root.linkSettings === 'object' && root.linkSettings !== null && !Array.isArray(root.linkSettings)
     ? root.linkSettings as Record<string, unknown> : undefined
-  if (linkSettings !== undefined) delete linkSettings.switchRules
+  if (linkSettings !== undefined) {
+    for (const key of RETIRED_LINK_SETTINGS_KEYS) delete linkSettings[key]
+  }
   const hotLinks = linkSettings !== undefined && typeof linkSettings.hotLinks === 'object' && linkSettings.hotLinks !== null && !Array.isArray(linkSettings.hotLinks)
     ? linkSettings.hotLinks as Record<string, unknown> : undefined
   if (hotLinks !== undefined) delete hotLinks.endPlatformType
@@ -558,9 +558,9 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
     if (!isPositiveFiniteNumber(value.txPower)) addError(errors, 'LASER_POWER_INVALID', '激光光功率必须大于 0 W。', `${path}.txPower`)
     if (!isPositiveFiniteNumber(value.dataRate)) addError(errors, 'LASER_RATE_INVALID', '激光链路介质传输速率必须大于 0 Mbps。', `${path}.dataRate`)
   }
-  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源节点必须引用当前节点。', `${path}.sourcePlatformId`)
-  if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标节点必须引用当前节点。', `${path}.targetPlatformId`)
-  if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路源节点和目标节点不能相同。', `${path}.targetPlatformId`)
+  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路发送端必须引用当前节点。', `${path}.sourcePlatformId`)
+  if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路接收端必须引用当前节点。', `${path}.targetPlatformId`)
+  if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路发送端和接收端不能相同。', `${path}.targetPlatformId`)
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'LINK_FREQUENCY_INVALID', '链路频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'LINK_BANDWIDTH_INVALID', '链路带宽必须大于 0 MHz。', `${path}.bandwidth`)
   if (!isFiniteNumber(value.txPower, 0)) addError(errors, 'LINK_POWER_INVALID', '链路发射功率不能小于 0 W。', `${path}.txPower`)
@@ -620,7 +620,7 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
  */
 function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write',
   links: unknown = []): void {
-  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['messageIntervalS', 'enabledTypes', ...RETIRED_LINK_SETTINGS_KEYS, 'linkCalc', 'hotLinks', 'switchStableChecks', 'switchConsistencyCheck', 'minimumGxbDb', 'maximumBer', 'minimumGxbImprovementDb', 'minimumBerImprovementFactor', 'switchCooldownFrames', 'minimumSpatialIsolationDb', 'minimumReceivedPowerDbm', 'failureGxbDb', 'failureBer'])) {
+  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS'], ['messageIntervalS', 'enabledTypes', ...RETIRED_LINK_SETTINGS_KEYS, 'linkCalc', 'hotLinks', 'switchStableChecks', 'switchConsistencyCheck', 'minimumGxbDb', 'maximumBer', 'minimumGxbImprovementDb', 'minimumBerImprovementFactor', 'switchCooldownFrames', 'minimumSpatialIsolationDb', 'minimumReceivedPowerDbm', 'failureGxbDb', 'failureBer'])) {
     addError(errors, 'LINK_SETTINGS_INVALID', '链路启停与切换策略结构不正确。', 'linkSettings')
     return
   }
@@ -673,13 +673,6 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
   if (Object.hasOwn(value, 'failureBer') && isFiniteNumber(value.failureBer, 0, 1) && isFiniteNumber(effectiveMaximumBer, 0, 1)
     && value.failureBer < effectiveMaximumBer) {
     addError(errors, 'FAILURE_BER_THRESHOLD_INVALID', '误码率失效上限不能低于可用性误码率上限。', 'linkSettings.failureBer')
-  }
-  const priorityTypes = mode === 'read' && Array.isArray(value.priority) && value.priority.length === 4
-    ? LINK_TYPES.filter(type => type !== 'FIBER') : LINK_TYPES
-  if (!Array.isArray(value.priority) || value.priority.length !== priorityTypes.length
-    || new Set(value.priority).size !== priorityTypes.length
-    || value.priority.some((type) => !(priorityTypes as readonly unknown[]).includes(type))) {
-    addError(errors, 'LINK_PRIORITY_INVALID', '链路优先级必须包含五类链路且不能重复；读取兼容历史四类。', 'linkSettings.priority')
   }
   if (Object.hasOwn(value, 'messageIntervalS') && !isPositiveFiniteNumber(value.messageIntervalS)) addError(errors, 'MESSAGE_INTERVAL_INVALID', '业务发送周期必须大于 0 秒。', 'linkSettings.messageIntervalS')
   if (Object.hasOwn(value, 'linkCalc')) inspectLinkCalc(value.linkCalc, errors)
@@ -882,7 +875,7 @@ function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): voi
       if (!(TEMPLATE_ANTENNA_NAMES as readonly string[]).includes(name)) {
         addError(errors, 'ANTENNA_GAIN_INVALID', '天线类型不正确。', `deviceParameters.antennaGains.${name}`)
       } else if (!isFiniteNumber(gain)) {
-        addError(errors, 'ANTENNA_GAIN_INVALID', '峰值增益必须为有限数值。', `deviceParameters.antennaGains.${name}`)
+        addError(errors, 'ANTENNA_GAIN_INVALID', '天线峰值增益必须为有限数值。', `deviceParameters.antennaGains.${name}`)
       }
     }
   }
@@ -1439,9 +1432,6 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (Object.hasOwn(environment, 'simClockSpeed') && !isPositiveFiniteNumber(environment.simClockSpeed)) {
     addError(errors, 'CLOCK_SPEED_INVALID', '仿真时钟倍速必须大于 0。', 'scenario.environment.simClockSpeed')
   }
-  if (Object.hasOwn(environment, 'transmissionDistance') && !isFiniteNumber(environment.transmissionDistance, 150, 410)) {
-    addError(errors, 'STRAIT_WIDTH_INVALID', '海峡宽度必须在 150～410 km 之间。', 'scenario.environment.transmissionDistance')
-  }
   if (Object.hasOwn(environment, 'rainCloudAttenuation') && !Object.hasOwn(RAIN_TIER_RATES, environment.rainCloudAttenuation as string)) {
     addError(errors, 'WEATHER_INVALID', '雨强档位请选择无雨、小雨、中雨、大雨或暴雨。', 'scenario.environment.rainCloudAttenuation')
   }
@@ -1461,6 +1451,19 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   }
   if (Object.hasOwn(environment, 'seaPolarization') && !(POLARIZATIONS as readonly unknown[]).includes(environment.seaPolarization)) {
     addError(errors, 'SEA_POLARIZATION_INVALID', '反射系数极化请选择垂直或水平极化。', 'scenario.environment.seaPolarization')
+  }
+  // 以下两项为 2026-11-25 插件实测得出的“配置有效但结果恒为 0”情形：保存时阻断，读取/导入旧场景时仅提示。
+  const effectIssue = (code: string, message: string, fieldPath: string): void => {
+    if (mode === 'write') addError(errors, code, message, fieldPath)
+    else warnings.push({ severity: 'WARNING', code, message, fieldPath })
+  }
+  const simplifiedRate = environment.simplifiedAttenuationDbPerKm
+  if (environment.atmosphereModel === 'simplified' && (simplifiedRate === undefined || simplifiedRate === 0)) {
+    effectIssue('ATMOSPHERE_SIMPLIFIED_RATE_REQUIRED', '简化模型需填写大于 0 的衰减率，否则大气损耗为 0。', 'scenario.environment.simplifiedAttenuationDbPerKm')
+  }
+  // 存量场景普遍启用多径但未框选，保存与导入均只提示，不阻断。
+  if (environment.multipathEnabled === true && !Object.hasOwn(environment, 'seaPolygon')) {
+    warnings.push({ severity: 'WARNING', code: 'SEA_POLYGON_REQUIRED', message: '已启用海面多径但未框选海面区域，多径损耗将始终为 0，请在地图上框选海面区域。', fieldPath: 'scenario.environment.seaPolygon' })
   }
   if (isFiniteNumber(environment.rainRateMmPerHour, 0) && environment.rainRateMmPerHour > RAIN_RATE_MAX) {
     warnings.push({ severity: 'WARNING', code: 'RAIN_RATE_CAPPED', message: `降雨强度超过 ${RAIN_RATE_MAX} mm/h，链路计算按 ${RAIN_RATE_MAX} 封顶。`, fieldPath: 'scenario.environment.rainRateMmPerHour' })
@@ -1556,9 +1559,6 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
       }
       if (Object.hasOwn(platform, 'faction') && !(FACTIONS as readonly unknown[]).includes(platform.faction)) {
         addError(errors, 'PLATFORM_FACTION_INVALID', '所属阵营请选择蓝方、红方或中立。', `${path}.faction`)
-      }
-      if (Object.hasOwn(platform, 'communicationRangeM') && !isPositiveFiniteNumber(platform.communicationRangeM)) {
-        addError(errors, 'PLATFORM_COMMUNICATION_RANGE_INVALID', '节点通信范围必须为大于 0 的有限数值。未配置请留空。', `${path}.communicationRangeM`)
       }
       if (Object.hasOwn(platform, 'loiterWaypoints') || Object.hasOwn(platform, 'returnPlan')) {
         inspectTemplatePlatformRoutes(platform, index, typeof scenario.duration === 'number' ? scenario.duration : 0, errors, mode)

@@ -3,7 +3,7 @@ export type ScriptExecutionStatusEntry = { fieldPath: string; detail: string }
 export type ScriptExecutionStatus = { emitted: ScriptExecutionStatusEntry[]; retainedSnapshot: ScriptExecutionStatusEntry[]; dependencyUnconfirmed: ScriptExecutionStatusEntry[] }
 
 type Status = keyof ScriptExecutionStatus
-type AcceptanceGroup = 'platform' | 'communication' | 'sensor' | 'jammer' | 'timeline'
+type AcceptanceGroup = 'platform' | 'motion' | 'communication' | 'sensor' | 'jammer' | 'timeline'
 type AcceptanceLocation = { fileName: string; fileLine: number; previewLine: number; endPreviewLine?: number }
 type PreviewFile = { fileName: string; header: number; end: number }
 export type ScriptAcceptanceEntry = ScriptExecutionStatusEntry & {
@@ -25,6 +25,14 @@ const acceptanceGroups = new Map<string, AcceptanceGroup>([
   ['jammers', 'jammer'], ['uiExtensions.jammers', 'jammer'],
   ['scenario', 'timeline'], ['output', 'timeline'], ['references', 'timeline'],
 ])
+
+const motionPlatformField = /^platforms\[\d+\]\.(waypoints|loiterWaypoints|returnPlan)(?:$|\[|\.)/u
+
+function resolveAcceptanceGroup(fieldPath: string): AcceptanceGroup | undefined {
+  if (motionPlatformField.test(fieldPath)) return 'motion'
+  const [root, extension] = fieldPath.split(/[.\[]/u, 2)
+  return acceptanceGroups.get(root === 'uiExtensions' ? root + '.' + (extension ?? '') : root ?? '')
+}
 
 function entries(value: unknown): ScriptExecutionStatusEntry[] | null {
   if (!Array.isArray(value) || !value.every(item => typeof item === 'object' && item !== null && typeof item.fieldPath === 'string' && typeof item.detail === 'string')) return null
@@ -143,7 +151,7 @@ function emittedTextLocation(fieldPath: string, mapping: NonNullable<ReturnType<
   const linkCalcDefinition = linkCalcDefinitions.find(rule => rule.field.test(fieldPath))
   if (linkCalcDefinition) return linkCalcTextLocation(mapping.lines, files, linkCalcDefinition)
 
-  const platformField = /^platforms\[(\d+)\]\.(id|initialPosition|waypoints|returnPlan)$/u.exec(fieldPath)
+  const platformField = /^platforms\[(\d+)\]\.(id|initialPosition|waypoints|loiterWaypoints|returnPlan)$/u.exec(fieldPath)
   const platforms = 'platforms' in mapping.parsed ? mapping.parsed.platforms : undefined
   if (!platformField || !Array.isArray(platforms)) return null
   const identity: unknown = platforms[Number(platformField[1])]
@@ -164,6 +172,10 @@ function emittedTextLocation(fieldPath: string, mapping: NonNullable<ReturnType<
 
   const route = /^route(?:\s|$)/u
   if (platformField[2] === 'waypoints') return uniqueTextLine(mapping.lines, [file], route, { start, end })
+  if (platformField[2] === 'loiterWaypoints') {
+    return uniqueTextLine(mapping.lines, [file], /^label\s+(?:orbit_loop|LOITER)\b/u, { start, end })
+      ?? uniqueTextLine(mapping.lines, [file], route, { start, end })
+  }
   const routeStart = mapping.lines.findIndex((line, index) => index >= start && index < end && route.test(line.trim()))
   return uniqueTextLine(mapping.lines, [file], /^position\s+\S/u, { start, end: routeStart < 0 ? end : routeStart })
 }
@@ -178,8 +190,7 @@ export function readScriptAcceptanceReview(preview: string): ScriptAcceptanceEnt
     const items = mapping.status[status]
     const fieldLines = statusFieldLines(lines, status, items)
     return items.flatMap(({ fieldPath, detail }, index) => {
-      const [root, extension] = fieldPath.split(/[.\[]/u, 2)
-      const group = acceptanceGroups.get(root === 'uiExtensions' ? root + '.' + (extension ?? '') : root ?? '')
+      const group = resolveAcceptanceGroup(fieldPath)
       if (!group) return []
       const fieldLine = fieldLines[index]
       const manifestLocation = fieldLine === undefined ? null : {

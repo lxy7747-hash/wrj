@@ -14,7 +14,7 @@ const { existsSync } = await import('node:' + 'fs')
 const { env } = await import('node:' + 'process')
 const { readLocalReport, exportLocalReport } = await import('../../server/local/' + 'report-file.js')
 const { reportRadarSvg } = await import('../../server/local/' + 'report-file.js')
-const { createLocalReportPdf } = await import('../../server/local/' + 'pdf-report.js')
+const { writeLocalReportPdf } = await import('../../server/local/' + 'pdf-report.js')
 const { readAfsimLogFile } = await import('../../server/local/' + 'afsim-log-reader.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
@@ -35,34 +35,47 @@ it.each([0, 1, 2, 3])('HTML/PDF 雷达 %i 条链路空态与页面一致', async
   if (!pdfFont) return
   const text = vi.spyOn(PDFDocument.prototype, 'text')
   try {
-    const pdf = await createLocalReportPdf({ title: '连通率', notes: [], chartScope: '当前范围', charts: [{ title: '连通率', kind: 'RADAR', unit: '%', rows }], sections: [] })
+    const path = join(await directory(), 'radar.pdf')
+    const sha256 = await writeLocalReportPdf(path, { title: '连通率', notes: [], chartScope: '当前范围', charts: [{ title: '连通率', kind: 'RADAR', unit: '%', rows }], sections: [] })
+    const pdf = await readFile(path)
     expect(pdf.subarray(0, 5).toString()).toBe('%PDF-')
+    expect(sha256).toBe(createHash('sha256').update(pdf).digest('hex'))
     const rendered = text.mock.calls.map(call => String(call[0])).join('\n')
     expect(rendered.includes('暂无数据')).toBe(count === 0)
     if (count > 0 && count < 3) for (const row of rows) expect(rendered).toContain(`${row.label}：${row.value} %`)
   } finally { text.mockRestore() }
 })
 
-for (const format of ['HTML', 'CSV', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`最新报文 ${format} 导出保留分项损耗、通信参数、干扰源及待确认标记`, async () => {
-  const textCalls = format === 'PDF' ? vi.spyOn(PDFDocument.prototype, 'text') : undefined
+it.skipIf(!pdfFont)('大表格分批写出完整 PDF，已有目标文件不被覆盖', async () => {
+  const path = join(await directory(), 'full-report.pdf')
+  const rows = Array.from({ length: 520 }, (_, index) => [String(index), `明细记录 ${index}`])
+  const input = { title: '详细报表', notes: [], chartScope: '', charts: [], sections: [{ title: '明细', columns: ['编号', '记录'], rows }] }
+  const text = vi.spyOn(PDFDocument.prototype, 'text')
   try {
-    const result = await exportLocalReport(await directory(), LATEST_FRAME_REPORT, format, 'operator')
-    const text: string = format === 'PDF' ? textCalls!.mock.calls.map(call => String(call[0])).join('\n') : await readFile(result.filePath, 'utf8')
-    for (const value of ['自由空间', '雨衰', '云衰', '44.092173718306995', '频率（GHz）', '数据率（Mbps）', 'G/T（dB/K）', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '总复合损耗（dB）', '错误信息', '1.189035332459013e-243']) expect(text).toContain(value)
-    if (format === 'CSV') expect(text).toContain('"GXB（dB）","BER","接收功率（dBm）"')
-    else {
-      expect(text).toContain('引擎段误码率随时间变化')
-      expect(text).toContain('单位：比率')
-    }
-    if (format === 'HTML') {
-      const points = [...text.matchAll(/<polyline points="([^"]+)"/g)].map(match => match[1]!.trim().split(/\s+/).map(point => point.split(',')[1]))
-      expect(points.some(ys => new Set(ys).size === 2)).toBe(true)
-      const { reportCurveSvg } = await import('../../server/local/' + 'report-file.js')
-      const svg = reportCurveSvg({ title: '极小 BER', unit: 'BER', rows: [{ label: '3775', value: 1.189035332459013e-243 }, { label: '3780', value: 8.484338827878784e-244 }] }, '实际报文')
-      const y = [...svg.matchAll(/<circle[^>]* cy="([^"]+)"/g)].map(match => match[1])
-      expect(new Set(y).size).toBe(2)
-    }
-  } finally { textCalls?.mockRestore() }
+    const sha256 = await writeLocalReportPdf(path, input)
+    const pdf = await readFile(path)
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-')
+    expect(pdf.toString('latin1').trimEnd().endsWith('%%EOF')).toBe(true)
+    expect(sha256).toBe(createHash('sha256').update(pdf).digest('hex'))
+    expect(text.mock.calls.filter(([line]) => typeof line === 'string' && line.startsWith('编号：'))).toHaveLength(rows.length)
+    expect(text).toHaveBeenCalledWith('编号：519； 记录：明细记录 519', { lineGap: 2 })
+    await expect(writeLocalReportPdf(path, input)).rejects.toMatchObject({ code: 'EEXIST' })
+    expect(await readFile(path)).toEqual(pdf)
+  } finally { text.mockRestore() }
+})
+
+it('统计 CSV 保留最新报文的分项损耗、通信参数、干扰源及待确认标记', async () => {
+  const result = await exportLocalReport(await directory(), LATEST_FRAME_REPORT, 'CSV', 'operator')
+  const text = await readFile(result.filePath, 'utf8')
+  for (const value of ['自由空间', '雨衰', '云衰', '44.092173718306995', '频率（GHz）', '数据率（Mbps）', 'G/T（dB/K）', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '总复合损耗（dB）', '错误信息', '1.189035332459013e-243']) expect(text).toContain(value)
+  expect(text).toContain('"GXB（dB）","BER","接收功率（dBm）"')
+})
+
+it('HTML 折线保留极小 BER 值之间的差异', async () => {
+  const { reportCurveSvg } = await import('../../server/local/' + 'report-file.js')
+  const svg = reportCurveSvg({ title: '极小 BER', unit: 'BER', rows: [{ label: '3775', value: 1.189035332459013e-243 }, { label: '3780', value: 8.484338827878784e-244 }] }, '实际报文')
+  const y = [...svg.matchAll(/<circle[^>]* cy="([^"]+)"/g)].map(match => match[1])
+  expect(new Set(y).size).toBe(2)
 })
 
 describe('本地报告读取和真实文件导出', () => {
@@ -70,9 +83,17 @@ describe('本地报告读取和真实文件导出', () => {
     const dir = await directory()
     const result = await exportLocalReport(dir, STEP_FIVE_REPORT, 'HTML', 'operator')
     const html = await readFile(result.filePath, 'utf8')
-    const pointCounts = [...html.matchAll(/<polyline points="([^"]+)"/g)].map(match => match[1]!.trim().split(/\s+/).length)
-    expect(pointCounts).toEqual([3, 1, 3, 1])
-    expect(html).toContain('5～25 秒')
+    for (const title of ['干信比随时间变化</h2>', '误码率随时间变化</h2>']) {
+      const start = html.indexOf(`<h2>${title}`)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const chart = html.slice(start, html.indexOf('<h2>', start + 1))
+      const pointCounts = [...chart.matchAll(/<polyline points="([^"]+)"/g)].map(match => match[1]!.trim().split(/\s+/).length)
+      expect(pointCounts).toEqual([3, 1])
+    }
+    expect(html).not.toContain('引擎段误码率随时间变化')
+    expect(html).toContain('横轴：0～30 秒')
+    expect(html).toContain('<title>0分5秒: 0 dB</title>')
+    expect(html).toContain('<title>0分25秒: 0 dB</title>')
   })
 
   it('新事件 CSV 形成真实关联、设备时间线及消息统计', async () => {
@@ -154,7 +175,7 @@ describe('本地报告读取和真实文件导出', () => {
   it.each(['HTML', 'CSV'] as const)('%s 真实生成、摘要一致、转义且重复导出不覆盖', async format => {
     const dir = await directory()
     const report = structuredClone(LOCAL_REPORT)
-    report.localEvidence.nodes[0]!.name = '<script>alert(1)</script>'
+    report.localEvidence.eventFile.fileName = '<script>alert(1)</script>'
     const first = await exportLocalReport(dir, report, format, '=danger')
     const content = await readFile(first.filePath, 'utf8')
     expect(first.generated).toBe(true)
@@ -164,59 +185,84 @@ describe('本地报告读取和真实文件导出', () => {
     expect(content).toContain('无数据')
     if (format === 'HTML') {
       expect(content).not.toContain('<script>'); expect(content).toContain('&lt;script&gt;')
-      expect(content.match(/<svg /g)).toHaveLength(2)
-      expect(content).toContain('事件分类统计柱状图')
-      expect(content).toContain('节点位置记录数柱状图')
-      expect(content).toContain('单位：条；生成时刻：')
+      expect(content).toContain('<h2>五项评估指标</h2>')
+      expect(content).toContain('<td>平均干信比</td><td>暂无数据</td>')
+      expect(content).not.toContain('<svg ')
+      expect(content).not.toContain('节点与位置')
     }
     const second = await exportLocalReport(dir, report, format, 'operator')
     expect(second.filePath).not.toBe(first.filePath)
     expect(await readFile(first.filePath, 'utf8')).toBe(content)
   })
-  for (const format of ['HTML', 'CSV', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 缺失指标和文件显示暂无数据，保留部分覆盖、原因及真实零值`, async () => {
+  for (const format of ['HTML', 'CSV', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 真实零值与缺失数据区分，文件状态仅在 CSV 明细中展示`, async () => {
     const dir = await directory()
     const report = structuredClone(LATEST_FRAME_REPORT)
     const segment = report.localEvidence.engineFrameArchive!.segmentRows[0]!.segment
     Object.assign(segment.quality, { gxbDb: 0, ber: 0, rxPowerDbm: null, rxPowerDbw: null })
+    report.localEvidence.engineFrameArchive!.aggregate = { uniqueSingleSegmentCount: 1, switchCount: 0, averageGxbDb: 0, averageBer: 0, missing: [] }
     report.localEvidence.engineCsv = { sourceSha256: 'a'.repeat(64), files: [{ fileName: 'link_state.csv', rowCount: 3, sha256: 'b'.repeat(64), status: 'PARTIAL', skippedCount: 2, reason: '存在多段。' }], missing: [{ fileName: 'link_quality.csv', status: 'SOURCE_MISSING', reason: '缺少 SNR。' }] } as never
     const before = structuredClone(report)
     const textCalls = format === 'PDF' ? vi.spyOn(PDFDocument.prototype, 'text') : undefined
     try {
       const exported = await exportLocalReport(dir, report, format, 'operator')
       const content = format === 'PDF' ? textCalls!.mock.calls.map(call => String(call[0])).join('\n') : await readFile(exported.filePath, 'utf8')
-      for (const value of ['引擎规范 CSV 生成状态', 'PARTIAL', '暂无数据', '缺少 SNR。']) expect(content).toContain(value)
+      expect(content).toContain('暂无数据')
       expect(content).not.toContain('SOURCE_MISSING')
       expect(content).not.toContain('undefined')
-      if (format === 'HTML') expect(content).toContain('<td>0</td><td>0</td><td>暂无数据</td><td>暂无数据</td>')
-      if (format === 'CSV') expect(content).toContain('"link_quality.csv","暂无数据","暂无数据","暂无数据","缺少 SNR。"')
+      if (format === 'CSV') {
+        for (const value of ['引擎规范 CSV 生成状态', 'PARTIAL', '缺少 SNR。', '"0","0","暂无数据","暂无数据"']) expect(content).toContain(value)
+        expect(content).toContain('"link_quality.csv","暂无数据","暂无数据","暂无数据","缺少 SNR。"')
+      } else {
+        for (const value of ['0.00 dB', '0.00e+0']) expect(content).toContain(value)
+        for (const table of ['引擎规范 CSV 生成状态', '引擎链路段实测', '接收功率（dBm）']) expect(content).not.toContain(table)
+      }
       if (format === 'PDF') {
-        expect(content).toContain('接收功率（dBm）：暂无数据')
         expect((await readFile(exported.filePath)).subarray(0, 5).toString()).toBe('%PDF-')
       }
       expect(report).toEqual(before)
     } finally { textCalls?.mockRestore() }
   })
-  for (const format of ['HTML', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 导出包含柱状图、雷达图数据表及真实单位、来源和生成时刻`, async () => {
+  for (const format of ['HTML', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 简版保留汇总、有效趋势和雷达图，省去重复表图及逐帧明细`, async () => {
     const dir = await directory()
     const textCalls = vi.spyOn(PDFDocument.prototype, 'text')
-    const result = await exportLocalReport(dir, LOCAL_QUALITY_REPORT, format, 'operator', undefined, [], { nodeId: 'A', from: 0, to: 10 })
-    const content = format === 'HTML' ? await readFile(result.filePath, 'utf8') : textCalls.mock.calls.map(call => String(call[0])).join('\n')
-    for (const text of ['柱状图数据表：事件分类统计', '雷达图数据表：各链路有效观测区间连通率', '标签', '数值', '单位', '数据范围', '生成时刻',
-      'quality.csv · 筛选范围 · 0分0秒～0分10秒 · 节点 A', 'scenario_events.csv · 筛选范围', LOCAL_REPORT.generatedTime, '单位：%', '单位：条']) expect(content).toContain(text)
-    for (const [link, rate] of [['L-1', '100'], ['L-2', '0'], ['L-3', '100']]) {
-      expect(content).toContain(format === 'HTML' ? `<td>${link}</td><td>${rate}</td><td>%</td>` : `标签：${link}； 数值：${rate}； 单位：%`)
-    }
-    if (format === 'PDF') {
-      expect((await readFile(result.filePath)).subarray(0, 5).toString()).toBe('%PDF-')
-      expect(content).toContain('雷达图范围 0–100%')
-      expect(content).not.toContain('L-1：100 条')
-    } else {
-      expect(content).toContain('<polygon')
-      const empty = await exportLocalReport(dir, LOCAL_REPORT, format, 'operator')
-      const emptyHtml = await readFile(empty.filePath, 'utf8')
-      expect(emptyHtml).toContain('雷达图数据表：各链路有效观测区间连通率')
-      expect(emptyHtml).toContain('<td>暂无数据</td><td></td><td>%</td>')
-    }
+    try {
+      const report = structuredClone(LOCAL_QUALITY_REPORT)
+      const evidence = report.localEvidence!
+      evidence.deviceEvents.push({ eventId: 'JAM-END', type: 'JAMMING_REQUEST_CANCELED', time: 5, platformId: 'A', deviceId: 'J-1' })
+      evidence.eventCounts.push({ type: 'JAMMING_REQUEST_CANCELED', count: 1 })
+      evidence.eventCount++
+      const result = await exportLocalReport(dir, report, format, 'operator', undefined, [], { nodeId: 'A', from: 0, to: 10 })
+      const content = format === 'HTML' ? await readFile(result.filePath, 'utf8') : textCalls.mock.calls.map(call => String(call[0])).join('\n')
+      for (const text of ['运行与筛选', '五项评估指标', '节点=A', '时间=0～10 秒', 'quality.csv', LOCAL_QUALITY_REPORT.localEvidence!.quality!.source.sha256,
+        '10.00 dB', '3.33e-2', '连通时长随时间变化', '干信比随时间变化', '误码率随时间变化', '评估指标得分', '关键事件',
+        '0分5秒', '干扰请求取消', '无人机甲', 'J-1 · 已记录请求']) expect(content).toContain(text)
+      for (const text of ['柱状图数据表', '各链路有效观测区间连通率', '链路质量测量', '引擎链路段实测']) expect(content).not.toContain(text)
+      expect(content.indexOf('五项评估指标')).toBeLessThan(content.indexOf('干信比随时间变化'))
+      if (format === 'PDF') {
+        expect((await readFile(result.filePath)).subarray(0, 5).toString()).toBe('%PDF-')
+        expect(content).toContain('评估指标归一化得分范围 0–100')
+        expect(content).not.toContain('0分1秒：10 dB')
+      } else {
+        expect(content).toContain('<polygon')
+        expect(content).toContain('<title>0分1秒: 10 dB</title>')
+      }
+    } finally { textCalls.mockRestore() }
+  })
+  it('大型引擎归档明确略过不完整的逐帧趋势，保留完整筛选范围的累计趋势', async () => {
+    const report = structuredClone(LATEST_FRAME_REPORT)
+    const archive = report.localEvidence.engineFrameArchive!
+    archive.detailTruncated = true
+    archive.retainedDetailRows = archive.segmentRows.length
+    archive.aggregate = { uniqueSingleSegmentCount: 6, switchCount: 1, missing: [], averageGxbDb: 42,
+      switchCountTrend: [{ time: 3775, value: 0 }, { time: 3780, value: 1 }] }
+    const exported = await exportLocalReport(await directory(), report, 'HTML', 'operator')
+    const html = await readFile(exported.filePath, 'utf8')
+    expect(html).toContain('连通时长、干信比、误码率的逐帧折线未导出')
+    expect(html).not.toContain('引擎链路段实测')
+    expect(html).toContain('aria-label="切换次数随时间变化折线图"')
+    expect(html).toContain('<title>63分0秒: 1 次</title>')
+    expect(html).toContain('42.00 dB')
+    expect(html).not.toContain('aria-label="干信比随时间变化折线图"')
   })
   it.skipIf(!pdfFont)('PDF 真实生成、嵌入中文字体、包含页面和统计来源', async () => {
     const dir = await directory()

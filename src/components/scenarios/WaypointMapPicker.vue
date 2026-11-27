@@ -51,6 +51,8 @@ const props = withDefaults(defineProps<{
   showAltitude?: boolean
   /** 初始位置的 (0, 0) 是有效坐标，新航点的 (0, 0) 是占位值。 */
   allowZeroPoint?: boolean
+  /** 可选：单点选圆心时在地图上绘制对应半径（米）的盘旋圆预览。 */
+  previewRadiusMeters?: number
 }>(), {
   title: '地图选取航点',
   hint: '单击地图选择经纬度；二维地图无法确定高度，确认后高度设置为 0 米。',
@@ -79,6 +81,7 @@ const canConfirmRoute = computed(() => missingLoiterPoints.value === 0 && (newPo
 const SELECTED_POINT_PANE = 'waypoint-selection'
 let map: L.Map | null = null
 let marker: L.CircleMarker | null = null
+let previewCircle: L.Circle | null = null
 let routeLayer: L.LayerGroup | null = null
 const routeMarkers = new Map<number, L.Marker>()
 
@@ -240,6 +243,26 @@ function clearRoutePoints(): void {
 function renderMarker(point: WaypointMapPoint): void {
   if (map === null) return
   const position: L.LatLngExpression = [point.latitude, point.longitude]
+  const radius = props.previewRadiusMeters
+  if (typeof radius === 'number' && Number.isFinite(radius) && radius > 0) {
+    if (previewCircle === null) {
+      previewCircle = L.circle(position, {
+        radius,
+        color: '#4bd9f2',
+        weight: 1.5,
+        dashArray: '6 4',
+        fillColor: '#4bd9f2',
+        fillOpacity: 0.12,
+        interactive: false,
+      }).addTo(map)
+    } else {
+      previewCircle.setLatLng(position)
+      previewCircle.setRadius(radius)
+    }
+  } else if (previewCircle !== null) {
+    previewCircle.remove()
+    previewCircle = null
+  }
   if (marker === null) {
     marker = L.circleMarker(position, {
       pane: SELECTED_POINT_PANE,
@@ -250,7 +273,7 @@ function renderMarker(point: WaypointMapPoint): void {
       fillOpacity: 1,
       weight: 2,
       interactive: false,
-    }).bindTooltip('当前选点', {
+    }).bindTooltip(radius && radius > 0 ? '盘旋圆心' : '当前选点', {
       permanent: true,
       offset: [10, 0],
       opacity: 1,
@@ -270,6 +293,8 @@ function selectPoint(latLng: L.LatLng): void {
       selectedPoint.value = null
       marker?.remove()
       marker = null
+      previewCircle?.remove()
+      previewCircle = null
     }
     return
   }
@@ -412,6 +437,7 @@ function destroyMap(): void {
   }
   map = null
   marker = null
+  previewCircle = null
   routeLayer = null
   routeMarkers.clear()
 }

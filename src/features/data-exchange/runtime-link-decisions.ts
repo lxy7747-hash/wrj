@@ -1,9 +1,10 @@
 import type { Link, LinkDirection, LinkType, Platform, ScenarioLinkSettings } from '../../contracts/domain-models'
+import { linkStatusWithBer, type BerThresholds } from '../scenarios/link-calc-defaults'
 import { LINK_DECISION_DEFAULTS, isConfiguredLinkEnabled, readLinkSettings } from '../scenarios/link-settings'
 import type { RuntimeLinkQuality, RuntimeLinkQualityData } from './runtime-link-quality'
 
 /** 本地质量判定版本；仅说明前端按同一帧质量快照作出的判断，不是引擎执行回执。 */
-export const RUNTIME_LINK_DECISION_THRESHOLD_VERSION = 'LOCAL-V1.2' as const
+export const RUNTIME_LINK_DECISION_THRESHOLD_VERSION = 'LOCAL-V1.3' as const
 
 export type RuntimeLinkStatusState = 'UNKNOWN' | 'UP' | 'DEGRADED' | 'DOWN'
 export type RuntimeRouteDecisionState = 'INITIALIZED' | 'SWITCHED' | 'HELD' | 'UNAVAILABLE'
@@ -71,13 +72,13 @@ interface DecisionSettings {
   switchCooldownFrames: number
   minimumGxbDb: number
   maximumBer: number
+  berThresholds?: BerThresholds
   minimumGxbImprovementDb: number
   minimumBerImprovementFactor: number
   minimumSpatialIsolationDb: number
   minimumReceivedPowerDbm: number | null
   failureGxbDb: number | null
   failureBer: number | null
-  priority: readonly LinkType[]
 }
 
 interface StatusMemory {
@@ -123,6 +124,7 @@ function configuredDecisionSettings(settings: ScenarioLinkSettings): DecisionSet
     switchCooldownS: nonNegative(raw.switchCooldownS, LINK_DECISION_DEFAULTS.switchCooldownS),
     switchCooldownFrames: nonNegative(raw.switchCooldownFrames, LINK_DECISION_DEFAULTS.switchCooldownFrames),
     minimumGxbDb: finiteOrNull(raw.minimumGxbDb) ?? LINK_DECISION_DEFAULTS.minimumGxbDb,
+    berThresholds: settings.linkCalc,
     maximumBer: finiteOrNull(raw.maximumBer) ?? LINK_DECISION_DEFAULTS.maximumBer,
     minimumGxbImprovementDb: nonNegative(raw.minimumGxbImprovementDb, LINK_DECISION_DEFAULTS.minimumGxbImprovementDb),
     minimumBerImprovementFactor: nonNegative(raw.minimumBerImprovementFactor, LINK_DECISION_DEFAULTS.minimumBerImprovementFactor),
@@ -130,7 +132,6 @@ function configuredDecisionSettings(settings: ScenarioLinkSettings): DecisionSet
     minimumReceivedPowerDbm: finiteOrNull(raw.minimumReceivedPowerDbm),
     failureGxbDb: finiteOrNull(raw.failureGxbDb),
     failureBer: finiteOrNull(raw.failureBer),
-    priority: Array.isArray(settings.priority) ? settings.priority : [],
   }
 }
 
@@ -144,20 +145,18 @@ function rawStatus(quality: RuntimeLinkQuality, settings: DecisionSettings): { s
   const power = quality.quality.receivedPowerDbm
   if (gxb === null || ber === null) return { status: null, reason: 'GXB_OR_BER_MISSING' }
   if (settings.minimumReceivedPowerDbm !== null && power === null) return { status: null, reason: 'RECEIVED_POWER_MISSING' }
-  if ((settings.failureGxbDb !== null && gxb < settings.failureGxbDb)
-    || (settings.failureBer !== null && ber > settings.failureBer)
+  const status = linkStatusWithBer(gxb >= settings.minimumGxbDb ? 'UP' : 'DEGRADED', ber, settings.berThresholds)
+  if (status === 'DOWN' || (settings.failureGxbDb !== null && gxb < settings.failureGxbDb)
+    || (settings.failureBer !== null && ber >= settings.failureBer)
     || (settings.minimumReceivedPowerDbm !== null && power! < settings.minimumReceivedPowerDbm)) {
     return { status: 'DOWN', reason: 'FAILURE_THRESHOLD_REACHED' }
   }
-  if (gxb >= settings.minimumGxbDb && ber <= settings.maximumBer) return { status: 'UP', reason: 'AVAILABLE' }
-  return { status: 'DEGRADED', reason: 'AVAILABILITY_THRESHOLD_NOT_MET' }
+  return { status, reason: status === 'UP' ? 'AVAILABLE' : 'AVAILABILITY_THRESHOLD_NOT_MET' }
 }
 
+/** maximumBer 单独限制候选链路；显示状态按场景的告警、紧急阈值判定。 */
 function rawAvailable(quality: RuntimeLinkQuality, settings: DecisionSettings): boolean {
-  return quality.quality.gxbDb !== null && quality.quality.ber !== null
-    && quality.quality.gxbDb >= settings.minimumGxbDb && quality.quality.ber <= settings.maximumBer
-    && (settings.minimumReceivedPowerDbm === null
-      || (quality.quality.receivedPowerDbm !== null && quality.quality.receivedPowerDbm >= settings.minimumReceivedPowerDbm))
+  return quality.quality.ber !== null && quality.quality.ber <= settings.maximumBer && rawStatus(quality, settings).status === 'UP'
 }
 
 function advanceStatus(memory: StatusMemory, frameId: number, quality: RuntimeLinkQuality, settings: DecisionSettings): RuntimeLinkStatus {
@@ -188,19 +187,11 @@ function advanceStatus(memory: StatusMemory, frameId: number, quality: RuntimeLi
     thresholdVersion: RUNTIME_LINK_DECISION_THRESHOLD_VERSION, gxbDb: quality.quality.gxbDb, ber: quality.quality.ber, receivedPowerDbm: quality.quality.receivedPowerDbm }
 }
 
-function mediaRank(type: LinkType, priority: readonly LinkType[]): number {
-  const rank = priority.indexOf(type)
-  return rank >= 0 ? rank : priority.length
-}
-
 function eligibleCandidate(candidate: RuntimeRouteCandidate): boolean {
   return candidate.eligible
 }
 
-function compareCandidates(direction: LinkDirection, left: RuntimeRouteCandidate, right: RuntimeRouteCandidate, priority: readonly LinkType[]): number {
-  // 场景配置的体制优先级先约束候选类型；同优先级体制内再按大纲的质量指标选择。
-  const priorityDifference = mediaRank(left.type, priority) - mediaRank(right.type, priority)
-  if (priorityDifference !== 0) return priorityDifference
+function compareCandidates(direction: LinkDirection, left: RuntimeRouteCandidate, right: RuntimeRouteCandidate): number {
   if (direction === 'FORWARD') {
     const lp = left.interferencePowerDbm!
     const rp = right.interferencePowerDbm!
@@ -304,7 +295,8 @@ export class RuntimeLinkDecisionTracker {
         if (!item.enabled) eliminationReason = 'LINK_DISABLED'
         else if (!item.spatiallyIsolated) eliminationReason = 'SPATIAL_ISOLATION_NOT_MET'
         // 已提交的 UP 在劣化去抖窗口内只用于显示，不可让当前原始阈值已失效的链路进入候选集。
-        else if (status?.status !== 'UP' || !rawAvailable(item.quality, settings)) eliminationReason = status?.reason ?? 'AVAILABILITY_THRESHOLD_NOT_MET'
+        else if (status?.status !== 'UP') eliminationReason = status?.reason ?? 'AVAILABILITY_THRESHOLD_NOT_MET'
+        else if (!rawAvailable(item.quality, settings)) eliminationReason = status.reason === 'AVAILABLE' ? 'AVAILABILITY_THRESHOLD_NOT_MET' : status.reason
         else if (item.link.direction === 'FORWARD' && item.quality.quality.interferencePowerDbm === null) eliminationReason = 'INTERFERENCE_POWER_MISSING'
         candidates.push({ routeKey: key, linkId: item.link.id, direction: item.link.direction, type: item.link.type,
           rank: 0, eligible: eliminationReason === null, eliminationReason,
@@ -317,7 +309,7 @@ export class RuntimeLinkDecisionTracker {
     candidates.sort((left, right) => {
       if (left.routeKey !== right.routeKey) return left.routeKey < right.routeKey ? -1 : 1
       if (left.eligible !== right.eligible) return left.eligible ? -1 : 1
-      if (left.eligible) return compareCandidates(left.direction, left, right, settings.priority)
+      if (left.eligible) return compareCandidates(left.direction, left, right)
       return left.linkId < right.linkId ? -1 : left.linkId === right.linkId ? 0 : 1
     })
     const ranks = new Map<string, number>()

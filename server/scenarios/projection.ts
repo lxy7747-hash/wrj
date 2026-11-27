@@ -10,7 +10,7 @@ import type {
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
 import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
-import { parseScenarioSnapshot, scenarioSnapshotId } from '../../src/features/scenarios/scenario-snapshot.js'
+import { isScenarioImportSchemaVersion, parseScenarioSnapshot, scenarioSnapshotId } from '../../src/features/scenarios/scenario-snapshot.js'
 import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 import { ParameterSourceError } from './parameter-sources.js'
@@ -404,11 +404,18 @@ class ScenarioDocument {
     if (!snapshot) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'items[0]', message: '场景快照文件外壳或版本不受支持。' }
     }
+    const schemaVersion = (snapshot.config as { schemaVersion?: unknown } | null)?.schemaVersion
+    const versionPath = snapshot.versioned ? 'items[0].config.schemaVersion' : 'items[0].schemaVersion'
+    if (!isScenarioImportSchemaVersion(schemaVersion)) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: versionPath, message: '导入场景的配置版本必须为 x.x 格式，小数点前后均须为数字。' }
+    }
     const config = dropRetiredScenarioFields(structuredClone(snapshot.config as ScenarioConfig))
+    // 文件版本仅用于标记；按当前配置字段校验，统一保存为内部版本。
+    config.schemaVersion = '1.0'
     const extensions = dropRetiredUiExtensionFields(structuredClone(snapshot.uiExtensions))
     // 版本化快照必须先按原始必填字段校验，禁止先补值再宣告成功；
     // 只有旧版纯 ScenarioConfig 允许在服务端副本上迁移补值后校验提交。
-    if (!snapshot.versioned) restoreRequiredMotionFields(config, extensions)
+    if (!snapshot.versioned && schemaVersion === '1.0') restoreRequiredMotionFields(config, extensions)
     const inspection = inspectScenarioConfig(config, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
@@ -417,8 +424,9 @@ class ScenarioDocument {
         : (issue.fieldPath === 'config' ? 'items[0]' : `items[0].${issue.fieldPath}`)
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath, message: issue.message }
     }
+    const strictExtensions = snapshot.versioned && (snapshot.snapshotVersion !== 1 || schemaVersion !== '1.0')
     const extensionInspection = inspectScenarioUiExtensions(
-      extensions ?? createUiExtensions(config),
+      strictExtensions ? extensions : extensions ?? createUiExtensions(config),
       config.jammers.map(jammer => jammer.id),
       config.sensors.map(sensor => sensor.id),
     )
@@ -560,6 +568,9 @@ export class ScenarioProjection {
   }
   importSnapshots(value: unknown): ScenarioProjectionResult<ScenarioImportResult> {
     const item = (value as { items?: unknown[] } | null)?.items?.[0]
+    if (item !== undefined && !parseScenarioSnapshot(item)) {
+      return { ok: false, status: 422, code: 'VALIDATION_FAILED', fieldPath: 'items[0]', message: '场景快照文件外壳或版本不受支持。' }
+    }
     const id = scenarioSnapshotId(item)
     if (typeof id !== 'string' || !id.trim()) return { ok: false, status: 422, code: 'VALIDATION_FAILED', fieldPath: 'items', message: '场景快照导入请求结构不正确。' }
     const current = this.get(id)

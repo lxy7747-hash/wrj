@@ -291,18 +291,28 @@ export class AuthProjection {
     this.refreshUsers()
     if ((this.storage || command.password !== undefined)
       && (typeof command.password !== 'string' || !command.password.trim() || command.password.length < 6 || command.password.length > 32)) {
-      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'password' }
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'password', message: '初始密码须为 6–32 位非空白字符。' }
     }
     const user = { ...structuredClone(command.user), displayName: command.user.displayName ?? command.user.username }
-    if (!isManagedUsername(user.username)) return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username' }
-    if (typeof user.displayName !== 'string' || !user.displayName.trim() || user.displayName.length > 64) return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.displayName' }
+    if (!isManagedUsername(user.username)) {
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username', message: '登录账号须为 1–64 位，且不能包含首尾空格。' }
+    }
+    if (typeof user.displayName !== 'string' || !user.displayName.trim() || user.displayName.length > 64) {
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.displayName', message: '用户名须为 1–64 位非空字符。' }
+    }
     delete user.lastLoginAt
-    const duplicate = this.runtimeState.users.some(
-      (candidate) => candidate.userId === user.userId || candidate.username === user.username,
-    ) || user.username === 'locked'
-    if (duplicate) {
+    const duplicateUsername = this.runtimeState.users.some((candidate) => candidate.username === user.username)
+      || user.username === 'locked'
+    const duplicateUserId = this.runtimeState.users.some((candidate) => candidate.userId === user.userId)
+    if (duplicateUsername || duplicateUserId) {
       this.appendAudit(actor, 'ADMIN', 'USER_CREATE', user.userId, 'ERROR')
-      return { ok: false, code: 'CONFLICT', status: 409 }
+      return {
+        ok: false,
+        code: 'CONFLICT',
+        status: 409,
+        fieldPath: duplicateUsername ? 'user.username' : 'user.userId',
+        message: duplicateUsername ? `登录账号「${user.username}」已存在，请更换其他登录账号。` : '用户编号已存在，请刷新列表后重试。',
+      }
     }
 
     this.storage?.save(user, command.password)
@@ -325,7 +335,7 @@ export class AuthProjection {
     const index = this.runtimeState.users.findIndex((candidate) => candidate.userId === userId)
     if (index < 0) {
       this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
-      return { ok: false, code: 'NOT_FOUND', status: 404 }
+      return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定用户，请刷新列表后重试。' }
     }
 
     const current = this.runtimeState.users[index]
@@ -348,14 +358,14 @@ export class AuthProjection {
         break
       default:
         this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
-        return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'operation' }
+        return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'operation', message: '不支持的用户变更操作。' }
     }
 
     if (next.displayName !== undefined && (typeof next.displayName !== 'string' || !next.displayName.trim() || next.displayName.length > 64)) {
-      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.displayName' }
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.displayName', message: '用户名须为 1–64 位非空字符。' }
     }
     if (command.operation === 'UPDATE' && !isManagedUsername(next.username)) {
-      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username' }
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username', message: '登录账号须为 1–64 位，且不能包含首尾空格。' }
     }
 
     const duplicateUsername = this.runtimeState.users.some(
@@ -363,12 +373,18 @@ export class AuthProjection {
     ) || next.username === 'locked'
     if (duplicateUsername) {
       this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
-      return { ok: false, code: 'CONFLICT', status: 409 }
+      return {
+        ok: false,
+        code: 'CONFLICT',
+        status: 409,
+        fieldPath: 'user.username',
+        message: `登录账号「${next.username}」已存在，请更换其他登录账号。`,
+      }
     }
 
     if (this.violatesAdminGuard(current, next, actorId)) {
       this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'DENIED')
-      return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409 }
+      return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409, message: '不能停用或降级当前登录管理员或最后一个可用管理员。' }
     }
 
     this.storage?.save(next)
@@ -390,7 +406,7 @@ export class AuthProjection {
     const index = this.runtimeState.users.findIndex((candidate) => candidate.userId === userId)
     if (index < 0) {
       this.appendAudit(actor, 'ADMIN', 'USER_DELETE', userId, 'ERROR')
-      return { ok: false, code: 'NOT_FOUND', status: 404 }
+      return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定用户，请刷新列表后重试。' }
     }
 
     const current = this.runtimeState.users[index]
@@ -399,7 +415,7 @@ export class AuthProjection {
     }
     if (this.violatesAdminGuard(current, undefined, actorId)) {
       this.appendAudit(actor, 'ADMIN', 'USER_DELETE', userId, 'DENIED')
-      return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409 }
+      return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409, message: '不能删除当前登录管理员或最后一个可用管理员。' }
     }
 
     this.storage?.delete(userId)

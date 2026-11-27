@@ -1,12 +1,13 @@
 import { createWebSocketStream, WebSocket } from 'ws'
 import type { Socket } from 'node:net'
 import { isMissionWebSocketPeer } from './mission-process-inspection.js'
+import { createMissionConnectionLog } from './mission-startup-diagnostics.js'
 import type { EngineConnectionDiagnostic, EngineControlAction, EngineControlState, EngineFrameSnapshot, EnginePathNode, EngineRoute, SimulationRun } from '../../src/contracts/domain-models.js'
 import { adaptEngineFrameSnapshot, ENGINE_FRAME_ID_STEP } from '../../src/features/data-exchange/engine-frame-snapshot.js'
 import { canSendEngineControl } from '../../src/features/situation/engine-control.js'
 import { engineNameMap, toScenarioId } from './engine-name-mapping.js'
 
-const BACKOFF_MS = [1000, 2000, 5000, 10000] as const
+const BACKOFF_MS = [1000, 1000, 1000, 2000, 5000, 10000] as const
 const routeKey = (route: EngineRoute, pathId = route.pathId) => JSON.stringify([route.direction, route.sourceName, route.targetName, pathId])
 
 function describeInvalidField(input: object, fieldPath: string): string {
@@ -92,6 +93,8 @@ export class EngineSnapshotClient {
   private localControlSocket: WebSocket | undefined
   private hasVerifiedLocalPeer = false
   private incoming: ReturnType<typeof createWebSocketStream> | undefined
+  private consumer?: Promise<void>
+  private finishing = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private generation = 0
   private retry = 0
@@ -109,7 +112,7 @@ export class EngineSnapshotClient {
     private readonly diagnose: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void = () => {},
     private readonly verifyMissionPeer = isMissionWebSocketPeer) {}
 
-  start(run: Pick<SimulationRun, 'runId' | 'taskId'>, manifest: unknown, localMissionPid?: number): boolean {
+  start(run: Pick<SimulationRun, 'runId' | 'taskId'>, manifest: unknown, localMissionPid?: number, reportStartup = this.report): boolean {
     if (this.owner) {
       if (this.owner.runId === run.runId && this.owner.taskId === run.taskId && this.localMissionPid === localMissionPid) return true
       this.report('引擎链路推送只支持单任务运行')
@@ -133,11 +136,32 @@ export class EngineSnapshotClient {
     Object.assign(this.diagnostics, { rejected: 0, stale: 0, lastError: '', connected: false })
     const generation = ++this.generation
     const current = () => generation === this.generation && this.owner?.runId === run.runId
+    const endpoint = new URL(this.url)
+    const displayUrl = endpoint.origin + endpoint.pathname
+    const logMission = localMissionPid === undefined ? undefined
+      : createMissionConnectionLog(run, localMissionPid, endpoint, reportStartup, () => current() && !this.finishing)
+    let attempts = 0
     const connect = () => {
       if (!current()) return
       this.timer = undefined
-      this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTING', message: '正在连接上游引擎 WebSocket。' })
+      const attempt = ++attempts
+      logMission?.(attempt, attempt === 1 ? '开始连接' : '开始重试 WebSocket')
+      this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTING', message: `正在连接上游引擎 WebSocket（${displayUrl}）。` })
       const socket = this.socket = new WebSocket(this.url, { handshakeTimeout: 10_000, maxPayload: 4 * 1024 * 1024 })
+      let socketFailed = false
+      let waitTimer: ReturnType<typeof setTimeout> | undefined
+      const watchStartup = (message: string) => {
+        clearTimeout(waitTimer)
+        if (!logMission) return
+        const waiting = () => {
+          if (!current() || this.finishing || this.socket !== socket) return
+          logMission(attempt, message, {}, true)
+          // 刚重连时前一次失败采样可能仍在限频窗口，持续等首帧时重新检查。
+          waitTimer = setTimeout(waiting, 10_000).unref()
+        }
+        waitTimer = setTimeout(waiting, 5_000).unref()
+      }
+      watchStartup('仍在等待 WebSocket 握手')
       // Preserve message boundaries and stop reading the socket while disk writes catch up.
       const incoming = this.incoming = createWebSocketStream(socket, { readableObjectMode: true, highWaterMark: 1 })
       let firstFrame = true
@@ -146,18 +170,22 @@ export class EngineSnapshotClient {
       let peer: Socket | undefined
       if (localMissionPid !== undefined) socket.once('upgrade', response => { peer = response.socket })
       socket.on('open', async () => {
-        let owned = false
+        if (!current() || this.socket !== socket || socket.readyState !== WebSocket.OPEN) return
+        this.diagnostics.connected = true
+        logMission?.(attempt, 'WebSocket 已连接')
+        watchStartup('已连接，仍在等待首个完整帧')
+        this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTED', message: `已连接上游引擎 WebSocket（${displayUrl}）。` })
         if (peer && localMissionPid !== undefined) {
+          let owned = false
           try { owned = await this.verifyMissionPeer(peer, localMissionPid) }
           catch { /* 无法确认对端时仍可接收数据。 */ }
+          if (!current() || this.socket !== socket || socket.readyState !== WebSocket.OPEN) return
+          if (owned) {
+            this.localControlSocket = socket
+            this.hasVerifiedLocalPeer = true
+            this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTED', message: '已确认本机仿真控制通道。' })
+          }
         }
-        if (!current() || this.socket !== socket || socket.readyState !== WebSocket.OPEN) return
-        if (owned) {
-          this.localControlSocket = socket
-          this.hasVerifiedLocalPeer = true
-        }
-        this.diagnostics.connected = true
-        this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTED', message: '已连接上游引擎 WebSocket。' })
       })
       const receive = async (raw: string | Buffer) => {
         if (!current()) return
@@ -200,6 +228,10 @@ export class EngineSnapshotClient {
           const frame = adapted.data
           // 初次连接 lastFrameId 为 -1；坏消息不消耗重连后的首个有效帧判断。
           const restarted = (frame.frameId === 0 && this.lastFrameId > 0) || (firstFrame && frame.frameId < this.lastFrameId)
+          if (firstFrame) {
+            clearTimeout(waitTimer)
+            logMission?.(attempt, '已收到首个完整帧')
+          }
           firstFrame = false
           if (restarted) {
             this.engineEpoch += 1; this.lastFrameId = -1; this.initRouting = null
@@ -236,28 +268,36 @@ export class EngineSnapshotClient {
       }
       socket.on('error', error => {
         if (!current()) return
+        socketFailed = true
         this.cancelControl?.()
         if (this.control.action) this.control.delivery = 'UNKNOWN'
-        this.diagnostics.lastError = error.message
-        this.report(`引擎链路推送连接失败：${error.message}`)
-        this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'DISCONNECTED', message: `上游引擎连接错误：${error.message}` })
+        const detail = error instanceof AggregateError && error.errors.length
+          ? error.errors.slice(0, 4).map(cause => cause instanceof Error ? cause.message : String(cause)).join(' | ') : error.message
+        const code = (error as NodeJS.ErrnoException).code
+        const message = (detail || code || error.name).replaceAll(this.url, displayUrl).slice(0, 1024)
+        this.diagnostics.lastError = message
+        if (logMission) logMission(attempt, '引擎链路推送连接失败', { code: code ?? null, error: message }, true)
+        else this.report(`引擎链路推送连接失败：${message}`)
+        this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'DISCONNECTED', message: `上游引擎连接错误：${message}` })
       })
-      socket.on('close', () => {
+      socket.on('close', (code, reason) => {
+        clearTimeout(waitTimer)
         if (!current()) return
+        if (!socketFailed) logMission?.(attempt, 'WebSocket 已关闭', { code, reason: reason.toString().replaceAll(this.url, displayUrl).slice(0, 256) }, firstFrame)
         this.cancelControl?.()
         if (this.control.action) this.control.delivery = 'UNKNOWN'
         this.localControlSocket = undefined
         this.socket = undefined; this.diagnostics.connected = false
         this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'DISCONNECTED', message: '上游引擎 WebSocket 已断开，正在按退避策略重连。' })
       })
-      void (async () => {
+      this.consumer = (async () => {
         try { for await (const raw of incoming) { if (!current()) break; await receive(raw) } }
         catch { /* socket error handler publishes the connection diagnostic */ }
         finally {
           if (current() && pending) this.reject(new Error(`frameId=${pending.frameId} 在断连前未收到配对分包。`), '分包不完整')
           pending = undefined
           incoming.destroy()
-          if (current()) this.timer = setTimeout(connect, BACKOFF_MS[Math.min(this.retry++, BACKOFF_MS.length - 1)])
+          if (current() && !this.finishing) this.timer = setTimeout(connect, BACKOFF_MS[Math.min(this.retry++, BACKOFF_MS.length - 1)])
         }
       })()
     }
@@ -329,6 +369,18 @@ export class EngineSnapshotClient {
     })
   }
 
+  /** 进程退出后读完当前连接已收到的消息，慢盘仍按原顺序写入最后一个完整帧。 */
+  async drainAndStop(runId: string): Promise<void> {
+    if (this.owner?.runId !== runId) return
+    const generation = this.generation
+    this.finishing = true
+    clearTimeout(this.timer)
+    if (this.socket?.readyState === WebSocket.CONNECTING) this.socket.terminate()
+    else if (this.socket?.readyState === WebSocket.OPEN) this.socket.close()
+    await this.consumer
+    if (generation === this.generation) this.stop(runId)
+  }
+
   stop(runId?: string): void {
     if (runId !== undefined && runId !== this.owner?.runId) return
     this.cancelControl?.()
@@ -336,6 +388,7 @@ export class EngineSnapshotClient {
     clearTimeout(this.timer); this.timer = undefined
     const socket = this.socket
     this.incoming?.destroy(); this.incoming = undefined
+    this.consumer = undefined; this.finishing = false
     this.socket = undefined; this.owner = undefined; this.diagnostics.connected = false
     this.localMissionPid = undefined; this.localControlSocket = undefined; this.hasVerifiedLocalPeer = false
     this.lastFrameId = -1; this.engineEpoch = 0; this.initRouting = null

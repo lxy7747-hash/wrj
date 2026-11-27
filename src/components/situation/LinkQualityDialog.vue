@@ -9,6 +9,7 @@ import { RUNTIME_STATUS_LABELS, runtimeDecisionReason } from '../../features/sit
 import { reportTime } from '../../features/reports/local-report'
 import { reportLinkLabel } from '../../features/reports/report-link-label'
 import { engineSegmentInputRows, engineSegmentQualityDetails } from '../../features/reports/engine-segment-details'
+import { summarizeSegmentJammingEvidence } from '../../features/situation/engine-narrative'
 import {
   LINK_TYPE_LABELS,
   PLATFORM_TYPE_LABELS,
@@ -20,6 +21,7 @@ const props = defineProps<{
   modelValue: boolean
   link: SituationLinkView | null
   configuredLink?: Link | null
+  directions?: readonly Pick<Link, 'id' | 'direction'>[]
   runtimeQuality?: RuntimeLinkQualityView | null
   engineSegments?: EngineLinkSegment[]
   engineFrame?: EngineFrameSnapshot | null
@@ -29,7 +31,7 @@ const props = defineProps<{
   platforms?: readonly Pick<Platform, 'id' | 'name'>[]
 }>()
 
-defineEmits<{ 'update:modelValue': [value: boolean] }>()
+defineEmits<{ 'update:modelValue': [value: boolean]; 'select-direction': [linkId: string] }>()
 
 /** 引擎可选提供的质量扩展字段；缺省显示“暂无数据”，有值后直接展示。 */
 function optionalMetric(value: number | null | undefined, digits: number, unit: string): string {
@@ -70,7 +72,16 @@ function platformLabel(id: string | null, engineName?: string | null): string {
   if (label === 'command_vehicle') return PLATFORM_TYPE_LABELS.GROUND_CLUSTER_COMMAND_NODE
   if (label === 'rear_comm_vehicle') return PLATFORM_TYPE_LABELS.REAR_COMMAND_NODE
   const missionNumber = /^mission_uav_(\d+)$/u.exec(label)?.[1]
-  return missionNumber ? `任务无人机 ${missionNumber}` : label || '暂无数据'
+  if (missionNumber) return `任务无人机 ${missionNumber}`
+  const groundJammer = /^jammer_station_(\d+)$/u.exec(label)?.[1]
+  if (groundJammer) return `地面干扰站 ${Number(groundJammer)}`
+  const airJammer = /^jammer_(?:airborne|airbround)_(\d+)$/u.exec(label)?.[1]
+  if (airJammer) return `机载干扰平台 ${Number(airJammer)}`
+  return label || '暂无数据'
+}
+
+function segmentEvidence(segment: EngineLinkSegment) {
+  return summarizeSegmentJammingEvidence(segment, platformLabel, props.engineFrame?.jammers)
 }
 
 function endpointLabel(id: string | null, engineName: string | null, port: string | null): string {
@@ -144,14 +155,53 @@ function reasonLabel(reason: string): string {
       </div>
     </template>
 
+    <el-radio-group
+      v-if="directions?.length"
+      :model-value="selectedLinkId"
+      aria-label="链路传输方向"
+      data-testid="link-detail-directions"
+      @update:model-value="typeof $event === 'string' && $emit('select-direction', $event)"
+    >
+      <el-radio-button v-for="direction in directions" :key="direction.id" :value="direction.id">
+        {{ direction.direction === 'FORWARD' ? '前向' : '返向' }}
+      </el-radio-button>
+    </el-radio-group>
+
     <div v-if="engineSegments.length" class="link-quality-dialog__body link-quality-dialog__runtime" data-testid="link-detail-engine-segments">
       <p>链路体制：{{ communicationType }}。来源帧 {{ engineFrame?.frameId ?? '暂无数据' }} · 源仿真时刻 {{ engineFrame ? reportTime(engineFrame.simulationTime) : '暂无数据' }}。以下是各段质量，不代表整条链路。</p>
       <article v-for="(segment, index) in engineSegments" :key="`${segment.linkId}:${index}`" class="engine-segment">
         <strong>{{ endpointLabel(segment.sourcePlatformId, segment.sourceName, segment.sourcePort) }} → {{ endpointLabel(segment.targetPlatformId, segment.targetName, segment.targetPort) }}</strong>
+        <section
+          v-if="segmentEvidence(segment).shouldShow"
+          class="link-jamming-evidence"
+          :class="{ 'link-jamming-evidence--jammed': segmentEvidence(segment).isJammed }"
+          data-testid="link-jamming-evidence"
+        >
+          <header class="link-jamming-evidence__head">
+            <span class="link-jamming-evidence__tag">{{ segmentEvidence(segment).title }}</span>
+            <span v-if="segmentEvidence(segment).linkFrequencyGHz !== null" class="link-jamming-evidence__freq">
+              链路工作频段 {{ Number(segmentEvidence(segment).linkFrequencyGHz!.toFixed(3)) }} GHz
+            </span>
+          </header>
+          <p class="link-jamming-evidence__summary">{{ segmentEvidence(segment).summary }}</p>
+          <ul v-if="segmentEvidence(segment).jammers.length" class="link-jamming-evidence__jammers">
+            <li v-for="jammer in segmentEvidence(segment).jammers" :key="jammer.key">
+              <strong>{{ jammer.jammerName }}</strong>
+              <span v-if="jammer.modeLabel" class="link-jamming-evidence__badge">{{ jammer.modeLabel }}</span>
+              <span v-if="jammer.freqMatchNote" class="link-jamming-evidence__badge link-jamming-evidence__badge--freq">{{ jammer.freqMatchNote }}</span>
+              <span class="link-jamming-evidence__specs">
+                <template v-if="jammer.distanceKm !== null">距接收端 {{ jammer.distanceKm.toFixed(2) }} km</template>
+                <template v-if="jammer.eirpDbw !== null"> · 干扰 EIRP {{ Number(jammer.eirpDbw.toFixed(1)) }} dBW</template>
+                <template v-if="jammer.lossDb !== null"> · 干扰路径损耗 {{ Number(jammer.lossDb.toFixed(2)) }} dB</template>
+                <template v-if="jammer.frequencyGHz !== null"> · 干扰频段 {{ Number(jammer.frequencyGHz.toFixed(3)) }} GHz</template>
+              </span>
+            </li>
+          </ul>
+        </section>
         <dl class="link-quality-dialog__grid">
           <div><dt>引擎状态</dt><dd>{{ engineStatusLabel(segment) }}</dd></div>
-          <div><dt>干信比 GXB（信噪比）</dt><dd>{{ optionalMetric(segment.quality.gxbDb, 2, ' dB') }}</dd></div>
-          <div><dt>误码率</dt><dd>{{ segment.quality.ber === null ? '暂无数据' : formatBer(segment.quality.ber) }}</dd></div>
+          <div><dt>干信比(GXB)</dt><dd>{{ optionalMetric(segment.quality.gxbDb, 2, ' dB') }}</dd></div>
+          <div><dt>误码率(BER)</dt><dd>{{ segment.quality.ber === null ? '暂无数据' : formatBer(segment.quality.ber) }}</dd></div>
           <div><dt>发射辐射功率</dt><dd>{{ optionalMetric(segment.inputTrace.eirpDbw, 2, ' dBW') }}</dd></div>
           <div><dt>抗干扰余量</dt><dd>{{ optionalMetric(segment.quality.marginDb, 2, ' dB') }}</dd></div>
           <div><dt>干扰损耗</dt><dd>{{ optionalMetric(segment.losses.jammingDb, 2, ' dB') }}</dd></div>
@@ -196,6 +246,8 @@ function reasonLabel(reason: string): string {
               <dl class="link-frame-check__fields">
                 <div><dt>来源帧</dt><dd>{{ engineFrame?.frameId ?? '未提供' }}</dd></div>
                 <div><dt>仿真时刻</dt><dd>{{ engineFrame ? `${engineFrame.simulationTime} 秒` : '未提供' }}</dd></div>
+                <div><dt>模型版本</dt><dd>{{ engineFrame?.modelVersion ?? '未提供' }}</dd></div>
+                <div><dt>调制方式</dt><dd>{{ engineFrame?.modulation ?? '未提供' }}</dd></div>
                 <div v-for="[label, value] in engineSegmentInputRows(segment)" :key="label"><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
               </dl>
             </section>
@@ -210,8 +262,8 @@ function reasonLabel(reason: string): string {
         <div><dt>数据年龄</dt><dd>{{ runtimeQuality.ageMs === null ? '暂无数据' : `${runtimeQuality.ageMs} ms` }}</dd></div>
         <div><dt>链路体制</dt><dd>{{ communicationType }}</dd></div>
         <div><dt>信噪比 SNR</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.snrDb, 2, ' dB') }}</dd></div>
-        <div><dt>误码率</dt><dd>{{ runtimeMeasurement.quality.ber === null ? '暂无数据' : formatBer(runtimeMeasurement.quality.ber) }}</dd></div>
-        <div><dt>干信比 GXB</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.gxbDb, 2, ' dB') }}</dd></div>
+        <div><dt>误码率(BER)</dt><dd>{{ runtimeMeasurement.quality.ber === null ? '暂无数据' : formatBer(runtimeMeasurement.quality.ber) }}</dd></div>
+        <div><dt>干信比(GXB)</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.gxbDb, 2, ' dB') }}</dd></div>
         <div><dt>发射辐射功率</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.inputTrace.eirpDbw, 2, ' dBW') }}</dd></div>
         <div><dt>路径损耗</dt><dd>{{ optionalMetric(runtimeMeasurement.losses.totalLossDb, 2, ' dB') }}</dd></div>
         <div><dt>传输距离</dt><dd>{{ optionalMetric(runtimeMeasurement.distanceMeters === null ? null : runtimeMeasurement.distanceMeters / 1000, 2, ' km') }}</dd></div>
@@ -233,7 +285,7 @@ function reasonLabel(reason: string): string {
         <div><dt>通信体制</dt><dd>{{ fileLink.typeLabel }}</dd></div>
         <div><dt>设备启停证据</dt><dd>{{ fileLink.deviceStatus }}</dd></div>
         <div><dt>最近登记时刻</dt><dd>{{ Math.floor(fileLink.registeredAt / 60) }}分{{ Number((fileLink.registeredAt % 60).toFixed(3)) }}秒</dd></div>
-        <div v-for="label in ['干信比', '信噪比 SNR', '误码率', '发射辐射功率', '路径损耗', '时延', '可用率', '质量判定依据', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
+        <div v-for="label in ['干信比(GXB)', '信噪比 SNR', '误码率(BER)', '发射辐射功率', '路径损耗', '时延', '可用率', '质量判定依据', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
       </dl>
     </div>
     <div v-else-if="!link && configuredLink" class="link-quality-dialog__body" data-testid="link-detail-configured">
@@ -248,8 +300,8 @@ function reasonLabel(reason: string): string {
         <div><dt>发射辐射功率</dt><dd>{{ optionalMetric(configuredLink.eirpDbw, 2, ' dBW') }}</dd></div>
         <div><dt>调制方式</dt><dd>{{ configuredLink.modulation }}</dd></div>
         <div><dt>误码率阈值</dt><dd>{{ formatBer(configuredLink.berThreshold) }}</dd></div>
-        <div><dt>数据速率</dt><dd>{{ configuredLink.dataRate }} Mbps</dd></div>
-        <div v-for="label in ['干信比', '信噪比 SNR', '误码率', '路径损耗', '时延', '可用率', '界面状态', '规范状态', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
+        <div><dt>数据速率</dt><dd>{{ (configuredLink.direction === 'REVERSE' ? configuredLink.reverseDataRate : configuredLink.forwardDataRate) ?? configuredLink.dataRate }} Mbps</dd></div>
+        <div v-for="label in ['干信比(GXB)', '信噪比 SNR', '误码率(BER)', '路径损耗', '时延', '可用率', '界面状态', '规范状态', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
       </dl>
     </div>
     <el-empty v-else-if="!link" description="未找到所选链路，未显示历史数据" :image-size="64" data-testid="link-detail-missing" />
@@ -272,8 +324,8 @@ function reasonLabel(reason: string): string {
         <div><dt>链路体制</dt><dd>{{ LINK_TYPE_LABELS[link.type] }}</dd></div>
         <div><dt>更新时间</dt><dd>{{ link.updatedAt }} s</dd></div>
         <div><dt>信噪比 SNR</dt><dd>{{ link.snrDb.toFixed(2) }} dB</dd></div>
-        <div><dt>误码率</dt><dd>{{ formatBer(link.ber) }}</dd></div>
-        <div><dt>干信比</dt><dd>{{ optionalMetric(link.detailed?.jsrDb, 2, ' dB') }}</dd></div>
+        <div><dt>误码率(BER)</dt><dd>{{ formatBer(link.ber) }}</dd></div>
+        <div><dt>干信比(GXB)</dt><dd>{{ optionalMetric(link.detailed?.jsrDb, 2, ' dB') }}</dd></div>
         <div><dt>时延</dt><dd>{{ optionalMetric(link.detailed?.latencyMs, 1, ' ms') }}</dd></div>
         <div><dt>可用率</dt><dd>{{ optionalMetric(link.detailed?.availabilityPercent, 1, ' %') }}</dd></div>
         <div><dt>数据年龄</dt><dd>{{ link.ageMs }} ms</dd></div>
@@ -422,6 +474,92 @@ function reasonLabel(reason: string): string {
 
 .status--down {
   color: var(--console-danger) !important;
+}
+
+.link-jamming-evidence {
+  margin-top: 0.6rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid rgba(245, 185, 66, 0.45);
+  border-left: 3px solid #f5b942;
+  border-radius: 6px;
+  background: rgba(66, 44, 12, 0.35);
+}
+
+.link-jamming-evidence--jammed {
+  border-color: rgba(255, 92, 118, 0.55);
+  border-left-color: #ff4d6d;
+  background: rgba(96, 18, 34, 0.42);
+}
+
+.link-jamming-evidence__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.link-jamming-evidence__tag {
+  color: #ffd88a;
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.link-jamming-evidence--jammed .link-jamming-evidence__tag {
+  color: #ff9eb0;
+}
+
+.link-jamming-evidence__freq {
+  color: var(--console-text-muted);
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 0.72rem;
+}
+
+.link-jamming-evidence__summary {
+  margin: 0.35rem 0 0;
+  color: var(--console-text);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.link-jamming-evidence__jammers {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0;
+  padding: 0.45rem 0 0;
+  border-top: 1px dashed rgba(255, 120, 140, 0.3);
+  list-style: none;
+}
+
+.link-jamming-evidence__jammers li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+}
+
+.link-jamming-evidence__jammers strong {
+  color: #fff;
+}
+
+.link-jamming-evidence__badge {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(255, 77, 109, 0.22);
+  color: #ffadb9;
+  font-size: 0.7rem;
+}
+
+.link-jamming-evidence__badge--freq {
+  background: rgba(75, 217, 242, 0.18);
+  color: #7eeeff;
+}
+
+.link-jamming-evidence__specs {
+  color: #d6e4ee;
+  font-family: Consolas, "Microsoft YaHei", monospace;
+  font-size: 0.72rem;
 }
 
 </style>

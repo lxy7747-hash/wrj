@@ -42,7 +42,7 @@ class SimulationTimeoutError extends Error {
   }
 }
 
-const pendingRequests = new WeakMap<object, Map<AbortController, number>>()
+const pendingRequests = new WeakMap<object, Map<AbortController, number | undefined>>()
 
 /**
  * 为仿真控制请求增加统一超时和取消清理。
@@ -52,10 +52,10 @@ const pendingRequests = new WeakMap<object, Map<AbortController, number>>()
  * @returns 在超时前完成的 HTTP 响应。
  * @throws 超时时抛出 `SimulationTimeoutError`，其他异常保持原样。
  */
-async function fetchSimulation(owner: object, input: string, init?: RequestInit): Promise<Response> {
+async function fetchSimulation(owner: object, input: string, init?: RequestInit, waitForArchive = false): Promise<Response> {
   const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
-  const requests = pendingRequests.get(owner) ?? new Map<AbortController, number>()
+  const timer = waitForArchive ? undefined : window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  const requests = pendingRequests.get(owner) ?? new Map<AbortController, number | undefined>()
   pendingRequests.set(owner, requests)
   requests.set(controller, timer)
   try {
@@ -407,7 +407,7 @@ export const useSimulationStore = defineStore('simulation', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify(command),
-        })
+        }, command.command === 'STOP' && auth.runtimeMode === 'LOCAL' && this.run.executionSource !== 'REMOTE_WS')
         if (requestEpoch !== this.requestEpoch) return false
         this.capabilityState = 'VALIDATING'
         const payload = await readJson(response)
@@ -470,6 +470,20 @@ export const useSimulationStore = defineStore('simulation', {
         if (!await this.create(fileSource, referenceScenarioId)) return false
       }
       return this.sendCommand({ command: 'START', mode: this.mode })
+    },
+
+    /** runtime.state 只有任务编号，查当前运行确认进程退出；STOP 响应仍负责发布归档结果。 */
+    async confirmStoppingProcessExit(): Promise<void> {
+      const run = this.run
+      if (!run || this.configurationLockState !== 'UNLOCKING' || run.executionSource === 'REMOTE_WS'
+        || run.canonical.processId === null || useAuthStore().runtimeMode !== 'LOCAL') return
+      const epoch = this.requestEpoch
+      try {
+        const response = await fetchSimulation(this, `${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(run.runId)}`)
+        const current = response.ok ? readRun(await readJson(response)) : undefined
+        if (epoch === this.requestEpoch && this.run?.runId === run.runId && current?.runId === run.runId
+          && this.configurationLockState === 'UNLOCKING' && current.canonical.processId === null) this.run.canonical.processId = null
+      } catch { /* STOP 响应仍会给出最终结果。 */ }
     },
 
     /** 暂停当前运行。 */

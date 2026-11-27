@@ -1,5 +1,5 @@
 import type {
-  ChannelEncodingScheme, DatalinkBand, Environment, Link, LinkCalcSettings, LinkDirection, LinkType, Modulation, Platform, Polarization,
+  ChannelEncodingScheme, DatalinkBand, Environment, Link, LinkCalcSettings, LinkDirection, LinkType, Modulation, Platform, Polarization, UiLinkStatus,
 } from '../../contracts/domain-models'
 
 /**
@@ -50,6 +50,16 @@ export const LINK_CALC_DEFAULTS: Required<LinkCalcSettings> = {
   jammingRangeKm: 30, channelEncodingScheme: 0,
 }
 
+export type BerThresholds = Partial<Pick<LinkCalcSettings, 'warningThreshold' | 'emergencyThreshold'>>
+
+/** BER 达到门限时升级显示状态，独立上报的故障保留。 */
+export function linkStatusWithBer(status: UiLinkStatus, ber: number | null, thresholds?: BerThresholds): UiLinkStatus {
+  if (status === 'DOWN' || ber === null || !Number.isFinite(ber) || ber < 0 || ber > 1) return status
+  if (ber >= (thresholds?.emergencyThreshold ?? LINK_CALC_DEFAULTS.emergencyThreshold)) return 'DOWN'
+  if (ber >= (thresholds?.warningThreshold ?? LINK_CALC_DEFAULTS.warningThreshold)) return 'DEGRADED'
+  return status
+}
+
 /** 读取 link_calc 全局设置；缺省字段按文档默认值补齐，返回副本。 */
 export function readLinkCalcSettings(value: Partial<LinkCalcSettings> | undefined): Required<LinkCalcSettings> {
   return { ...LINK_CALC_DEFAULTS, ...value }
@@ -68,21 +78,22 @@ export const LINK_MODULATIONS: readonly Modulation[] = ['BPSK', 'QPSK']
 export const LASER_LINK_MODULATION = 'OOK' as const
 
 /**
- * 1112 模板 comm_platform_REAR.txt 中 MISSION_UAV_PLATFORM 的 lazer_link 端口参数集（缺省基准）。
- * 频率 681300 GHz = 681300000 MHz；带宽 1000 MHz；功率 0.1 W；速率 2500 Mbps；EIRP 20 dBW；
- * 收发峰值增益 45 dB；接收 G/T 15 dB/K；噪声系数 5 dB。仅用于“新建且未自定义”的激光链路；
+ * 最新模板 port_params 中 MISSION_UAV_PLATFORM 的 lazer_link 端口参数集（缺省基准）。
+ * 发射频率 193500 GHz = 193500000 MHz；接收频率 681300 GHz = 681300000 MHz；
+ * 带宽 1000 MHz；功率 0.1 W；速率 2500 Mbps；EIRP 0 dBW；
+ * 收发峰值增益 45 dB；接收 G/T 0 dB/K；噪声系数 5 dB。仅用于“新建且未自定义”的激光链路；
  * 已有明确自定义值优先，打开/保存旧场景不据此强制重置。EIRP/G-T/噪声归属设备端口，不写入链路字段。
  */
 export const LASER_LINK_DEFAULTS = {
-  frequency: 681_300_000,
+  frequency: 193_500_000,
   rxFrequency: 681_300_000,
   bandwidth: 1_000,
   rxBandwidth: 1_000,
   txPower: 0.1,
   dataRate: 2_500,
   antennaGain: { tx: 45, rx: 45 },
-  eirpDbw: 20,
-  gtDbk: 15,
+  eirpDbw: 0,
+  gtDbk: 0,
   noiseFigureDb: 5,
 } as const
 
@@ -103,7 +114,7 @@ export function fixedLinkDataRate(link: Pick<Link, 'type' | 'sourcePlatformId' |
 
 /** 数传速率档位（Mbps），按波段与方向区分；前向为上行、返向为下行。 */
 export function datalinkRateTiers(band: DatalinkBand, direction: LinkDirection): readonly number[] {
-  if (band === 'L') return direction === 'FORWARD' ? [0.0064, 0.0128] : [0.0128, 0.0256, 2, 4, 8]
+  if (band === 'L') return direction === 'FORWARD' ? [0.0064, 0.0128, 1] : [0.0128, 0.0256, 2, 4, 8]
   return direction === 'FORWARD' ? [0.0256, 2, 4] : [0.0512, 2, 4, 8, 16]
 }
 

@@ -1,6 +1,6 @@
 import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
-import { toRaw } from 'vue'
+import { toRaw, watch } from 'vue'
 import { isEngineFrameId, isEngineFrameSnapshot } from '../features/data-exchange/engine-frame-snapshot'
 import { useRuntimeQualityStore } from './runtime-quality'
 import type {
@@ -17,6 +17,7 @@ import type {
   JammerState,
   LinkStatusSummary,
   EngineConnectionDiagnostic,
+  EngineFrameTick,
   EngineJammerFrameUpdate,
   EngineSwitchFrameUpdate,
   MissionLogUpdate,
@@ -29,6 +30,7 @@ import type {
   SyncResult,
   TelemetryFrame,
   TaskId,
+  RunId,
   WsConnectionState,
   WsTopic,
 } from '../contracts/domain-models'
@@ -45,8 +47,41 @@ type SituationEvent = DetectionEvent | SwitchEvent
 /** 能力结果的证据来源：本地固定投影/校验通过，或尚未确认（真实引擎未接入）。 */
 export type CapabilityEvidenceSource = 'LOCAL_PROJECTION' | 'UNCONFIRMED'
 
+export interface WsMessageHeaderSnapshot {
+  topic: WsTopic
+  type: string
+  schemaVersion: string
+  taskId: TaskId
+  sequence: number
+  simulationTime?: number
+  frameId?: string
+  receivedAt: string
+}
+
+export interface WsConnectionEvent {
+  at: string
+  state: WsConnectionState
+  detail: string
+}
+
+function formatClockNow(): string {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+}
+
 const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update']
+const BUSINESS_HEADER_TOPICS = new Set<WsTopic>(['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event'])
 const RETRY_DELAYS = [250, 500, 1_000, 2_000] as const
+
+function maxBusinessSequence(sequences: Record<WsTopic, number>): number {
+  let max = 0
+  for (const topic of BUSINESS_HEADER_TOPICS) {
+    const seq = sequences[topic] ?? 0
+    if (seq > max) max = seq
+  }
+  return max
+}
 const PLATFORM_TYPES = new Set([
   'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE',
   'AIRBORNE_MISSION_CLUSTER', 'COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION',
@@ -63,11 +98,46 @@ interface TelemetryRuntime {
   retryAttempt: number
   manuallyClosed: boolean
   closeWithPageRunId?: string
+  subscribedRunId?: RunId
+  pendingGap?: { topic: WsTopic; through: number }
+  pageProbe?: ReturnType<typeof setInterval>
   incoming: unknown[]
   incomingTimer: ReturnType<typeof setTimeout> | null
 }
 
 const runtimes = new WeakMap<object, TelemetryRuntime>()
+
+function stopPageProbe(runtime: TelemetryRuntime): void {
+  if (runtime.pageProbe !== undefined) clearInterval(runtime.pageProbe)
+  delete runtime.pageProbe
+}
+
+/** 仅在拥有本机运行的页面失去订阅时确认页面存活，浏览器关闭后由服务端宽限期收尾。 */
+function maintainPageDuringReconnect(runtime: TelemetryRuntime): void {
+  const runId = runtime.closeWithPageRunId
+  if (runtime.pageProbe !== undefined || !runId || runId !== runtime.subscribedRunId
+    || useAuthStore().runtimeMode !== 'LOCAL' || useSimulationStore().run?.runId !== runId) return
+  let busy = false
+  const probe = async (): Promise<void> => {
+    if (busy) return
+    busy = true
+    try {
+      const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}?pageOwner=1`, {
+        headers: { 'X-Demo-Role': useAuthStore().role }, signal: AbortSignal.timeout(2_000),
+      })
+      const run = response.ok ? (await response.json()).data : null
+      const ended = run?.runId === runId && run.configLocked === false
+      if (runtime.pageProbe === timer && (ended || [401, 403, 404].includes(response.status))) {
+        delete runtime.closeWithPageRunId
+        stopPageProbe(runtime)
+      }
+    } catch { /* HTTP 也断开时由服务端按关页处理。 */ }
+    finally { busy = false }
+  }
+  const timer = setInterval(() => { void probe() }, 2_000)
+  runtime.pageProbe = timer
+  void probe()
+}
 
 /** 返回指定 Store 实例独享的非响应式连接资源。 */
 function runtimeFor(store: object): TelemetryRuntime {
@@ -129,6 +199,12 @@ function isMissionPositionUpdate(value: unknown): value is MissionPositionUpdate
     || typeof value.waitingForLine !== 'boolean' || !Array.isArray(value.nodes)) return false
   return value.nodes.every(node => isRecord(node) && Object.keys(node).length === 7 && typeof node.platformId === 'string' && node.platformId.length > 0
     && ['time', 'longitude', 'latitude', 'altitude', 'speed', 'heading'].every(key => typeof node[key] === 'number' && Number.isFinite(node[key])))
+}
+
+function isEngineFrameTick(value: unknown): value is EngineFrameTick {
+  return isRecord(value) && Object.keys(value).length === 5 && value.kind === 'ENGINE_FRAME_TICK'
+    && typeof value.runId === 'string' && Number.isSafeInteger(value.engineEpoch) && Number(value.engineEpoch) >= 0
+    && isEngineFrameId(value.sourceFrameId) && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime) && value.simulationTime >= 0
 }
 
 function isEngineJammerFrameUpdate(value: unknown): value is EngineJammerFrameUpdate {
@@ -950,6 +1026,7 @@ export const useTelemetryStore = defineStore('telemetry', {
     // A runtime-only task may have no telemetry frame; retain the task chosen
     // for the socket so reconnects cannot silently fall back to TASK-001.
     realtimeTaskId: null as TaskId | null,
+    engineFrameTick: null as EngineFrameTick | null,
     topicSequences: {
       'simulation.frame': 0,
       'runtime.state': 0,
@@ -960,6 +1037,11 @@ export const useTelemetryStore = defineStore('telemetry', {
       'position.update': 0,
     } as Record<WsTopic, number>,
     connectionState: 'DISCONNECTED' as WsConnectionState,
+    retryAttemptCount: 0,
+    disconnectedAtSequence: null as number | null,
+    lastMessageHeader: null as WsMessageHeaderSnapshot | null,
+    recentMessageHeaders: [] as WsMessageHeaderSnapshot[],
+    connectionHistory: [] as WsConnectionEvent[],
     connectionBlocked: false,
     capabilityState: 'EMPTY' as CapabilityState,
     resultCode: 'EMPTY',
@@ -1398,7 +1480,7 @@ export const useTelemetryStore = defineStore('telemetry', {
      * 接收一条实时信封并按主题原子投影。
      * @param value WebSocket 解析出的未受信任值。
      * @returns 信封有效且被应用或判定为重复时返回 `true`。
-     * @sideEffects 更新主题序号、遥测帧、链路摘要或仿真状态；断档时触发 REST 补偿。
+     * @sideEffects 更新相应主题的投影和游标，跳号时从已接收的位置续传。
      */
     acceptEnvelope(value: unknown): boolean {
       if (!isRecord(value)
@@ -1410,7 +1492,12 @@ export const useTelemetryStore = defineStore('telemetry', {
         || Number(value.sequence) <= 0) return false
 
       const envelope = value as unknown as RealtimeEnvelope<unknown>
-      if (envelope.topic === 'simulation.frame') {
+      const tick = envelope.topic === 'simulation.frame' && isEngineFrameTick(envelope.payload) ? envelope.payload : null
+      if (tick) {
+        const run = useSimulationStore().run
+        if (!run || envelope.taskId !== run.taskId || tick.runId !== run.runId
+          || envelope.frameId !== `F-ENGINE-${tick.sourceFrameId}` || envelope.simulationTime !== tick.simulationTime) return false
+      } else if (envelope.topic === 'simulation.frame') {
         if (!isTelemetryFrame(envelope.payload)
           || envelope.taskId !== envelope.payload.taskId
           || (this.frame !== null && envelope.taskId !== this.frame.taskId)) return false
@@ -1447,13 +1534,38 @@ export const useTelemetryStore = defineStore('telemetry', {
       if (envelope.sequence <= previous) return true
       if (previous > 0 && envelope.sequence > previous + 1) {
         this.resultCode = 'SEQUENCE_GAP'
-        this.resultMessage = '实时消息序号不连续，正在重新同步。'
+        this.resultMessage = `${envelope.topic} 缺少序号 ${previous + 1} 至 ${envelope.sequence - 1}，正在续传。`
         this.resultFieldPath = null
-        void this.recoverFromGap()
+        runtimeFor(this).pendingGap = { topic: envelope.topic, through: envelope.sequence }
+        void this.recoverFromGap('resume')
         return false
       }
 
-      if (envelope.topic === 'simulation.frame') {
+      const commitEnvelope = (): true => {
+        this.topicSequences[envelope.topic] = envelope.sequence
+        const header: WsMessageHeaderSnapshot = {
+          topic: envelope.topic,
+          type: envelope.type,
+          schemaVersion: envelope.schemaVersion,
+          taskId: envelope.taskId,
+          sequence: envelope.sequence,
+          ...(envelope.simulationTime !== undefined ? { simulationTime: envelope.simulationTime } : {}),
+          ...(envelope.frameId !== undefined ? { frameId: envelope.frameId } : {}),
+          receivedAt: formatClockNow(),
+        }
+        if (BUSINESS_HEADER_TOPICS.has(envelope.topic)) {
+          this.lastMessageHeader = header
+          this.recentMessageHeaders = [header, ...this.recentMessageHeaders].slice(0, 5)
+        } else if (this.lastMessageHeader === null) {
+          this.lastMessageHeader = header
+        }
+        return true
+      }
+
+      if (tick) {
+        // 时钟和地图仍跟随已接收的完整质量帧，先到的时标只用于对帧。
+        this.engineFrameTick = tick
+      } else if (envelope.topic === 'simulation.frame') {
         const payload = envelope.payload as TelemetryFrame
         if (envelope.frameId !== payload.frameId || envelope.simulationTime !== payload.simulationTime) return false
         if (this.frame?.frameId !== payload.frameId || this.frame?.runId !== payload.runId || this.frame?.simulationTime !== payload.simulationTime) {
@@ -1466,13 +1578,11 @@ export const useTelemetryStore = defineStore('telemetry', {
         if (isEngineFrameSnapshot(envelope.payload)) {
           const quality = useRuntimeQualityStore()
           if (!quality.acceptEngineFrame(quality.epoch, envelope.payload)) return false
-          this.topicSequences[envelope.topic] = envelope.sequence
-          return true
+          return commitEnvelope()
         }
         if (isQualityDatasetUpdate(envelope.payload)) {
           this.qualityUpdate = structuredClone(envelope.payload)
-          this.topicSequences[envelope.topic] = envelope.sequence
-          return true
+          return commitEnvelope()
         }
         const frame = this.frame
         if (frame === null
@@ -1496,6 +1606,7 @@ export const useTelemetryStore = defineStore('telemetry', {
         }
       } else if (envelope.topic === 'runtime.state') {
         if (!isSimulationState(envelope.payload)) return false
+        if (envelope.payload.processId === null) void useSimulationStore().confirmStoppingProcessExit()
         void this.applyRuntimeState(envelope.sequence, previous)
       } else if (envelope.topic === 'mission.log') {
         if (isMissionLogUpdate(envelope.payload)) {
@@ -1520,8 +1631,7 @@ export const useTelemetryStore = defineStore('telemetry', {
         const payload = envelope.payload
         if (isEngineJammerFrameUpdate(payload)) {
           this.engineJammerUpdates = [...this.engineJammerUpdates, structuredClone(payload)].slice(-200)
-          this.topicSequences[envelope.topic] = envelope.sequence
-          return true
+          return commitEnvelope()
         }
         if (this.frame === null || envelope.frameId !== this.frame.frameId
           || envelope.simulationTime !== this.frame.simulationTime) return false
@@ -1574,8 +1684,7 @@ export const useTelemetryStore = defineStore('telemetry', {
         const payload = envelope.payload
         if (isEngineSwitchFrameUpdate(payload)) {
           this.engineSwitchUpdates = [...this.engineSwitchUpdates, structuredClone(payload)].slice(-200)
-          this.topicSequences[envelope.topic] = envelope.sequence
-          return true
+          return commitEnvelope()
         }
         if (this.frame === null
           || !isSituationEvent(payload)
@@ -1592,8 +1701,7 @@ export const useTelemetryStore = defineStore('telemetry', {
         }
       }
 
-      this.topicSequences[envelope.topic] = envelope.sequence
-      return true
+      return commitEnvelope()
     },
 
     /**
@@ -1604,17 +1712,34 @@ export const useTelemetryStore = defineStore('telemetry', {
      * @sideEffects 可能更新运行锁、显示错误、回退主题序号并重建实时订阅。
      */
     async applyRuntimeState(sequence: number, previous: number): Promise<void> {
-      if (await useSimulationStore().synchronizeRuntimeState()) return
-      if (this.topicSequences['runtime.state'] !== sequence) return
+      const simulation = useSimulationStore()
+      const epoch = this.requestEpoch
+      if (simulation.runtimeSyncing) {
+        // 在途 HTTP 快照可能早于新通知，只让最后一条通知在它完成后再查一次。
+        await new Promise<void>(resolve => watch(() => simulation.runtimeSyncing, () => resolve(), { once: true, flush: 'sync' }))
+        if (epoch !== this.requestEpoch || this.topicSequences['runtime.state'] !== sequence) return
+      }
+      if (await simulation.synchronizeRuntimeState()) {
+        if (epoch === this.requestEpoch && this.resultCode === 'RUNTIME_STATE_SYNC_FAILED') {
+          this.resultCode = 'SUCCESS'
+          this.resultMessage = '仿真运行状态已同步。'
+        }
+        return
+      }
+      if (epoch !== this.requestEpoch || this.topicSequences['runtime.state'] !== sequence) return
       this.topicSequences['runtime.state'] = previous
       this.resultCode = 'RUNTIME_STATE_SYNC_FAILED'
       this.resultMessage = '仿真运行状态同步失败，正在重新同步。'
       this.resultFieldPath = null
-      await this.recoverFromGap()
+      await this.recoverFromGap('resume')
+    },
+
+    recordConnectionEvent(state: WsConnectionState, detail: string): void {
+      this.connectionHistory = [{ at: formatClockNow(), state, detail }, ...this.connectionHistory].slice(0, 12)
     },
 
     /**
-     * 建立本机实时连接并订阅态势与侦测所需的四个主题。
+     * 建立实时连接并逐主题订阅态势数据。
      * @returns 无返回值。
      * @sideEffects 创建 WebSocket，更新连接状态，并在断线时按固定退避重试。
      */
@@ -1624,6 +1749,11 @@ export const useTelemetryStore = defineStore('telemetry', {
       if (runtime.socket?.readyState === WebSocket.OPEN || runtime.socket?.readyState === WebSocket.CONNECTING) return
       runtime.manuallyClosed = false
       this.connectionState = runtime.retryAttempt === 0 ? 'CONNECTING' : 'RETRYING'
+      this.retryAttemptCount = runtime.retryAttempt
+      this.recordConnectionEvent(
+        this.connectionState,
+        runtime.retryAttempt === 0 ? '正在建立 WebSocket 连接' : `正在进行第 ${runtime.retryAttempt} 次自动重连`,
+      )
       const taskId = useSimulationStore().run?.taskId ?? this.frame?.taskId ?? this.realtimeTaskId ?? 'TASK-001'
       this.realtimeTaskId = taskId
       if (closeWithPageRunId) runtime.closeWithPageRunId = closeWithPageRunId
@@ -1640,6 +1770,7 @@ export const useTelemetryStore = defineStore('telemetry', {
           taskId,
           topics: TOPICS,
           lastSequences: { ...this.topicSequences },
+          ...(runtime.subscribedRunId && { resumeRunId: runtime.subscribedRunId }),
         }))
       })
       socket.addEventListener('message', (event) => {
@@ -1660,12 +1791,51 @@ export const useTelemetryStore = defineStore('telemetry', {
             && Number.isSafeInteger(message.lastSequence)
             && Number.isSafeInteger(message.nextSequence)) {
             runtime.retryAttempt = 0
+            this.retryAttemptCount = 0
+            stopPageProbe(runtime)
+            const activeRunId = useSimulationStore().run?.runId ?? this.frame?.runId
+            runtime.subscribedRunId = message.runId === activeRunId ? activeRunId : undefined
             this.connectionState = 'SUBSCRIBED'
+            const curSeq = Math.max(Number(message.lastSequence), maxBusinessSequence(this.topicSequences))
+            if (this.disconnectedAtSequence !== null) {
+              const fromSeq = this.disconnectedAtSequence
+              this.disconnectedAtSequence = null
+              this.recordConnectionEvent('SUBSCRIBED', `已恢复连接并续传（断前序号 #${fromSeq} → 当前 #${curSeq}）`)
+            } else {
+              this.recordConnectionEvent('SUBSCRIBED', `已连接并订阅 ${TOPICS.length} 个主题（当前序号 #${curSeq}）`)
+            }
+            if (this.resultCode === 'REALTIME_CONNECTION_FAILED' && !runtime.pendingGap) {
+              this.resultCode = 'SUCCESS'
+              this.resultMessage = '实时连接已恢复。'
+            }
           }
           return
         }
         if (isRecord(message) && message.type === 'rejected' && message.code === 'SEQUENCE_GAP') {
-          void this.recoverFromGap()
+          this.flushIncoming()
+          if (runtime.socket !== socket) return
+          const gap = message.gap
+          if (isRecord(gap) && runtime.subscribedRunId && gap.runId === runtime.subscribedRunId && TOPICS.includes(gap.topic as WsTopic)
+            && Number.isSafeInteger(gap.missingFrom) && Number.isSafeInteger(gap.missingThrough)) {
+            const topic = gap.topic as WsTopic
+            const from = Number(gap.missingFrom), through = Number(gap.missingThrough)
+            const previous = this.topicSequences[topic]
+            if (from > 0 && (previous === 0 || from === previous + 1) && through >= from) {
+              this.resultCode = 'SEQUENCE_GAP'
+              this.resultMessage = `${topic} 序号 ${from} 至 ${through} 已超出保留窗口，从 ${through + 1} 继续。`
+              delete runtime.pendingGap
+              this.topicSequences[topic] = through
+              void this.recoverFromGap('resume')
+              return
+            }
+          }
+          if (runtime.subscribedRunId && message.runChanged !== true) {
+            this.resultCode = 'SEQUENCE_GAP'
+            this.resultMessage = `实时记录暂不可续传，各主题保留原序号。${typeof message.message === 'string' ? message.message : ''}`
+            void this.recoverFromGap('resume')
+          } else {
+            void this.recoverFromGap(message.runChanged === true ? 'runChanged' : 'snapshot')
+          }
           return
         }
         // 顺序消费全部消息，只合并 Vue 渲染，避免加速运行时逐帧重绘阻塞接收。
@@ -1689,11 +1859,11 @@ export const useTelemetryStore = defineStore('telemetry', {
     },
 
     /**
-     * 在实时序号断档后用 REST 恢复完整快照并重新订阅。
+     * 可补发的跳号保留各主题游标，运行替换或手动重同步再取新快照。
      * @returns 补偿流程完成后兑现且不返回值的 Promise。
-     * @sideEffects 关闭旧连接、重置主题游标、加载完整帧并重新连接。
+     * @sideEffects 关闭旧连接，按恢复方式续传或重新获取快照。
      */
-    async recoverFromGap(): Promise<void> {
+    async recoverFromGap(mode: 'resume' | 'snapshot' | 'runChanged' = 'snapshot'): Promise<void> {
       const runtime = runtimeFor(this)
       if (runtime.incomingTimer !== null) clearTimeout(runtime.incomingTimer)
       runtime.incomingTimer = null
@@ -1701,17 +1871,24 @@ export const useTelemetryStore = defineStore('telemetry', {
       const recoveryEpoch = this.requestEpoch
       const simulation = useSimulationStore()
       runtime.manuallyClosed = true
-      runtime.socket?.close()
+      const previousSocket = runtime.socket
       runtime.socket = null
-      Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
-      // 真实运行没有固定 REST 遥测帧；重新订阅已有 journal 即可恢复引擎整帧。
-      if (useAuthStore().runtimeMode === 'LOCAL' && this.frame === null && simulation.run?.startedAt) {
+      previousSocket?.close()
+      if (mode === 'resume') {
         runtime.manuallyClosed = false
-        this.connect()
+        if (runtime.retryTimer === null) this.scheduleReconnect()
         return
       }
+      delete runtime.subscribedRunId
+      delete runtime.pendingGap
+      stopPageProbe(runtime)
+      if (mode === 'runChanged') delete runtime.closeWithPageRunId
+      this.engineFrameTick = null
+      Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
+      // 真实运行没有固定 REST 遥测帧；重新订阅已有 journal 即可恢复引擎整帧。
+      const localMission = useAuthStore().runtimeMode === 'LOCAL' && this.frame === null && !!simulation.run?.startedAt
       // 其他页面可能已替换当前运行，先同步编号再读取它的快照。
-      if (simulation.run) {
+      if (simulation.run && (!localMission || mode === 'runChanged')) {
         const synchronized = !simulation.pending && await simulation.synchronizeRuntimeState()
         if (this.requestEpoch !== recoveryEpoch) return
         if (!synchronized || simulation.pending) {
@@ -1719,7 +1896,7 @@ export const useTelemetryStore = defineStore('telemetry', {
           return
         }
       }
-      if (await this.loadFrame(simulation.run?.runId)) {
+      if (localMission || await this.loadFrame(simulation.run?.runId)) {
         runtime.manuallyClosed = false
         this.connect()
       } else if (this.requestEpoch === recoveryEpoch) {
@@ -1731,23 +1908,64 @@ export const useTelemetryStore = defineStore('telemetry', {
      * 安排下一次固定退避重连。
      * @param recoverFrame 是否先重新加载完整帧再连接。
      * @returns 无返回值。
-     * @sideEffects 最多创建四次定时重连，耗尽后进入 FAILED 状态。
+     * @sideEffects 拥有本机运行的页面在故障期间以最多两秒的间隔重试。
      */
     scheduleReconnect(recoverFrame = false): void {
       const runtime = runtimeFor(this)
-      const delay = RETRY_DELAYS[runtime.retryAttempt]
+      if (!recoverFrame) maintainPageDuringReconnect(runtime)
+      const delay = RETRY_DELAYS[runtime.retryAttempt] ?? (runtime.pageProbe !== undefined ? RETRY_DELAYS[3] : undefined)
+      if (this.disconnectedAtSequence === null) {
+        const seq = maxBusinessSequence(this.topicSequences)
+        if (seq > 0) this.disconnectedAtSequence = seq
+      }
       if (delay === undefined) {
         runtime.manuallyClosed = false
         this.connectionState = 'FAILED'
+        this.recordConnectionEvent('FAILED', '连接中断且达到最大重试次数，请手动重连')
         return
       }
       runtime.retryAttempt += 1
+      this.retryAttemptCount = runtime.retryAttempt
       this.connectionState = 'RETRYING'
+      this.recordConnectionEvent('RETRYING', `连接已中断，${Math.round(delay / 1000)} 秒后第 ${runtime.retryAttempt} 次重连`)
       runtime.retryTimer = setTimeout(() => {
         runtime.retryTimer = null
         if (recoverFrame) void this.recoverFromGap()
         else this.connect()
       }, delay)
+    },
+
+    /** 手动暂时断开前端 WebSocket 连接，保留当前帧与各主题序号以便后续恢复续传；同时维持页面存活探针避免本机仿真被判为关页中止。 */
+    pauseConnection(): void {
+      const runtime = runtimeFor(this)
+      runtime.manuallyClosed = true
+      if (runtime.retryTimer !== null) clearTimeout(runtime.retryTimer)
+      runtime.retryTimer = null
+      runtime.retryAttempt = 0
+      this.retryAttemptCount = 0
+      const previous = runtime.socket
+      runtime.socket = null
+      previous?.close()
+      maintainPageDuringReconnect(runtime)
+      const seq = maxBusinessSequence(this.topicSequences)
+      this.disconnectedAtSequence = seq > 0 ? seq : null
+      this.connectionState = 'DISCONNECTED'
+      this.recordConnectionEvent(
+        'DISCONNECTED',
+        seq > 0
+          ? `已手动断开前端 WebSocket（停在序号 #${seq}，仿真继续运行）`
+          : '已手动断开前端 WebSocket（仿真继续运行）',
+      )
+    },
+
+    /** 立即手动重新建立 WebSocket 连接并沿原主题序号续传。 */
+    reconnectNow(): void {
+      const runtime = runtimeFor(this)
+      if (runtime.retryTimer !== null) clearTimeout(runtime.retryTimer)
+      runtime.retryTimer = null
+      runtime.retryAttempt = 0
+      this.retryAttemptCount = 0
+      this.connect()
     },
 
     /**
@@ -1777,7 +1995,13 @@ export const useTelemetryStore = defineStore('telemetry', {
       const epoch = this.requestEpoch
       for (const message of messages) {
         if (runtime.socket !== socket || this.requestEpoch !== epoch) break
-        this.acceptEnvelope(message)
+        const applied = this.acceptEnvelope(message)
+        const gap = runtime.pendingGap
+        if (applied && gap && this.topicSequences[gap.topic] >= gap.through) {
+          delete runtime.pendingGap
+          this.resultCode = 'SUCCESS'
+          this.resultMessage = `${gap.topic} 已续传。`
+        }
       }
     },
 
@@ -1797,6 +2021,10 @@ export const useTelemetryStore = defineStore('telemetry', {
       runtime.incoming = []
       this.requestEpoch += 1
       this.realtimeTaskId = null
+      stopPageProbe(runtime)
+      delete runtime.subscribedRunId
+      delete runtime.pendingGap
+      this.engineFrameTick = null
       this.frame = null
       this.events = []
       this.sensorStatuses = []
@@ -1810,6 +2038,11 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.engineSwitchUpdates = []
       Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
       this.connectionState = 'DISCONNECTED'
+      this.retryAttemptCount = 0
+      this.disconnectedAtSequence = null
+      this.lastMessageHeader = null
+      this.recentMessageHeaders = []
+      this.connectionHistory = []
       this.capabilityState = 'EMPTY'
       this.resultCode = 'EMPTY'
       this.resultMessage = '尚未加载态势遥测。'

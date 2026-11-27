@@ -181,10 +181,13 @@ export function createOfflineVectorBasemap(theme: MapTheme, source = createVecto
     vectorTileLayerStyles: createVectorTileStyles(theme),
     maxNativeZoom: MAP_CONFIG.resources.vector.maxNativeZoom,
     maxZoom: MAP_CONFIG.zoom.max,
+    updateWhenIdle: true,
+    updateWhenZooming: false,
     attribution: MAP_CONFIG.resources.vector.attribution,
     interactive: false,
     pane: 'tilePane',
   })
-  bindVectorTileSource(vectorGrid, source)
+  // 透明样式仍会让 VectorGrid 创建绘图对象，应先跳过这些图层的几何解码。
+  bindVectorTileSource(vectorGrid, source, name => vectorGrid.options.vectorTileLayerStyles[name] !== HIDDEN_VECTOR_TILE_STYLE)
   return vectorGrid
 }

@@ -144,7 +144,7 @@ export function createOfflineVectorLabelLayer(
     bounds: L.latLngBounds([...MAP_CONFIG.resources.vector.bounds[0]], [...MAP_CONFIG.resources.vector.bounds[1]]),
     tileSize: TILE_SIZE,
     minZoom: MAP_CONFIG.zoom.min,
-    maxZoom: MAP_CONFIG.zoom.max,
+    maxZoom: MAP_CONFIG.resources.vector.maxNativeZoom,
     updateWhenIdle: true,
     updateWhenZooming: false,
     keepBuffer: 1,
@@ -162,7 +162,7 @@ export function createOfflineVectorLabelLayer(
       done(undefined, canvas)
     }
 
-    if (coords.z <= 2) {
+    if (coords.z <= 2 || coords.z > MAP_CONFIG.resources.vector.maxNativeZoom) {
       queueMicrotask(finish)
       return canvas
     }

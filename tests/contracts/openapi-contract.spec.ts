@@ -139,7 +139,7 @@ describe('OpenAPI contract audit', () => {
     expect(asObject(asObject(openApi).components).schemas).not.toHaveProperty('LinkSwitchRule')
   })
 
-  it('读取保留历史业务及四类优先级，写入只接受四枚举及完整五类优先级', () => {
+  it('链路排序仅兼容旧输入，业务类型与链路启用开关仍按读写约束校验', () => {
     const document = loadContractDocuments().openApi
     const ajv = new Ajv2020({ strict: false })
     addFormats(ajv)
@@ -159,7 +159,9 @@ describe('OpenAPI contract audit', () => {
       enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5 }
     expect(readSettings(old)).toBe(true)
     expect(writeSettings(old)).toBe(false)
-    const current = { ...old, priority: [...old.priority, 'FIBER'], enabledTypes: { ...old.enabledTypes, FIBER: true } }
+    const current = { enabledSatellites: old.enabledSatellites, switchCooldownS: 5, enabledTypes: { ...old.enabledTypes, FIBER: true } }
+    expect(writeSettings({ ...current, priority: old.priority })).toBe(true)
+    expect(writeSettings({ ...current, priority: [...old.priority, 'FIBER'] })).toBe(true)
     expect(readSettings(current)).toBe(true)
     expect(writeSettings(current)).toBe(true)
     expect(readSettings({ ...old, priority: ['SAT', 'MICROWAVE', 'FIBER', 'LASER'] })).toBe(false)

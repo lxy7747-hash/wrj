@@ -625,18 +625,16 @@ export function buildFileMessageLinks(
   }
 }
 
-/**
- * 取回放游标当前时刻仍然活跃的业务链路，并重算聚合值。
- * @param links 全量业务链路，携带各自完整的活跃区间。
- * @param time 回放游标秒数。
- * @returns 活跃区间覆盖当前游标的链路；明细只含已发生的投递，不泄露未来数据。
- * @remarks 判定使用链路自身的完整活跃区间，因此链路会在中断后消失、恢复后重新出现，
- * 而不是只按首末投递时刻画成一条跨越中断的连线。
- */
-export function selectFileMessageLinks(links: readonly FileMessageLink[], time: number): FileMessageLink[] {
+/** 文件连线按活跃区间绘制，场景流向按已经收到的投递记录播放。两者都只读取游标及以前的数据。 */
+export function selectFileMessageLinks(links: readonly FileMessageLink[], time: number, selection: 'active' | 'received' = 'active'): FileMessageLink[] {
   const visible: FileMessageLink[] = []
   for (const link of links) {
-    if (!link.activeIntervals.some((interval) => interval.startTimeS <= time && time <= interval.endTimeS)) continue
+    if (time < link.firstTimeS) continue
+    if (selection === 'active' && !link.activeIntervals.some(interval => interval.startTimeS <= time && time <= interval.endTimeS)) continue
+    if (selection === 'received' && time >= link.lastTimeS) {
+      visible.push(link)
+      continue
+    }
     const records = link.records.filter((record) => record.time <= time)
     if (records.length) visible.push(aggregate(link.id, link.type, records))
   }

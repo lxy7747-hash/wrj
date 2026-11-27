@@ -431,7 +431,7 @@ it('从响应式列表导出完整场景文件，不向 structuredClone 传入 P
   const snapshot = JSON.parse(await readBlobText(captured!))
   expect(snapshot).toMatchObject({
     format: 'wrj.scenario.snapshot', version: 1,
-    config: { scenario: { id: 'SCN-001' } },
+    config: { schemaVersion: '1.0', scenario: { id: 'SCN-001' } },
     uiExtensions: { sensors: [{ sensorId: 'ESM-01', esm: scene.uiExtensions.sensors[0]!.esm }] },
   })
 })
@@ -491,9 +491,11 @@ async function setupImport(options: { warnings?: boolean; previewFailure?: boole
   return { ...context, draft, paths: () => context.fetchSpy.mock.calls.map(([url]) => new URL(url).pathname) }
 }
 
-async function importFile(wrapper: VueWrapper, draft: ScenarioDraft): Promise<void> {
+async function importFile(wrapper: VueWrapper, draft: ScenarioDraft, version = 1, schemaVersion = '1.0'): Promise<void> {
   const input = wrapper.get<HTMLInputElement>('[data-testid="scene-import-file"]')
-  const bytes = new TextEncoder().encode(JSON.stringify(createScenarioSnapshot(draft)))
+  const snapshot = createScenarioSnapshot(draft)
+  const payload = { ...snapshot, version, config: { ...snapshot.config, schemaVersion } }
+  const bytes = new TextEncoder().encode(JSON.stringify(payload))
   const file = new File([bytes], 'scene.json', { type: 'application/json' })
   Object.defineProperty(file, 'arrayBuffer', { value: async () => bytes.buffer })
   Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
@@ -501,11 +503,12 @@ async function importFile(wrapper: VueWrapper, draft: ScenarioDraft): Promise<vo
   await flushPromises()
 }
 
-it('JSON 导入保存后依次预览并写 TXT，仅提示导入成功、刷新列表且不创建或启动仿真', async () => {
-  const { wrapper, store, draft, paths } = await setupImport()
+it.each([{ version: 1, schemaVersion: '1.0' }, { version: 37, schemaVersion: '25.75' }])(
+  'JSON 快照 $version / $schemaVersion 导入保存后写 TXT，刷新列表且不启动仿真', async ({ version, schemaVersion }) => {
+  const { wrapper, store, scenes, draft, paths } = await setupImport()
   const success = vi.spyOn(ElMessage, 'success')
   const warning = vi.spyOn(ElMessage, 'warning')
-  await importFile(wrapper, draft)
+  await importFile(wrapper, draft, version, schemaVersion)
   expect(paths()).toEqual([
     '/api/v1/scenarios/import', '/api/v1/scenarios/SCN-IMPORT/validate', '/api/v1/scripts/preview',
     expect.stringMatching(/^\/api\/v1\/scripts\/[^/]+\/local-file$/u), '/api/v1/scenarios',
@@ -513,6 +516,7 @@ it('JSON 导入保存后依次预览并写 TXT，仅提示导入成功、刷新�
   expect(success).toHaveBeenCalledExactlyOnceWith('已导入场景“导入生成验证”。')
   expect(warning).not.toHaveBeenCalled()
   expect(wrapper.text()).toContain('导入生成验证')
+  expect(scenes.get(draft.config.scenario.id)).toMatchObject({ ok: true, data: { config: { schemaVersion: '1.0' } } })
   expect(store.draft).toBeNull()
   expect(wrapper.get('[data-testid="scene-import-json"]').attributes('disabled')).toBeUndefined()
 })

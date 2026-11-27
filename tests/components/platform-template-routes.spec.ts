@@ -79,8 +79,11 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     expect(wrapper.get('[data-testid="waypoint-speed-0"] input').element).toHaveProperty('value', '1')
     await setNumber(wrapper, 'waypoint-speed-0', 20)
     await addMapPoints(wrapper, 'waypoint', [{ ...mapPoint, longitude: 120.15 }])
-    await addMapPoints(wrapper, 'loiter-waypoint', [{ ...mapPoint }, { ...mapPoint, longitude: 120.2 }])
-    expect(wrapper.get('[data-testid="loiter-speed-0"] input').element).toHaveProperty('value', '1')
+    await wrapper.get('[data-testid="loiter-enabled"]').trigger('click')
+    await flushPromises()
+    await addMapPoints(wrapper, 'loiter-waypoint', [{ ...mapPoint }])
+    const appendedLoiterIndex = 8
+    expect(wrapper.get(`[data-testid="loiter-speed-${appendedLoiterIndex}"] input`).element).toHaveProperty('value', '1')
     await setNumber(wrapper, 'loiter-speed-0', 50)
     await wrapper.get('[data-testid="return-enabled"]').trigger('click')
     await setNumber(wrapper, 'return-time', 600)
@@ -89,18 +92,23 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     await setNumber(wrapper, 'return-speed-0', 60)
     await wrapper.get('[data-testid="add-return-waypoint"]').trigger('click')
 
-    const secondSpeed = { waypoint: 1, loiter: 1, return: 200 } as const
-    for (const list of ['waypoint', 'loiter', 'return'] as const) {
-      const speed = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === `${list}-speed-1`)!
-      expect(speed.props('modelValue')).toBe(secondSpeed[list])
+    const checks = [
+      { testId: 'waypoint-speed-1', expected: 1 },
+      { testId: `loiter-speed-${appendedLoiterIndex}`, expected: 1 },
+      { testId: 'return-speed-1', expected: 200 },
+    ] as const
+    for (const { testId, expected } of checks) {
+      const speed = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === testId)!
+      expect(speed.props('modelValue')).toBe(expected)
       expect(speed.props('min')).toBe(1)
-      await setNumber(wrapper, `${list}-speed-1`, 0.5)
-      await wrapper.get(`[data-testid="${list}-speed-1"] input`).trigger('blur')
+      await setNumber(wrapper, testId, 0.5)
+      await wrapper.get(`[data-testid="${testId}"] input`).trigger('blur')
       expect(speed.props('modelValue')).toBe(1)
     }
     const result = await applied(wrapper)
     expect(result.waypoints.map(point => point.speed)).toEqual([20, 1])
-    expect(result.loiterWaypoints!.map(point => point.speed)).toEqual([50, 1])
+    expect(result.loiterWaypoints![0]!.speed).toBe(50)
+    expect(result.loiterWaypoints!.at(-1)!.speed).toBe(1)
     expect(result.returnPlan!.waypoints.map(point => point.speed)).toEqual([60, 1])
     expect(platform.waypoints).toEqual([])
     expect(platform.loiterWaypoints).toBeUndefined()
@@ -108,35 +116,35 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     wrapper.unmount()
   })
 
-  it('盘旋航点可新增、编辑、排序、删除并写回模型，删空后移除字段', async () => {
+  it('盘旋航点可开启生成、微调编辑、排序、删除并写回模型，删空后移除字段', async () => {
     const platform = airPlatform()
     const wrapper = mountEditor(platform)
-    expect(wrapper.get('#platform-loiter-title').text()).toBe('盘旋航点（0）')
-    expect(wrapper.text()).toContain('盘旋航点在航线末尾循环飞行')
+    expect(wrapper.get('#platform-loiter-title').text()).toBe('盘旋配置（0）')
+    expect(wrapper.text()).toContain('圆周盘旋航点')
 
-    await addMapPoints(wrapper, 'loiter-waypoint', [mapPoint, { ...mapPoint, longitude: 120.2 }])
-    expect(wrapper.get('[data-testid="loiter-altitude-0"] input').element).toHaveProperty('value', '3300')
-    expect(wrapper.get('[data-testid="loiter-speed-0"] input').element).toHaveProperty('value', '1')
+    await wrapper.get('[data-testid="loiter-enabled"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('#platform-loiter-title').text()).toBe('盘旋配置（8）')
     await setNumber(wrapper, 'loiter-longitude-0', 120.1)
     await setNumber(wrapper, 'loiter-speed-0', 50)
     await setNumber(wrapper, 'loiter-longitude-1', 120.2)
     await setNumber(wrapper, 'loiter-speed-1', 60)
-    expect(wrapper.get('#platform-loiter-title').text()).toBe('盘旋航点（2）')
     expect(wrapper.get('[data-testid="move-up-loiter-0"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="move-down-loiter-1"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="move-down-loiter-7"]').attributes('disabled')).toBeDefined()
 
     await wrapper.get('[data-testid="move-down-loiter-0"]').trigger('click')
     let result = await applied(wrapper)
-    expect(result.loiterWaypoints).toEqual([
-      { longitude: 120.2, latitude: 23.95, altitude: 3300, speed: 60 },
-      { longitude: 120.1, latitude: 23.95, altitude: 3300, speed: 50 },
+    expect(result.loiterWaypoints!.slice(0, 2).map(point => ({ longitude: point.longitude, speed: point.speed }))).toEqual([
+      { longitude: 120.2, speed: 60 },
+      { longitude: 120.1, speed: 50 },
     ])
     await wrapper.get('[data-testid="move-up-loiter-1"]').trigger('click')
     result = await applied(wrapper)
-    expect(result.loiterWaypoints!.map(point => point.longitude)).toEqual([120.1, 120.2])
+    expect(result.loiterWaypoints!.slice(0, 2).map(point => point.longitude)).toEqual([120.1, 120.2])
 
-    await wrapper.get('[data-testid="delete-loiter-0"]').trigger('click')
-    await wrapper.get('[data-testid="delete-loiter-0"]').trigger('click')
+    for (let i = 0; i < 8; i += 1) {
+      await wrapper.get('[data-testid="delete-loiter-0"]').trigger('click')
+    }
     await flushPromises()
     result = await applied(wrapper)
     expect(Object.hasOwn(result, 'loiterWaypoints')).toBe(false)
@@ -275,7 +283,8 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="loiter-section"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="return-section"]').exists()).toBe(true)
-    await addMapPoints(wrapper, 'loiter-waypoint', [mapPoint, { ...mapPoint, longitude: 120.2 }])
+    await wrapper.get('[data-testid="loiter-enabled"]').trigger('click')
+    await flushPromises()
     await wrapper.get('[data-testid="pick-loiter-0"]').trigger('click')
     const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
     expect(picker.props('modelValue')).toBe(true)
@@ -424,8 +433,8 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     expect(wrapper.find('[data-testid="loiter-section"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="return-section"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="batch-route-hint"]').text()).toContain('新增后可逐个调整')
-    const loiterWaypoints = [mapPoint, { ...mapPoint, longitude: 120.2 }]
-    await addMapPoints(wrapper, 'loiter-waypoint', loiterWaypoints)
+    await wrapper.get('[data-testid="loiter-enabled"]').trigger('click')
+    await flushPromises()
     await wrapper.get('[data-testid="return-enabled"]').trigger('click')
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     expect(wrapper.emitted('apply')).toBeUndefined()
@@ -436,7 +445,7 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     const [platform, count] = wrapper.emitted('apply')!.at(-1)! as [Platform, number]
     expect(count).toBe(3)
-    expect(platform.loiterWaypoints).toEqual(loiterWaypoints)
+    expect(platform.loiterWaypoints).toHaveLength(8)
     expect(platform.returnPlan).toEqual({ timeS: 600, waypoints: [{ ...airPlatform().initialPosition, altitude: 3000, speed: 200 }] })
     wrapper.unmount()
   })

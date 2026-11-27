@@ -25,11 +25,15 @@ export interface MissionProcess {
   readPositions?(): Promise<MissionPositionSnapshot | null>
   /** 本地运行器登记的本次独占增量收发消息输出；未接入本地引擎的实现不提供此入口。 */
   readMessages?(afterCursor?: number, options?: { simulationEnded?: boolean }): Promise<MissionMessageSnapshot | null>
+  /** 操作系统确认退出；日志和结果仍可能正在落盘。 */
+  exited?: Promise<void>
   completed: Promise<MissionOutcome>
   /** 运行期间发生归档故障；调用方应显示错误并继续保持进程/场景保护，直至确认关闭。 */
   dataFailure?: Promise<string>
   /** 本次运行独占控制台日志（stdout/stderr）的尾部；仅本地引擎提供。 */
   readConsoleLog?(): Promise<{ text: string; bytes: number; truncated: boolean }>
+  /** 将后端启动诊断同时写入终端和本次运行目录。 */
+  reportStartupDiagnostic?(line: string): void
   /** 已启用的墙钟运行超时（毫秒）；未启用时缺省。 */
   timeoutMs?: number
   /** 由具备运行中控制接口的引擎实现；缺失时调用方必须拒绝命令，不能只改投影状态。 */

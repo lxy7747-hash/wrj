@@ -27,7 +27,7 @@ describe('装备参数预填链路', () => {
       { value: 0.016, label: '16 kbps（天通）' }, { value: 16, label: '16 Mbps（神通）' },
     ])
     const options = equipmentDataRateOptions('数传通信设备')!
-    expect(options.map(option => option.value)).toEqual([0.0064, 0.0128, 0.0256, 0.0512, 2, 4, 8, 16])
+    expect(options.map(option => option.value)).toEqual([0.0064, 0.0128, 0.0256, 0.0512, 1, 2, 4, 8, 16])
     for (const band of ['C', 'L'] as const) {
       for (const direction of ['FORWARD', 'REVERSE'] as const) {
         for (const option of options) {
@@ -118,7 +118,7 @@ describe('装备参数预填链路', () => {
     [{ txPowerW: -1 }, 'txPowerW'],
     [{ txPowerW: 101 }, 'txPowerW'],
     [{ modulation: 'OOK' }, 'modulation'],
-    [{ dataRateMbps: 1 }, 'dataRateMbps'],
+    [{ dataRateMbps: 3 }, 'dataRateMbps'],
     [{ berThreshold: -0.1 }, 'berThreshold'],
     [{ berThreshold: 1.1 }, 'berThreshold'],
   ] as const)('拒绝设备参数 %j，且不静默夹改旧值', (change, fieldPath) => {

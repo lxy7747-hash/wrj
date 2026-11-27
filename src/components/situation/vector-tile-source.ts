@@ -85,7 +85,7 @@ export function createVectorTileSource() {
 export type VectorTileSource = ReturnType<typeof createVectorTileSource>
 
 /** 适配项目锁定的 VectorGrid 1.3.0；不改依赖源码，也不修改供标签层共享的原始要素。 */
-export function bindVectorTileSource(layer: L.Layer, source: VectorTileSource): void {
+export function bindVectorTileSource(layer: L.Layer, source: VectorTileSource, rendersLayer: (name: string) => boolean = () => true): void {
   const pending = new Map<string, AbortController>()
   const keyFor = (coords: L.Coords) => `${coords.z}/${coords.x}/${coords.y}`
   Object.assign(layer, {
@@ -96,7 +96,7 @@ export function bindVectorTileSource(layer: L.Layer, source: VectorTileSource): 
       pending.set(key, controller)
       try {
         const tile = await source.load(coords, controller.signal)
-        return { layers: Object.fromEntries(Object.entries(tile.layers).map(([name, data]) => [name, {
+        return { layers: Object.fromEntries(Object.entries(tile.layers).filter(([name]) => rendersLayer(name)).map(([name, data]) => [name, {
           extent: data.extent,
           features: Array.from({ length: data.length }, (_, index) => {
             const feature = data.feature(index)

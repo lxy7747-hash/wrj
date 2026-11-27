@@ -453,6 +453,7 @@ it.each([true, false])('本机 mission 只向已验证归属的连接发送暂�
   const database = new EngineFrameSqliteStorage(join(root, 'engine-history.db'))
   cleanups.push(() => database.close())
   const archive = createEngineFrameArchive(root, () => new Date().toISOString(), { database })
+  const finalize = vi.spyOn(archive, 'finalizeCsv')
   let finish!: (value: { code: number | null }) => void
   const completed = new Promise<{ code: number | null }>(resolve => { finish = resolve })
   const stop = vi.fn(async () => { finish({ code: 0 }) })
@@ -503,6 +504,7 @@ it.each([true, false])('本机 mission 只向已验证归属的连接发送暂�
   expect(stopped).not.toHaveProperty('engineControl')
   expect(start).toHaveBeenCalledTimes(1)
   expect(stop).toHaveBeenCalledTimes(1)
+  expect(finalize).toHaveBeenCalledTimes(1)
   await closed
   expect(messages).toHaveLength(owned ? 2 : 0)
 })

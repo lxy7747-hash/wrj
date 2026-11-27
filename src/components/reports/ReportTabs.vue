@@ -116,7 +116,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       <el-form-item label="节点"><el-select v-model="node" clearable style="width: 150px" placeholder="全部节点"><el-option v-for="id in nodes" :key="id" :value="id" :label="id" /></el-select></el-form-item>
       <el-form-item label="链路"><el-select v-model="linkId" clearable style="width: 150px" placeholder="全部链路"><el-option v-for="link in report.timeSeries ?? []" :key="link.linkId" :value="link.linkId" :label="link.linkId" /></el-select></el-form-item>
       <el-form-item label="起始时刻（秒）"><el-input-number v-model="from" :min="0" /></el-form-item><el-form-item label="结束时刻（秒）"><el-input-number v-model="to" :min="0" /></el-form-item>
-      <el-form-item label="任务阶段"><el-select disabled placeholder="暂无数据" style="width: 140px" /></el-form-item><el-form-item><el-button @click="clearFilters">重置筛选</el-button></el-form-item>
+      <el-form-item><el-button @click="clearFilters">重置筛选</el-button></el-form-item>
     </el-form>
     <p v-if="hasFilters">汇总仅包含筛选后的数据；连通率和持续时长暂无筛选结果。</p>
     <el-alert v-if="rangeError" title="开始时刻不得晚于结束时刻。" type="error" :closable="false" />

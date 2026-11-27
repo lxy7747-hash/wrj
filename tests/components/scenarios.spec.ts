@@ -185,16 +185,15 @@ describe('P2-1 场景管理页面', () => {
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
     expect(wrapper.find('[data-testid="workflow-config"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-scenario-templates"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="scenario-name"]').isVisible()).toBe(true)
-    for (const entry of ['open-scenario-templates', 'save-scenario']) {
-      await wrapper.get(`[data-testid="${entry}"]`).trigger('click')
-      expect(wrapper.get('#tab-scenario').isVisible()).toBe(true)
-      expect(wrapper.get('.scenario-tabs').classes()).toContain('scenario-tabs--navigation-only')
-      await wrapper.get('#tab-scenario').trigger('click')
-      await flushPromises()
-      expect(wrapper.get('[data-testid="scenario-name"]').isVisible()).toBe(true)
-      expect(wrapper.get('.scenario-tabs').classes()).not.toContain('scenario-tabs--navigation-only')
-    }
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    expect(wrapper.get('#tab-scenario').isVisible()).toBe(true)
+    expect(wrapper.get('.scenario-tabs').classes()).toContain('scenario-tabs--navigation-only')
+    await wrapper.get('#tab-scenario').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="scenario-name"]').isVisible()).toBe(true)
+    expect(wrapper.get('.scenario-tabs').classes()).not.toContain('scenario-tabs--navigation-only')
   })
 
   it('新建只显示必填标记，编辑或失焦后按字段提示，保存仍拦截全部错误且新草稿不继承提示', async () => {
@@ -429,29 +428,23 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="open-scenario-operations"]').exists()).toBe(false)
   })
 
-  it('空库可以显式选择模板，应用成功后才出现场景编辑器', async () => {
+  it('空库编辑页不再显示场景模板入口，可直接新建场景', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({
-        ok: false, error: { code: 'NOT_FOUND', message: '暂无场景。', retryable: false, correlationId: 'CORR-EMPTY' },
-        meta: { requestId: META.requestId, generatedAt: META.generatedAt },
-      }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, data: [template()], meta: { ...META, total: 1 } }) })
-      .mockResolvedValueOnce(response(draft()))
+    const fetchSpy = vi.fn().mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({
+      ok: false, error: { code: 'NOT_FOUND', message: '暂无场景。', retryable: false, correlationId: 'CORR-EMPTY' },
+      meta: { requestId: META.requestId, generatedAt: META.generatedAt },
+    }) })
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
-    await wrapper.get('[data-testid="open-scenario-templates"]').trigger('click')
+    expect(wrapper.find('[data-testid="open-scenario-templates"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-empty"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="create-scenario"]').trigger('click')
     await flushPromises()
-    expect(useScenarioStore().draft).toBeNull()
-    vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '选择的场景' } as never)
-    await wrapper.get('[data-testid="copy-template-TPL-SCN-001"]').trigger('click')
-    await flushPromises()
-    expect(useScenarioStore().panelState).toBe('SUCCESS')
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
   it('机载干扰平台作为空中支撑实体新增、保存回读且可作为干扰归属平台', async () => {
@@ -917,7 +910,7 @@ describe('P2-1 场景管理页面', () => {
     const labels = (root: ReturnType<typeof wrapper.get>) => root.findAll('.el-form-item__label').map((item) => item.text())
     expect(labels(fields)).toEqual([
       '场景编号', '场景名称', '开始时间', '时间步长（秒）',
-      '仿真总时长（min）', '任务阶段（可选）', '仿真倍速', '场景描述',
+      '仿真总时长（min）', '仿真倍速', '场景描述',
     ])
     expect(fields.text()).not.toMatch(/clock_rate|不写入脚本/)
     // 环境参数按《与前端字段确认说明》“环境参数（全局）”的五个小标题分组。
@@ -926,7 +919,8 @@ describe('P2-1 场景管理页面', () => {
     expect(environment.findAll('.environment-group__title').map(item => item.text())).toEqual([
       '降雨参数', '云雾参数', '大气参数', '极化失配', '海况参数',
     ])
-    expect(labels(environment.get('[data-testid="environment-rain"]'))).toEqual(['是否开启', '雨强档位', '降雨强度（mm/h）', '雨区顶部高度（m）', '固定雨衰兜底值（dB）'])
+    // 固定雨衰兜底值经插件实测不生效，界面不展示（仍按默认值写入脚本）。
+    expect(labels(environment.get('[data-testid="environment-rain"]'))).toEqual(['是否开启', '雨强档位', '降雨强度（mm/h）', '雨区顶部高度（m）'])
     expect(labels(environment.get('[data-testid="environment-cloud"]'))).toEqual(['是否开启', '云层底边高度（m）', '云层顶边高度（m）', '云中含水量（g/m³）'])
     expect(labels(environment.get('[data-testid="environment-atmosphere"]'))).toEqual(['衰减模型', '简化衰减率（dB/km）'])
     expect(labels(environment.get('[data-testid="environment-misc"]'))).toEqual(['极化失配损耗（dB）', '指向误差损耗（dB）'])
@@ -936,6 +930,10 @@ describe('P2-1 场景管理页面', () => {
     expect(environment.get('[data-testid="scenario-env-seaLowAltitudeThresholdM"] input').attributes('aria-valuenow')).toBe('100')
     expect(environment.get('[data-testid="scenario-env-seaWaterTempC"] input').attributes('aria-valuenow')).toBe('20')
     expect(environment.get('[data-testid="scenario-env-simplifiedAttenuationDbPerKm"] input').attributes('disabled')).toBeDefined()
+    // 经验模型（coarse）下多径模型专属参数不参与插件计算：禁用并提示仅多径模型生效。
+    expect(environment.get('[data-testid="scenario-env-seaWaterTempC"] input').attributes('disabled')).toBeDefined()
+    expect(environment.get('[data-testid="scenario-env-seaSurfaceRoughnessM"] input').attributes('disabled')).toBeDefined()
+    expect(environment.get('[data-testid="sea-polarization-hint"]').text()).toBe('仅多径模型（fine）生效')
     // 海面多径衰落启用时可框选海面区域；未框选时脚本不写坐标。
     expect(environment.get('[data-testid="sea-area-summary"]').text()).toBe('未框选海面区域')
     expect(environment.find('[data-testid="open-sea-area"]').exists()).toBe(true)
@@ -971,7 +969,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config.scenario.environment.simClockSpeed).toBe(8)
     expect(scenario.dirty).toBe(true)
     expect(fields.find('[data-testid="scenario-trans-distance"]').exists()).toBe(false)
-    expect(scenario.draft!.config.scenario.environment.transmissionDistance).toBe(300)
+    expect(scenario.draft!.config.scenario.environment).not.toHaveProperty('transmissionDistance')
     const rainTier = environment.findAllComponents({ name: 'ElSelect' }).find((item: { attributes: (name: string) => string | undefined }) => item.attributes('data-testid') === 'scenario-rain-cloud-atten')!
     const multipath = environment.findAllComponents({ name: 'ElSwitch' }).find((item: { attributes: (name: string) => string | undefined }) => item.attributes('data-testid') === 'scenario-multipath')!
     expect(rainTier.props('modelValue')).toBe('lightRain')
@@ -988,7 +986,7 @@ describe('P2-1 场景管理页面', () => {
     saved.config.scenario.duration = 1230
     Object.assign(saved.config.scenario.environment, {
       // 选择雨强档位时同步降雨强度（大雨 50 mm/h）。
-      simClockSpeed: 8, transmissionDistance: 300, rainCloudAttenuation: 'heavyRain', rainRateMmPerHour: 50, multipathEnabled: false,
+      simClockSpeed: 8, rainCloudAttenuation: 'heavyRain', rainRateMmPerHour: 50, multipathEnabled: false,
     })
     const fetchSpy = vi.fn().mockResolvedValue(response(saved))
     vi.stubGlobal('fetch', fetchSpy)
@@ -1134,7 +1132,7 @@ describe('P2-1 场景管理页面', () => {
   it.each([
     OPERATOR,
     ADMIN,
-  ])('场景配置对 $role 保留模板查看和应用，均不提供场景操作', async (principal) => {
+  ])('场景编辑页对 $role 不再提供场景模板按钮和冗余场景操作，管理员保留另存为模板', async (principal) => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -1143,54 +1141,43 @@ describe('P2-1 场景管理页面', () => {
     scenario.$patch({
       draft: draft(),
       panelState: 'SUCCESS',
-      templates: [template()],
-      selectedTemplate: template(),
-      templateState: 'SUCCESS',
-      templateResultMessage: '',
-      lastConfirmation: confirmation(),
     })
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
-    await wrapper.get('[data-testid="open-scenario-templates"]').trigger('click')
     await nextTick()
-    const panel = wrapper.get('[data-testid="template-library"]')
-
-    expect(panel.text()).toContain('场景配置使用')
-    expect(panel.find('[data-testid="template-feedback"]').exists()).toBe(false)
-    expect(panel.text()).toContain('跨海通联演示官方基线')
-    expect(panel.text()).toContain('查看详情')
-    expect(panel.text()).toContain('应用到当前场景')
-    expect(panel.find('[data-testid="create-template"]').exists()).toBe(false)
-    expect(panel.find('[data-testid="import-template"]').exists()).toBe(false)
-    expect(panel.text()).not.toMatch(/更新|导出|删除/)
-    expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('CONF-P2-001')
-    expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('已完成')
+    expect(wrapper.find('[data-testid="open-scenario-templates"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="template-library"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="save-as-template"]').exists()).toBe(principal.role === 'ADMIN')
     for (const id of ['open-scenario-operations', 'import-scenario-snapshot', 'open-local-scene-import', 'undo-scenario', 'reset-scenario', 'scenario-config-export', 'scenario-json-preview']) {
       expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(false)
     }
   })
 
-  it('在场景配置中查看并应用模板', { timeout: 15_000 }, async () => {
+  it('另存为模板后进入系统管理场景模板维护仍会拉取完整模板列表', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
-    const auth = useAuthStore(pinia)
-    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    useAuthStore(pinia).$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
     const scenario = useScenarioStore(pinia)
-    scenario.$patch({ draft: draft(), panelState: 'SUCCESS', templates: [template()], templateState: 'SUCCESS' })
-    const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '模板场景' } as never)
-    const copySpy = vi.spyOn(scenario, 'copyTemplate').mockResolvedValue(true)
-    const loadSpy = vi.spyOn(scenario, 'loadTemplate').mockResolvedValue(template())
-    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
-    await wrapper.get('[data-testid="open-scenario-templates"]').trigger('click')
-    await nextTick()
-    const panel = wrapper.get('[data-testid="template-library"]')
-    await panel.get('[data-testid="load-template-TPL-SCN-001"]').trigger('click')
-    await panel.get('[data-testid="copy-template-TPL-SCN-001"]').trigger('click')
-    await flushPromises()
+    const created = { ...template(), templateId: 'TPL-NEW-001', name: '新建另存模板' }
+    const existing = { ...template(), templateId: 'TPL-EXISTING-002', name: '已有基线模板' }
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, data: created, meta: META }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, data: [existing, created], meta: { ...META, total: 2 } }) })
+    vi.stubGlobal('fetch', fetchSpy)
 
-    expect(promptSpy).toHaveBeenCalledOnce()
-    expect(promptSpy).toHaveBeenCalledWith('应用后将替换当前临时工作场景。', '应用场景模板', expect.objectContaining({ confirmButtonText: '应用' }))
-    expect(loadSpy).toHaveBeenCalledWith('TPL-SCN-001')
-    expect(copySpy).toHaveBeenCalledWith('TPL-SCN-001', '模板场景')
+    expect(await scenario.createTemplate('新建另存模板')).toBe(true)
+    expect(scenario.templates).toHaveLength(1)
+    expect(scenario.templatesLoaded).toBe(false)
+
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push({ path: '/admin', query: { section: 'scenario-templates' } })
+    const wrapper = mount(AdminPage, { global: { plugins: [pinia, router, ElementPlus] } })
+    await flushPromises()
+    expect(scenario.templatesLoaded).toBe(true)
+    expect(scenario.templates).toHaveLength(2)
+    expect(wrapper.get('[data-testid="template-library"]').text()).toContain('已有基线模板')
+    expect(wrapper.get('[data-testid="template-library"]').text()).toContain('新建另存模板')
+    wrapper.unmount()
   })
 
   it('在系统管理中完成场景模板维护，成功仅浮层提示，历史结果不重播', { timeout: 15_000 }, async () => {
@@ -1207,6 +1194,7 @@ describe('P2-1 场景管理页面', () => {
       draft: null,
       panelState: 'SUCCESS',
       templates: [source, referenced],
+      templatesLoaded: true,
       templateState: 'SUCCESS',
       templateResultMessage: '场景模板“已有模板”版本 1 已新建。',
     })
@@ -1354,33 +1342,6 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(createSpy).toHaveBeenLastCalledWith('模板副本', source.config, source.uiExtensions)
     expect(messageSpy).toHaveBeenCalledTimes(5)
-  })
-
-  it('取消应用模板时保持当前场景不变并展示模板错误反馈', { timeout: 15_000 }, async () => {
-    const pinia = createPinia()
-    setActivePinia(pinia)
-    const auth = useAuthStore(pinia)
-    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
-    const scenario = useScenarioStore(pinia)
-    scenario.$patch({
-      draft: draft(),
-      panelState: 'SUCCESS',
-      templates: [template()],
-      templateState: 'ERROR',
-      templateResultMessage: '模板服务不可用。',
-    })
-    vi.spyOn(ElMessageBox, 'prompt').mockRejectedValue(new Error('cancelled'))
-    const copySpy = vi.spyOn(scenario, 'copyTemplate')
-    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
-
-    await wrapper.get('[data-testid="open-scenario-templates"]').trigger('click')
-    await nextTick()
-    const panel = wrapper.get('[data-testid="template-library"]')
-    expect(panel.get('[data-testid="template-feedback"]').text()).toContain('模板服务不可用')
-    await panel.get('[data-testid="copy-template-TPL-SCN-001"]').trigger('click')
-    await flushPromises()
-
-    expect(copySpy).not.toHaveBeenCalled()
   })
 
   it('首次进入时自动加载，并允许编辑全部 P2-1 参数', async () => {
@@ -1558,7 +1519,7 @@ describe('P2-1 场景管理页面', () => {
     wrapper.unmount()
   })
 
-  it.each(['enabled', 'cooldown', 'priority'])('链路校验问题定位到对应弹框（字段=%s）', async (field) => {
+  it.each(['enabled', 'cooldown'])('链路校验问题定位到对应弹框（字段=%s）', async (field) => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
@@ -1566,13 +1527,12 @@ describe('P2-1 场景管理页面', () => {
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS', dirty: true })
     scenario.draft!.config.linkSettings = readLinkSettings(scenario.draft!.config)
     if (field === 'enabled') scenario.draft!.config.links[0]!.enabled = '非法值' as never
-    else if (field === 'priority') scenario.draft!.config.linkSettings.priority.pop()
     else scenario.draft!.config.linkSettings.switchCooldownS = -1
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(validationResponse(inspectScenarioConfig(scenario.draft!.config).result)))
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
-    const fieldLabel = field === 'enabled' ? '第 1 条链路' : field === 'priority' ? '全局链路设置 · 链路优先级' : '全局链路设置 · 切换冷却时间'
+    const fieldLabel = field === 'enabled' ? '第 1 条链路' : '全局链路设置 · 切换冷却时间'
     expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain(fieldLabel)
     const expectedWarning = { name: 'ElementPlusError', message: '[ElSwitch] model-value must be active-value or inactive-value' }
     const originalWarn = console.warn.bind(console)
@@ -1588,7 +1548,7 @@ describe('P2-1 场景管理页面', () => {
     const dialog = document.querySelector(`[data-testid="${field === 'enabled' ? 'link-dialog' : 'link-settings-dialog'}"]`)
     expect(dialog).not.toBeNull()
     const target = field === 'enabled' ? '[data-testid="link-enabled"] input'
-      : field === 'priority' ? '[data-testid="link-priority-0"]' : '[data-testid="link-switch-cooldown"] input'
+      : '[data-testid="link-switch-cooldown"] input'
     expect(dialog!.querySelector(target)).not.toBeNull()
     expect(wrapper.get('#tab-links').attributes('aria-selected')).toBe('true')
     expect(wrapper.find('section[aria-label="链路配置"] > .section-heading [data-testid="open-link-settings"]').exists()).toBe(true)
@@ -1639,6 +1599,8 @@ describe('P2-1 场景管理页面', () => {
       const currentDraft = draft()
       // 激光链路不写入新模板脚本会给出本地警告；本用例需要“没有本地问题”，去掉激光链路。
       currentDraft.config.links = currentDraft.config.links.filter(link => link.type !== 'LASER')
+      // 基准场景启用了海面多径；框选海面区域，避免“未框选”提示成为本地问题。
+      currentDraft.config.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }, { longitude: 119, latitude: 25 }]
       currentDraft.config.platforms.forEach(platform => { platform.linkIds = platform.linkIds.filter(id => currentDraft.config.links.some(link => link.id === id)) })
       scenario.$patch({ draft: currentDraft, panelState: 'SUCCESS' })
       vi.stubGlobal('fetch', vi.fn().mockImplementation(failure.reply))
@@ -2030,13 +1992,11 @@ describe('P2-1 场景管理页面', () => {
     setNumber('platform-latitude', 25)
     await nextTick()
 
-    const loiterWaypoints = [
-      { longitude: 119.5, latitude: 25, altitude: 3000, speed: 30 },
-      { longitude: 120.2, latitude: 25, altitude: 1000, speed: 30 },
-    ]
-    click('add-loiter-waypoint')
-    await nextTick()
-    wrapper.getComponent({ name: 'WaypointMapPicker' }).vm.$emit('confirm-route', loiterWaypoints)
+    click('loiter-enabled')
+    await flushPromises()
+    setNumber('loiter-longitude-0', 119.5)
+    setNumber('loiter-latitude-0', 25)
+    setNumber('loiter-speed-0', 30)
     await flushPromises()
     const loiterEntryField = () => wrapper.findAllComponents({ name: 'ElFormItem' })
       .find(component => component.find('[data-testid="loiter-longitude-0"]').exists())!
@@ -2057,8 +2017,10 @@ describe('P2-1 场景管理页面', () => {
 
     const newPlatforms = () => scenario.draft!.config.platforms.slice(originalCount)
     const returnPlan = { timeS: 600, waypoints: [{ longitude: 119.5, latitude: 25, altitude: 3000, speed: 200 }] }
-    expect(newPlatforms().map(platform => ({ loiterWaypoints: platform.loiterWaypoints, returnPlan: platform.returnPlan })))
-      .toEqual([{ loiterWaypoints, returnPlan }, { loiterWaypoints, returnPlan }])
+    expect(newPlatforms()).toHaveLength(2)
+    expect(newPlatforms()[0]!.loiterWaypoints).toHaveLength(8)
+    expect(newPlatforms()[1]!.loiterWaypoints).toEqual(newPlatforms()[0]!.loiterWaypoints)
+    expect(newPlatforms().map(platform => platform.returnPlan)).toEqual([returnPlan, returnPlan])
 
     await wrapper.get(`[data-testid="edit-platform-${originalCount}"]`).trigger('click')
     await flushPromises()
@@ -2372,11 +2334,6 @@ describe('P2-1 场景管理页面', () => {
     inputNumber('link-bandwidth').vm.$emit('update:modelValue', 1000)
     inputNumber('link-power').vm.$emit('update:modelValue', 20)
     inputNumber('link-data-rate').vm.$emit('update:modelValue', 100)
-    inputNumber('laser-tx-aperture').vm.$emit('update:modelValue', 0.1)
-    inputNumber('laser-rx-aperture').vm.$emit('update:modelValue', 0.1)
-    inputNumber('laser-pulse-width').vm.$emit('update:modelValue', 10)
-    select('laser-modulation').vm.$emit('update:modelValue', 'OOK')
-    inputNumber('link-ber-threshold').vm.$emit('update:modelValue', 0.000001)
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
     await flushPromises()
 
@@ -2390,7 +2347,6 @@ describe('P2-1 场景管理页面', () => {
       targetPlatformId: 'UAV-01',
       frequency: 193500000,
       modulation: 'BPSK',
-      laser: { txApertureDiameterM: 0.1, rxApertureDiameterM: 0.1, pulseWidthS: 1e-8, modulation: 'OOK' },
       direction: 'REVERSE',
     })
     expect(scenario.draft?.config.platforms[0]?.linkIds).toContain('L-CFG-001')

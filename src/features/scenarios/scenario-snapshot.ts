@@ -1,4 +1,5 @@
 import type { ScenarioDraft, ScenarioSnapshot } from '../../contracts/domain-models'
+import { withoutRetiredLinkSettings } from './link-settings'
 export type { ScenarioSnapshot } from '../../contracts/domain-models'
 
 /** 文件快照独立于场景配置版本，避免把界面扩展混入规范配置。 */
@@ -9,18 +10,23 @@ export interface ParsedScenarioSnapshot {
   config: unknown
   uiExtensions?: unknown
   versioned: boolean
+  snapshotVersion?: number
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** 构造可跨版本导入的场景文件；不包含运行锁、修订号等服务器状态。 */
+export function isScenarioImportSchemaVersion(value: unknown): boolean {
+  return typeof value === 'string' && /^[0-9]+\.[0-9]+(?![\s\S])/u.test(value)
+}
+
+/** 构造标准场景快照；不包含运行锁、修订号等服务器状态。 */
 export function createScenarioSnapshot(draft: Pick<ScenarioDraft, 'config' | 'uiExtensions'>): ScenarioSnapshot {
   return {
     format: SCENARIO_SNAPSHOT_FORMAT,
     version: SCENARIO_SNAPSHOT_VERSION,
-    config: structuredClone(draft.config),
+    config: structuredClone(withoutRetiredLinkSettings(draft.config)),
     uiExtensions: structuredClone(draft.uiExtensions),
   }
 }
@@ -34,8 +40,8 @@ export function parseScenarioSnapshot(value: unknown): ParsedScenarioSnapshot | 
   if (Object.hasOwn(value, 'schemaVersion')) return { config: value, versioned: false }
   const keys = Object.keys(value)
   if (keys.length !== 4 || !keys.every(key => ['format', 'version', 'config', 'uiExtensions'].includes(key))
-    || value.format !== SCENARIO_SNAPSHOT_FORMAT || value.version !== SCENARIO_SNAPSHOT_VERSION) return undefined
-  return { config: value.config, uiExtensions: value.uiExtensions, versioned: true }
+    || value.format !== SCENARIO_SNAPSHOT_FORMAT || typeof value.version !== 'number' || !Number.isInteger(value.version) || value.version < 0) return undefined
+  return { config: value.config, uiExtensions: value.uiExtensions, versioned: true, snapshotVersion: value.version }
 }
 
 /** 供导入覆盖提示读取文件场景编号；不将未验证内容视为有效配置。 */
@@ -51,7 +57,7 @@ export function scenarioSnapshotId(value: unknown): string | undefined {
  */
 export function scenarioImportMigrationNotes(rawValue: unknown, imported: Pick<ScenarioDraft, 'config'>): string[] {
   const snapshot = parseScenarioSnapshot(rawValue)
-  if (!snapshot || snapshot.versioned || !isRecord(snapshot.config)) return []
+  if (!snapshot || snapshot.versioned || !isRecord(snapshot.config) || snapshot.config.schemaVersion !== '1.0') return []
   const raw = snapshot.config as { platforms?: unknown }
   if (!Array.isArray(raw.platforms)) return []
   const notes: string[] = []

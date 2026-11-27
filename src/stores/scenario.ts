@@ -239,6 +239,7 @@ export const useScenarioStore = defineStore('scenario', {
     resultCode: 'EMPTY',
     resultMessage: '尚未加载场景草稿。',
     templates: [] as ScenarioTemplate[],
+    templatesLoaded: false,
     selectedTemplate: null as ScenarioTemplate | null,
     templateState: 'EMPTY' as CapabilityState,
     templateResultCode: 'EMPTY',
@@ -861,6 +862,7 @@ export const useScenarioStore = defineStore('scenario', {
         const templates = readTemplateList(payload)
         if (templates === undefined) throw new InvalidScenarioResponseError()
         this.templates = templates
+        this.templatesLoaded = true
         this.templateState = templates.length === 0 ? 'EMPTY' : 'SUCCESS'
         this.templateResultCode = templates.length === 0 ? 'EMPTY' : 'TEMPLATES_LOADED'
         this.templateResultMessage = templates.length === 0 ? '模板库暂无数据。' : ''
@@ -1423,6 +1425,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.resultCode = 'EMPTY'
       this.resultMessage = '尚未加载场景草稿。'
       this.templates = []
+      this.templatesLoaded = false
       this.selectedTemplate = null
       this.templateState = 'EMPTY'
       this.templateResultCode = 'EMPTY'

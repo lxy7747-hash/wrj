@@ -93,8 +93,8 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
       <el-form-item required :label="'传输频次（次/秒）'" :error="fieldError('frequencyHz')">
         <el-input-number v-model="editor.frequencyHz" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-frequency" />
       </el-form-item>
-      <el-form-item required label="最低业务速率（Mbps）" :error="fieldError('minDataRateMbps')"><el-input-number v-model="editor.minDataRateMbps" :min="validate ? undefined : 0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
-      <el-form-item required label="最大时延（ms）" :error="fieldError('maxLatencyMs')"><el-input-number v-model="editor.maxLatencyMs" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-latency" /></el-form-item>
+      <el-form-item v-if="Boolean(fieldError('minDataRateMbps'))" required label="最低业务速率（Mbps）" :error="fieldError('minDataRateMbps')"><el-input-number v-model="editor.minDataRateMbps" :min="validate ? undefined : 0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
+      <el-form-item v-if="Boolean(fieldError('maxLatencyMs'))" required label="最大时延（ms）" :error="fieldError('maxLatencyMs')"><el-input-number v-model="editor.maxLatencyMs" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-latency" /></el-form-item>
     </component>
     <template v-if="!embedded" #footer><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="disabled" data-testid="apply-business" @click="apply">确认</el-button></template>
   </component>

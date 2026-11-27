@@ -205,13 +205,13 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
             </el-table-column>
           </el-table-column>
           <el-table-column label="收发共用" align="center" label-class-name="device-group-header device-group-header--shared device-group-start device-group-start--shared">
-            <el-table-column label="峰值增益（dB）" min-width="100" class-name="device-group-start device-group-start--shared">
+            <el-table-column label="天线峰值增益（dB）" min-width="125" class-name="device-group-start device-group-start--shared">
               <template #default="{ row }">
                 <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed">—</span>
                 <el-form-item v-else class="device-parameters__field" :error="fieldMessage(`deviceParameters.antennaGains.${portAntennaName(type, row.port)}`)">
                   <el-input-number :model-value="effectivePortPeakGain(type, row.port) !== undefined && Number.isNaN(effectivePortPeakGain(type, row.port)) ? undefined : effectivePortPeakGain(type, row.port)"
                     :step="0.5" :disabled="disabled" controls-position="right" :title="`对应天线模型：${portAntennaName(type, row.port)}`"
-                    :aria-label="`${PORT_LABELS[row.port]}峰值增益（dB）`" :data-testid="`port-${type}-${row.port}-peakGainDb`"
+                    :aria-label="`${PORT_LABELS[row.port]}天线峰值增益（dB）`" :data-testid="`port-${type}-${row.port}-peakGainDb`"
                     @update:model-value="value => updateGain(portAntennaName(type, row.port), value)" />
                 </el-form-item>
               </template>
@@ -244,23 +244,23 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
     <details v-if="sectionMode === 'all'" class="scenario-advanced" data-testid="antenna-advanced" :open="antennaAdvancedOpen || antennaRows.some(row => fieldMessage(`deviceParameters.antennaGains.${row.name}`))" @toggle="handleAntennaToggle">
       <summary>其他天线模型与增益</summary>
       <div class="device-parameters__antenna-list" data-testid="antenna-gain-table">
-        <div class="device-parameters__antenna-row device-parameters__antenna-row--head"><span>名称</span><span>峰值增益（dB）</span></div>
+        <div class="device-parameters__antenna-row device-parameters__antenna-row--head"><span>名称</span><span>天线峰值增益（dB）</span></div>
         <div v-for="row in antennaRows" :key="row.name" class="device-parameters__antenna-row">
           <span class="device-parameters__antenna-name">{{ ANTENNA_USAGE[row.name as TemplateAntennaName] }}</span>
           <el-form-item class="device-parameters__field" :error="fieldMessage(`deviceParameters.antennaGains.${row.name}`)">
             <el-input-number :model-value="Number.isNaN(row.gain) ? undefined : row.gain" :step="0.5" :disabled="disabled" controls-position="right"
-              :aria-label="`${ANTENNA_USAGE[row.name as TemplateAntennaName]}峰值增益`" :data-testid="`antenna-gain-${row.name}`" @update:model-value="value => updateGain(row.name, value)" />
+              :aria-label="`${ANTENNA_USAGE[row.name as TemplateAntennaName]}天线峰值增益`" :data-testid="`antenna-gain-${row.name}`" @update:model-value="value => updateGain(row.name, value)" />
           </el-form-item>
         </div>
       </div>
     </details>
     <div v-else-if="sectionMode === 'antennas'" class="device-parameters__antenna-list" data-testid="antenna-gain-table">
-      <div class="device-parameters__antenna-row device-parameters__antenna-row--head"><span>名称</span><span>峰值增益（dB）</span></div>
+      <div class="device-parameters__antenna-row device-parameters__antenna-row--head"><span>名称</span><span>天线峰值增益（dB）</span></div>
       <div v-for="row in antennaRows" :key="row.name" class="device-parameters__antenna-row">
         <span class="device-parameters__antenna-name">{{ ANTENNA_USAGE[row.name as TemplateAntennaName] }}</span>
         <el-form-item class="device-parameters__field" :error="fieldMessage(`deviceParameters.antennaGains.${row.name}`)">
           <el-input-number :model-value="Number.isNaN(row.gain) ? undefined : row.gain" :step="0.5" :disabled="disabled" controls-position="right"
-            :aria-label="`${ANTENNA_USAGE[row.name as TemplateAntennaName]}峰值增益`" :data-testid="`antenna-gain-${row.name}`" @update:model-value="value => updateGain(row.name, value)" />
+            :aria-label="`${ANTENNA_USAGE[row.name as TemplateAntennaName]}天线峰值增益`" :data-testid="`antenna-gain-${row.name}`" @update:model-value="value => updateGain(row.name, value)" />
         </el-form-item>
       </div>
     </div>

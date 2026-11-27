@@ -27,7 +27,7 @@ describe('通信设备参数面板', () => {
   it('缺省时按模板默认值展示五类平台端口与 2 个仍在用的非端口天线增益，光纤只读', async () => {
     const wrapper = await mountPanel()
     expect(wrapper.findAll('[role="tab"]').map(tab => tab.text())).toEqual(['任务无人机（含中继）', '集群指挥车', '后方通信车', '天通卫星', '神通卫星'])
-    expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-sat_link-txFrequency').props('modelValue')).toBe(30000)
+    expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-sat_link-txFrequency').props('modelValue')).toBe(20000)
     // C/L 波段速率按模板 bit/s 档位显示。
     expect(select(wrapper, 'port-MISSION_UAV_PLATFORM-c_band_uplink-transferRate').props('modelValue')).toBe(2)
     expect(wrapper.text()).toContain('2 Mbps')
@@ -45,8 +45,8 @@ describe('通信设备参数面板', () => {
 
     await wrapper.findAll('[role="tab"]')[3]!.trigger('click')
     await flushPromises()
-    // 天通速率按 kbps 显示，领域值仍为 Mbps。
-    expect(numberInput(wrapper, 'port-TIAN_TONG_SAT-sat_link-transferRate').props('modelValue')).toBe(16)
+    // 天通速率按 kbps 显示（16000 kbps = 16 Mbps），领域值仍为 Mbps。
+    expect(numberInput(wrapper, 'port-TIAN_TONG_SAT-sat_link-transferRate').props('modelValue')).toBe(16000)
   })
 
   it('编辑端口写回完整端口参数，未编辑的端口与天线保持缺省；速率按端口单位换算', async () => {
@@ -86,7 +86,7 @@ describe('通信设备参数面板', () => {
 
 it('在端口参数设置中直接展示 EIRP、G/T 与峰值增益并支持编辑，同时保留折叠的天线模型表', async () => {
   const unconfigured = await mountPanel({ modelValue: undefined })
-  expect(numberInput(unconfigured, 'port-MISSION_UAV_PLATFORM-microwave_link-peakGainDb')?.props('modelValue')).toBe(3)
+  expect(numberInput(unconfigured, 'port-MISSION_UAV_PLATFORM-microwave_link-peakGainDb')?.props('modelValue')).toBe(25)
   unconfigured.unmount()
 
   const modelValue = readDeviceParameters({})

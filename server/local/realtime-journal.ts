@@ -41,9 +41,10 @@ export class DiskRealtimeJournal implements RealtimeJournalStore {
       index.writeBigUInt64LE(BigInt(event.sequence), 0)
       index.writeBigUInt64LE(BigInt(offset), 8)
       index.writeUInt32LE(length, 16)
-      // Publish only after both data and index have been committed.
-      appendFileSync(path, line, { encoding: 'utf8', flush: true })
-      appendFileSync(this.index(task, topic), index, { flush: true })
+      // Publish only after both data and index have been written in order;
+      // omit per-message fsync (flush: true) so high-frequency frames do not stall the event loop on slow disks.
+      appendFileSync(path, line, 'utf8')
+      appendFileSync(this.index(task, topic), index)
       state.latest = event.sequence
       state.hot.push(event)
       if (state.hot.length > this.limit) state.hot.splice(0, state.hot.length - this.limit)
@@ -100,6 +101,22 @@ export class DiskRealtimeJournal implements RealtimeJournalStore {
     // A zero cursor in a mixed subscription may only see this run's events.
     const start = Math.max(cursor, (state.boundary ?? 1) - 1)
     if (!state.latest || start >= state.latest) return { ok: true, events: [], latest: state.latest }
+    const hotFirst = state.hot[0]
+    if (hotFirst !== undefined && start + 1 >= hotFirst.sequence) {
+      const offset = start + 1 - hotFirst.sequence
+      const selected: JournalEvent[] = []
+      let bytes = 0
+      for (let index = offset; index < state.hot.length && selected.length < pageSize; index += 1) {
+        const event = state.hot[index]!
+        const length = Buffer.byteLength(event.message, 'utf8')
+        if (selected.length > 0 && bytes + length > MAX_PAGE_BYTES) break
+        selected.push(event)
+        bytes += length
+      }
+      if (selected.length > 0 && selected[0]!.sequence === start + 1) {
+        return { ok: true, events: selected, first: state.boundary ?? 1, latest: state.latest }
+      }
+    }
     try {
       const entries = this.entries(task, topic, start, Math.min(pageSize, state.latest - start))
       const selected: Entry[] = []
