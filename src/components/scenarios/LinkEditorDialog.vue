@@ -8,7 +8,7 @@ import { prepareLinkMasterData } from '../../features/scenarios/link-master-para
 import { isPlatformPortLinkField, type LinkPortEditorProjection } from '../../features/scenarios/link-port-parameters'
 import { LINK_PARAMETER_DEFAULTS } from '../../features/scenarios/link-settings'
 import {
-  datalinkRateTiers, FIBER_DATA_RATE_MBPS, fixedLinkDataRate, formatDataRate, linkPowerMaxW, linkTypeDefaults,
+  datalinkRateTiers, directionalDataRateBounds, FIBER_DATA_RATE_MBPS, fixedLinkDataRate, formatDataRate, linkPowerMaxW, linkTypeDefaults,
 } from '../../features/scenarios/link-calc-defaults'
 import { changeBusinessDirection } from '../../features/scenarios/business-defaults'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
@@ -366,6 +366,14 @@ function changeDirection(): void {
   if (editor.value?.type === 'DATALINK') applyTypeDefaults()
 }
 
+/** 前向/返向速率上下界，随链路类型与数传波段动态更新。 */
+const forwardRateBounds = computed(() => editor.value
+  ? directionalDataRateBounds(editor.value.type, 'FORWARD', editor.value.band ?? 'C')
+  : { min: 0.001, max: Infinity })
+const reverseRateBounds = computed(() => editor.value
+  ? directionalDataRateBounds(editor.value.type, 'REVERSE', editor.value.band ?? 'C')
+  : { min: 0.001, max: Infinity })
+
 /** 未填写单链方向速率时的占位提示，展示当前沿用的端口/默认速率。 */
 const directionalRatePlaceholder = computed(() => {
   const fallback = portParameters.value?.values.dataRate ?? fixedDataRate.value ?? editor.value?.dataRate
@@ -390,7 +398,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
     :show-close="!pending"
     class="link-editor-dialog scenario-dialog"
     :title="editing ? '编辑链路' : '新增链路'"
-    width="min(760px, calc(100vw - 2rem))"
+    width="min(860px, calc(100vw - 2rem))"
     top="5vh"
     destroy-on-close
     append-to-body
@@ -402,7 +410,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
     <el-form v-if="editor" class="link-editor-form" :model="editor" label-position="top" :disabled="pending || locked">
       <section class="link-editor-section" aria-labelledby="link-basic-title">
         <h4 id="link-basic-title" class="link-editor-section__title">基本信息</h4>
-        <div class="link-editor-grid">
+        <div class="link-editor-grid link-editor-grid--auto">
           <el-form-item required label="链路类型" :error="fieldError('type')">
             <el-select v-model="editor.type" style="width: 100%" data-testid="link-type" @change="changeType">
               <el-option v-for="option in linkTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
@@ -428,7 +436,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 
       <section class="link-editor-section" aria-labelledby="link-endpoint-title">
         <h4 id="link-endpoint-title" class="link-editor-section__title">端点配置</h4>
-        <div class="link-editor-grid">
+        <div class="link-editor-grid link-editor-grid--auto">
           <el-form-item required label="发送端" :error="fieldError('sourcePlatformId')">
             <el-select v-model="editor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source" @change="revealEndpointConstraint = true">
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
@@ -443,7 +451,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             <el-select :model-value="editor.relayPlatformId ?? ''" clearable placeholder="不经中继" style="width: 100%" data-testid="link-relay" @update:model-value="setRelay">
               <el-option v-for="platform in relayOptions" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
-            <small v-if="editor.type === 'SAT'" class="link-editor-hint">后方指挥节点与任务无人机之间的卫通须经通信卫星中继。</small>
+            <small v-if="editor.type === 'SAT'" class="link-editor-hint">公共服务平台后方节点与任务无人机之间的卫通须经通信卫星中继。</small>
           </el-form-item>
         </div>
       </section>
@@ -499,23 +507,23 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
           <p v-if="parameterMismatch" role="alert" data-testid="link-parameter-mismatch">{{ parameterMismatch }}</p>
         </div>
         <div class="link-editor-grid">
-          <el-form-item v-if="editor.direction === 'FORWARD' || Boolean(fieldError('forwardDataRate'))" label="前向速率（Mbps）" :error="fieldError('forwardDataRate')">
-            <el-input-number :model-value="editor.forwardDataRate" :min="validate ? undefined : editor.type === 'SAT' ? 0.128 : 0.001"
-              :max="validate ? undefined : editor.type === 'SAT' ? 8 : undefined" :step="0.001" :placeholder="directionalRatePlaceholder"
+          <el-form-item v-if="editor.direction === 'FORWARD' || Boolean(fieldError('forwardDataRate'))" label="前向速率（Mbit/s）" :error="fieldError('forwardDataRate')">
+            <el-input-number :model-value="editor.forwardDataRate" :min="validate ? undefined : forwardRateBounds.min"
+              :max="validate ? undefined : forwardRateBounds.max" :step="0.001" :placeholder="directionalRatePlaceholder"
               controls-position="right" data-testid="link-forward-data-rate" @update:model-value="setDirectionalRate('forwardDataRate', $event)" />
             <small :class="{ 'link-editor-hint--hidden': !!fieldError('forwardDataRate') }" class="link-editor-hint">
-              {{ editor.type === 'SAT' ? '0.128～8 Mbps；留空沿用端口/默认速率。' : '大于 0 Mbps；留空沿用端口/默认速率。' }}
+              {{ `${forwardRateBounds.min}～${forwardRateBounds.max} Mbit/s；留空沿用端口/默认速率。` }}
             </small>
           </el-form-item>
-          <el-form-item v-if="editor.direction === 'REVERSE' || Boolean(fieldError('reverseDataRate'))" label="返向速率（Mbps）" :error="fieldError('reverseDataRate')">
-            <el-input-number :model-value="editor.reverseDataRate" :min="validate ? undefined : editor.type === 'SAT' ? 0.064 : 0.001"
-              :max="validate ? undefined : editor.type === 'SAT' ? 2 : undefined" :step="0.001" :placeholder="directionalRatePlaceholder"
+          <el-form-item v-if="editor.direction === 'REVERSE' || Boolean(fieldError('reverseDataRate'))" label="返向速率（Mbit/s）" :error="fieldError('reverseDataRate')">
+            <el-input-number :model-value="editor.reverseDataRate" :min="validate ? undefined : reverseRateBounds.min"
+              :max="validate ? undefined : reverseRateBounds.max" :step="0.001" :placeholder="directionalRatePlaceholder"
               controls-position="right" data-testid="link-reverse-data-rate" @update:model-value="setDirectionalRate('reverseDataRate', $event)" />
             <small :class="{ 'link-editor-hint--hidden': !!fieldError('reverseDataRate') }" class="link-editor-hint">
-              {{ editor.type === 'SAT' ? '0.064～2 Mbps；留空沿用端口/默认速率。' : '大于 0 Mbps；留空沿用端口/默认速率。' }}
+              {{ `${reverseRateBounds.min}～${reverseRateBounds.max} Mbit/s；留空沿用端口/默认速率。` }}
             </small>
           </el-form-item>
-          <el-form-item v-if="!usePlatformPorts" required :label="laser ? '介质传输速率（Mbps）' : '数据速率'" :error="fieldError('dataRate')">
+          <el-form-item v-if="!usePlatformPorts" required :label="laser ? '介质传输速率（Mbit/s）' : '数据速率'" :error="fieldError('dataRate')">
             <el-input v-if="fixedDataRate !== null" :model-value="formatDataRate(fixedDataRate)" disabled data-testid="link-data-rate" />
             <el-select v-else-if="editor.type === 'DATALINK'" v-model="editor.dataRate" style="width: 100%" data-testid="link-data-rate">
               <el-option v-for="tier in rateTiers" :key="tier" :label="formatDataRate(tier)" :value="tier" />
@@ -523,7 +531,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             </el-select>
             <el-input-number v-else v-model="editor.dataRate" :min="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.min : 0" :max="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.max : Infinity"
               controls-position="right" data-testid="link-data-rate" />
-            <small v-if="fixedDataRate === null && !laser" :class="{ 'link-editor-hint--hidden': !!fieldError('dataRate') }" class="link-editor-hint">{{ editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : '单位 Mbps' }}</small>
+            <small v-if="fixedDataRate === null && !laser" :class="{ 'link-editor-hint--hidden': !!fieldError('dataRate') }" class="link-editor-hint">{{ editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbit/s' : '单位 Mbit/s' }}</small>
           </el-form-item>
           <el-form-item v-if="!usePlatformPorts" required :label="fiber ? '发送频率（MHz）' : laser ? '激光频率（MHz）' : '发射频率（MHz）'" :error="fieldError('frequency')">
             <el-input-number v-model="editor.frequency" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-frequency" @input="emit('frequency-input', $event)" />
@@ -544,8 +552,8 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             <el-form-item v-if="Boolean(fieldError('antennaGain.rx'))" required label="接收天线增益（dBi）" :error="fieldError('antennaGain.rx')"><el-input-number v-model="editor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
           </template>
         </div>
-        <section v-if="!laser" class="link-editor-section" aria-labelledby="link-quality-title" data-testid="link-quality-advanced">
-          <h5 id="link-quality-title" class="link-editor-section__title">质量参数</h5>
+        <section v-if="!laser" class="link-editor-subsection" aria-labelledby="link-quality-title" data-testid="link-quality-advanced">
+          <h5 id="link-quality-title" class="link-editor-subsection__title">质量参数</h5>
           <div class="link-editor-grid">
             <el-form-item required label="调制方式" :error="fieldError('modulation')">
               <el-select v-model="editor.modulation" clearable value-on-clear="" style="width: 100%" data-testid="link-modulation">
@@ -589,7 +597,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
         </details>
         <details v-if="!laser" class="scenario-advanced" data-testid="link-gain-advanced" :open="['antennaGainCorrectionDb', 'antiJammingGainDb', 'spatialIsolationDb'].some(key => fieldError(key))">
           <summary>增益修正与抗干扰参数</summary>
-          <div class="link-editor-grid">
+          <div class="link-editor-grid link-editor-grid--three">
           <el-form-item v-if="!usePlatformPorts" label="天线增益修正值（dB）" :error="fieldError('antennaGainCorrectionDb')"><el-input-number v-model="editor.antennaGainCorrectionDb" controls-position="right" data-testid="link-gain-correction" /></el-form-item>
           <el-form-item label="波形抗干扰增益（dB）" :error="fieldError('antiJammingGainDb')"><el-input-number v-model="editor.antiJammingGainDb" :min="validate ? undefined : 0" controls-position="right" data-testid="link-anti-jamming-gain" /></el-form-item>
           <el-form-item label="空域隔离量（dB）" :error="fieldError('spatialIsolationDb')"><el-input-number v-model="editor.spatialIsolationDb" :min="validate ? undefined : 0" controls-position="right" data-testid="link-spatial-isolation" /></el-form-item>
@@ -597,10 +605,10 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
         </details>
       </section>
 
-      <details v-if="laser" class="link-editor-section scenario-advanced" data-testid="link-laser-advanced"
+      <details v-if="laser" class="scenario-advanced" data-testid="link-laser-advanced"
         :open="validationIssues.some(issue => ['eirpDbw', 'gtDbk', 'noiseFigureDb'].includes(issue.fieldPath))">
         <summary>激光增益与噪声参数</summary>
-        <div class="link-editor-grid">
+        <div class="link-editor-grid link-editor-grid--three">
           <el-form-item label="EIRP（dBW）" :error="fieldError('eirpDbw')">
             <el-input-number :model-value="editor.eirpDbw" :step="0.1" controls-position="right" data-testid="laser-eirp" @update:model-value="setLaserNumberField('eirpDbw', $event)" />
           </el-form-item>
@@ -628,20 +636,27 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 
 <style scoped>
 .platform-feedback {
-  margin-bottom: 1rem;
+  margin-bottom: 0.85rem;
 }
 
 .link-editor-form {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.8rem;
+}
+
+.link-editor-form > .scenario-advanced {
+  margin: 0;
 }
 
 .link-parameter-source {
-  margin-bottom: 0.5rem;
-  padding: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.8rem;
   border: 1px solid var(--console-border);
-  border-radius: 4px;
+  border-left: 3px solid var(--console-cyan);
+  border-radius: 6px;
+  background: rgb(6 22 36 / 65%);
   font-size: 0.75rem;
+  line-height: 1.5;
 }
 
 .link-parameter-source__controls {
@@ -654,7 +669,14 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
   min-width: 0;
 }
 
-.link-parameter-source p { margin: 0.25rem 0; }
+.link-parameter-source p { margin: 0.2rem 0; }
+
+.link-parameter-source [data-testid="link-port-parameters"] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem 1rem;
+  margin-top: 0.25rem;
+}
 
 .link-port-conflict {
   color: var(--el-color-warning);
@@ -662,37 +684,65 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 
 .link-editor-section {
   min-width: 0;
+  padding: 0.8rem 0.95rem 0.4rem;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: rgb(8 25 40 / 48%);
 }
 
 .link-editor-section__title {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin: 0 0 0.375rem;
+  gap: 0.65rem;
+  margin: 0 0 0.6rem;
   color: var(--console-cyan);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .link-editor-section__title::after {
   flex: 1;
-  border-top: 1px solid var(--console-border);
+  border-top: 1px solid rgb(52 104 134 / 55%);
   content: '';
+}
+
+.link-editor-subsection {
+  min-width: 0;
+  margin-top: 0.25rem;
+  padding-top: 0.55rem;
+  border-top: 1px dashed rgb(52 104 134 / 55%);
+}
+
+.link-editor-subsection__title {
+  margin: 0 0 0.5rem;
+  color: var(--console-text);
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
 .link-editor-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 1rem;
+  gap: 0.15rem 0.9rem;
+}
+
+.link-editor-grid--auto {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.link-editor-grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .link-editor-grid :deep(.el-form-item) {
-  /* 为绝对定位的校验红字预留一行。 */
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.95rem;
 }
 
 .link-editor-grid :deep(.el-form-item__label) {
   margin-bottom: 0.25rem;
+  color: var(--console-text-muted);
+  font-size: 12px;
   line-height: 1.25rem;
 }
 
@@ -704,16 +754,18 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
   display: grid;
   align-items: center;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
+  gap: 0.75rem;
   width: 100%;
 }
 
 .link-editor-hint--hidden { visibility: hidden; }
 :deep(.el-form-item.is-error:has(.link-editor-hint--hidden) .el-form-item__error) { transform: translateY(-1.5em); }
 .link-editor-hint {
+  display: block;
+  margin-top: 0.2rem;
   color: var(--console-text-muted);
   font-size: 0.75rem;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .link-editor-threshold span {
@@ -721,9 +773,19 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
   font-size: 0.75rem;
 }
 
+@media (max-width: 720px) {
+  .link-editor-grid--three,
+  .link-parameter-source [data-testid="link-port-parameters"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 600px) {
   .link-editor-grid,
-  .link-editor-threshold {
+  .link-editor-grid--auto,
+  .link-editor-grid--three,
+  .link-editor-threshold,
+  .link-parameter-source [data-testid="link-port-parameters"] {
     grid-template-columns: 1fr;
   }
 }

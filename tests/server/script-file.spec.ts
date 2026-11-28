@@ -118,6 +118,8 @@ it('运行包仍可按原有映射定位输出目录，保存包分目录不影�
     const entry = await writeMissionPackage(directory, draft)
     const packageRoot = dirname(entry)
     expect(entry.endsWith('comm_SimSetup.txt')).toBe(true)
+    const rear = await readFile(join(packageRoot, 'comm_platform_REAR.txt'), 'utf8')
+    expect(rear).toMatch(/^\s*traffic_distance \[\{/mu)
     expect(JSON.parse(await readFile(join(packageRoot, 'input.json'), 'utf8'))).toEqual(draft)
     expect((await readdir(packageRoot))).not.toContain('metadata')
     expect(await resolveMissionOutputDirectory(entry)).toBe(join(packageRoot, 'output'))

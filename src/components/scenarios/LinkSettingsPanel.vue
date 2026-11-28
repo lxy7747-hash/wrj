@@ -3,7 +3,16 @@ import { computed, ref, watch } from 'vue'
 import type { HotLinkSettings, Link, LinkCalcSettings, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
 import { isConfiguredLinkEnabled, LINK_DECISION_DEFAULTS, readLinkSettings } from '../../features/scenarios/link-settings'
 import { hotLinkChainError, readHotLinks } from '../../features/scenarios/hot-links'
-import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LINK_CALC_DEFAULTS, readLinkCalcSettings } from '../../features/scenarios/link-calc-defaults'
+import {
+  CHANNEL_ENCODING_OPTIONS,
+  JAMMING_RANGE_KM,
+  LINK_CALC_DEFAULTS,
+  readLinkCalcSettings,
+  readTrafficDistanceSettings,
+  TRAFFIC_DISTANCE_DEFAULTS,
+  TRAFFIC_DISTANCE_FIELDS,
+  type TrafficDistanceKey,
+} from '../../features/scenarios/link-calc-defaults'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 const props = withDefaults(defineProps<{
@@ -101,6 +110,30 @@ watch(() => props.dialogVisible, (visible) => {
 /** 写回 link_calc 全局设置；首次编辑时把文档默认值一并写入。 */
 function updateLinkCalc(patch: Partial<LinkCalcSettings>): void {
   if (!props.disabled) emit('update:modelValue', { ...settings.value, linkCalc: { ...linkCalc.value, ...patch } })
+}
+
+const trafficDistance = computed(() => readTrafficDistanceSettings(linkCalc.value.trafficDistance))
+const clTrafficDistanceFields = TRAFFIC_DISTANCE_FIELDS.filter(field => field.group === 'cl_link')
+const directTrafficDistanceFields = TRAFFIC_DISTANCE_FIELDS.filter(field => field.group === 'direct')
+const customTrafficDistanceCount = computed(() => TRAFFIC_DISTANCE_FIELDS.filter(field => {
+  const current = trafficDistance.value[field.key]
+  return !Number.isFinite(current) || current !== TRAFFIC_DISTANCE_DEFAULTS[field.key]
+}).length)
+
+function setTrafficDistance(key: TrafficDistanceKey, value: number | undefined): void {
+  updateLinkCalc({
+    trafficDistance: {
+      ...trafficDistance.value,
+      [key]: value ?? Number.NaN,
+    },
+  })
+}
+
+function resetTrafficDistance(): void {
+  if (props.disabled) return
+  const nextCalc = { ...linkCalc.value }
+  delete nextCalc.trafficDistance
+  emit('update:modelValue', { ...settings.value, linkCalc: nextCalc })
 }
 
 /** 编辑结束后保存数值，空值或无法解析的输入交给整体校验。 */
@@ -344,6 +377,10 @@ const advancedFields = {
     ...decisionFields.map(field => field.key),
     ...thresholdFields.map(field => `linkCalc.${field.key}`),
   ],
+  trafficDistance: [
+    'linkCalc.trafficDistance',
+    ...TRAFFIC_DISTANCE_FIELDS.map(field => `linkCalc.trafficDistance.${field.key}`),
+  ],
   hotLinks: ['hotLinks'],
 } as const
 type AdvancedSection = keyof typeof advancedFields
@@ -377,18 +414,43 @@ defineExpose({ revealField })
   <div data-testid="link-settings">
     <el-button :disabled="disabled" data-testid="open-link-settings" @click="emit('update:dialogVisible', true)">链路设置</el-button>
   </div>
-  <el-dialog :model-value="dialogVisible" class="link-settings-dialog scenario-dialog" title="链路设置" width="max(80vw, min(760px, calc(100vw - 2rem)))" top="5vh"
+  <el-dialog :model-value="dialogVisible" class="link-settings-dialog scenario-dialog" title="链路设置" width="min(1080px, calc(100vw - 2rem))" top="5vh"
     destroy-on-close append-to-body data-testid="link-settings-dialog" @update:model-value="onDialogVisible">
     <el-form label-position="top" :disabled="disabled" class="link-settings__fields">
-      <!-- 左列：选路策略与全局计算参数；右列：热链。 -->
+      <!-- 左列：基础全局参数与选路稳定性策略；右列：最大传输距离与热链配置。 -->
       <div class="link-settings__column" data-testid="link-settings-left">
-      <el-form-item label="本场景选用卫星" :error="fieldMessage?.('enabledSatellites') ?? ''">
-        <el-select :model-value="settings.enabledSatellites.TIANTONG ? 'TIANTONG' : settings.enabledSatellites.SHENTONG ? 'SHENTONG' : undefined"
-          placeholder="请先在节点配置中配置卫星" aria-label="本场景选用卫星" data-testid="link-relay-satellite" @change="selectSatellite">
-          <el-option v-for="satellite in satellites" :key="satellite.value" :value="satellite.value" :label="satellite.label"
-            :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
-        </el-select>
-      </el-form-item>
+      <section class="link-settings__card" aria-labelledby="link-global-base-title">
+        <h4 id="link-global-base-title" class="link-settings__card-title">基础与全局参数</h4>
+        <div class="link-settings__base-grid">
+          <el-form-item label="本场景选用卫星" :error="fieldMessage?.('enabledSatellites') ?? ''">
+            <el-select :model-value="settings.enabledSatellites.TIANTONG ? 'TIANTONG' : settings.enabledSatellites.SHENTONG ? 'SHENTONG' : undefined"
+              placeholder="请先在节点配置中配置卫星" aria-label="本场景选用卫星" data-testid="link-relay-satellite" style="width: 100%" @change="selectSatellite">
+              <el-option v-for="satellite in satellites" :key="satellite.value" :value="satellite.value" :label="satellite.label"
+                :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="信道编码" data-testid="channel-encoding-settings" :error="fieldMessage?.('linkCalc.channelEncodingScheme') ?? ''">
+            <el-select :model-value="linkCalc.channelEncodingScheme" data-testid="link-calc-channelEncodingScheme" style="width: 100%"
+              @update:model-value="updateLinkCalc({ channelEncodingScheme: $event })">
+              <el-option v-for="option in CHANNEL_ENCODING_OPTIONS" :key="option.value" :value="option.value" :label="option.label" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="链路计算周期（秒）" data-testid="link-calc-settings" :error="fieldMessage?.('linkCalc.updateIntervalS') ?? ''">
+            <el-input-number :model-value="linkCalc.updateIntervalS" :disabled="disabled" controls-position="right" data-testid="link-calc-updateIntervalS"
+              @update:model-value="updateLinkCalc({ updateIntervalS: $event ?? Number.NaN })" />
+          </el-form-item>
+        </div>
+        <div v-if="fieldMessage?.('messageIntervalS') || fieldMessage?.('linkCalc.jammingRangeKm')" class="link-settings__rule-grid">
+          <el-form-item v-if="fieldMessage?.('messageIntervalS')" label="历史业务周期（秒，待修正）" :error="fieldMessage?.('messageIntervalS') ?? ''">
+            <el-input-number :model-value="settings.messageIntervalS" :disabled="disabled" controls-position="right" data-testid="link-message-interval"
+              @update:model-value="value => { if (!disabled) emit('update:modelValue', { ...settings, messageIntervalS: value ?? Number.NaN }) }" />
+          </el-form-item>
+          <el-form-item v-if="fieldMessage?.('linkCalc.jammingRangeKm')" :label="`历史干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}，待修正）`" :error="fieldMessage?.('linkCalc.jammingRangeKm') ?? ''">
+            <el-input-number :model-value="linkCalc.jammingRangeKm" :min="fieldMessage ? undefined : JAMMING_RANGE_KM.min" :max="fieldMessage ? undefined : JAMMING_RANGE_KM.max" controls-position="right"
+              data-testid="link-calc-jammingRangeKm" @update:model-value="updateLinkCalc({ jammingRangeKm: $event ?? Number.NaN })" />
+          </el-form-item>
+        </div>
+      </section>
       <details class="link-settings__disclosure scenario-advanced" data-testid="link-strategy-advanced" :open="expanded.strategy"
         @toggle="toggleSection('strategy', $event)">
         <summary>
@@ -472,33 +534,45 @@ defineExpose({ revealField })
           </section>
         </div>
       </details>
-      <section class="link-settings__rules" data-testid="channel-encoding-settings" aria-labelledby="channel-encoding-title">
-        <div class="link-settings__heading">
-          <span id="channel-encoding-title">编码方案（全局）</span>
-        </div>
-        <el-form-item label="信道编码" :error="fieldMessage?.('linkCalc.channelEncodingScheme') ?? ''">
-          <el-select :model-value="linkCalc.channelEncodingScheme" data-testid="link-calc-channelEncodingScheme"
-            @update:model-value="updateLinkCalc({ channelEncodingScheme: $event })">
-            <el-option v-for="option in CHANNEL_ENCODING_OPTIONS" :key="option.value" :value="option.value" :label="option.label" />
-          </el-select>
-        </el-form-item>
-      </section>
-      <section class="link-settings__rule-grid" data-testid="link-calc-settings" aria-label="链路计算周期">
-        <el-form-item label="链路计算周期（秒）" :error="fieldMessage?.('linkCalc.updateIntervalS') ?? ''">
-          <el-input-number :model-value="linkCalc.updateIntervalS" :disabled="disabled" controls-position="right" data-testid="link-calc-updateIntervalS"
-            @update:model-value="updateLinkCalc({ updateIntervalS: $event ?? Number.NaN })" />
-        </el-form-item>
-        <el-form-item v-if="fieldMessage?.('messageIntervalS')" label="历史业务周期（秒，待修正）" :error="fieldMessage?.('messageIntervalS') ?? ''">
-          <el-input-number :model-value="settings.messageIntervalS" :disabled="disabled" controls-position="right" data-testid="link-message-interval"
-            @update:model-value="value => { if (!disabled) emit('update:modelValue', { ...settings, messageIntervalS: value ?? Number.NaN }) }" />
-        </el-form-item>
-        <el-form-item v-if="fieldMessage?.('linkCalc.jammingRangeKm')" :label="`历史干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}，待修正）`" :error="fieldMessage?.('linkCalc.jammingRangeKm') ?? ''">
-          <el-input-number :model-value="linkCalc.jammingRangeKm" :min="fieldMessage ? undefined : JAMMING_RANGE_KM.min" :max="fieldMessage ? undefined : JAMMING_RANGE_KM.max" controls-position="right"
-            data-testid="link-calc-jammingRangeKm" @update:model-value="updateLinkCalc({ jammingRangeKm: $event ?? Number.NaN })" />
-        </el-form-item>
-      </section>
       </div>
       <div class="link-settings__column" data-testid="link-settings-right">
+      <details class="link-settings__disclosure scenario-advanced" data-testid="traffic-distance-settings" :open="expanded.trafficDistance"
+        @toggle="toggleSection('trafficDistance', $event)">
+        <summary>
+          <span>链路最大传输距离</span>
+          <el-tag class="link-settings__summary-status" size="small" :type="customTrafficDistanceCount > 0 ? 'primary' : 'info'" effect="plain" data-testid="traffic-distance-state">
+            {{ customTrafficDistanceCount > 0 ? `已自定义 ${customTrafficDistanceCount} 项` : '默认距离' }}
+          </el-tag>
+        </summary>
+        <div v-if="expanded.trafficDistance" class="link-settings__disclosure-body link-settings__strategy-body">
+          <section class="link-settings__subgroup" aria-label="C/L 波段数传最大传输距离">
+            <div class="link-settings__subgroup-head">
+              <span class="link-settings__subgroup-title">C/L 波段数传（km）</span>
+              <el-button v-if="customTrafficDistanceCount > 0" size="small" link :disabled="disabled"
+                data-testid="traffic-distance-reset" @click="resetTrafficDistance">恢复默认</el-button>
+            </div>
+            <div class="link-settings__rule-grid">
+              <el-form-item v-for="field in clTrafficDistanceFields" :key="field.key" :label="field.label"
+                :error="fieldMessage?.(`linkCalc.trafficDistance.${field.key}`) ?? ''">
+                <el-input-number :model-value="trafficDistance[field.key]" :min="fieldMessage ? undefined : 0.1" :step="10"
+                  :disabled="disabled" controls-position="right" :data-testid="`link-calc-trafficDistance-${field.key}`"
+                  @update:model-value="setTrafficDistance(field.key, $event)" />
+              </el-form-item>
+            </div>
+          </section>
+          <section class="link-settings__subgroup" aria-label="微波与激光最大传输距离">
+            <div class="link-settings__subgroup-title">微波与激光（km）</div>
+            <div class="link-settings__rule-grid">
+              <el-form-item v-for="field in directTrafficDistanceFields" :key="field.key" :label="field.label"
+                :error="fieldMessage?.(`linkCalc.trafficDistance.${field.key}`) ?? ''">
+                <el-input-number :model-value="trafficDistance[field.key]" :min="fieldMessage ? undefined : 0.1" :step="10"
+                  :disabled="disabled" controls-position="right" :data-testid="`link-calc-trafficDistance-${field.key}`"
+                  @update:model-value="setTrafficDistance(field.key, $event)" />
+              </el-form-item>
+            </div>
+          </section>
+        </div>
+      </details>
       <details class="link-settings__disclosure scenario-advanced" data-testid="hot-link-settings" :open="expanded.hotLinks"
         @toggle="toggleSection('hotLinks', $event)">
         <summary>
@@ -571,15 +645,44 @@ defineExpose({ revealField })
 </template>
 
 <style scoped>
-/* 弹框高度不超过视口，标题与底部按钮固定，内容区单独滚动。 */
-.link-settings__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0 2rem; }
-.link-settings__column { display: grid; align-content: start; gap: 0.75rem; min-width: 0; }
+/* 弹框高度不超过视口，标题与底部按钮固定，左右分栏独立滚动。 */
+.link-settings__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0.9rem 1.15rem; }
+.link-settings__column { display: grid; align-content: start; gap: 0.8rem; min-width: 0; }
+.link-settings__card {
+  min-width: 0;
+  padding: 0.8rem 0.95rem 0.25rem;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: rgb(8 25 40 / 48%);
+}
+.link-settings__card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0 0 0.6rem;
+  color: var(--console-cyan);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.link-settings__card-title::after {
+  flex: 1;
+  border-top: 1px solid rgb(52 104 134 / 55%);
+  content: '';
+}
+.link-settings__base-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 0.75rem;
+}
+.link-settings__card :deep(.el-form-item) { margin-bottom: 0.85rem; }
+.link-settings__card :deep(.el-form-item__label) { margin-bottom: 0.25rem; color: var(--console-text-muted); font-size: 12px; line-height: 1.25rem; }
 .link-settings__hint { display: block; width: 100%; margin-top: 4px; color: var(--console-text-muted); font-size: 12px; line-height: 1.4; }
 .link-settings__hint--error { color: var(--el-color-danger); }
-.link-settings__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
+.link-settings__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.45rem; color: var(--console-text); font-size: 13px; font-weight: 600; }
 .link-settings__fields :deep(.el-input-number) { width: 100%; }
 .link-settings__rules { display: grid; gap: 0.75rem; min-width: 0; }
-.link-settings__disclosure { margin: 0; padding: 0; border-radius: var(--console-radius); background: var(--console-surface); }
+.link-settings__disclosure { margin: 0; padding: 0; border-radius: 8px; background: rgb(8 25 40 / 48%); }
 .link-settings__disclosure > summary {
   display: flex;
   align-items: center;
@@ -599,25 +702,26 @@ defineExpose({ revealField })
   border-right: 2px solid var(--console-text-muted);
   border-bottom: 2px solid var(--console-text-muted);
   transform: rotate(-45deg);
+  transition: transform 0.15s ease;
 }
-.link-settings__disclosure[open] > summary { margin: 0; border-radius: var(--console-radius) var(--console-radius) 0 0; }
+.link-settings__disclosure[open] > summary { margin: 0; padding-bottom: 0.65rem; border-bottom: 0; border-radius: 8px 8px 0 0; }
 .link-settings__disclosure[open] > summary::after { transform: rotate(45deg); }
 .link-settings__summary-status { margin-inline-start: auto; flex-shrink: 0; }
-.link-settings__disclosure-body { display: grid; gap: 0.75rem; padding: 0.85rem; border-top: 1px solid var(--console-border); }
-.link-settings__strategy-body { gap: 1rem; }
-.link-settings__subgroup { display: grid; gap: 0.6rem; min-width: 0; }
-.link-settings__subgroup + .link-settings__subgroup { padding-top: 0.85rem; border-top: 1px solid var(--console-border); }
+.link-settings__disclosure-body { display: grid; gap: 0.75rem; padding: 0.85rem 0.9rem; border-top: 1px solid var(--console-border); }
+.link-settings__strategy-body { gap: 0.9rem; }
+.link-settings__subgroup { display: grid; gap: 0.55rem; min-width: 0; }
+.link-settings__subgroup + .link-settings__subgroup { padding-top: 0.75rem; border-top: 1px dashed rgb(52 104 134 / 55%); }
 .link-settings__subgroup-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 0.35rem 0.75rem; }
 .link-settings__subgroup-head .link-settings__hint { width: auto; margin-top: 0; }
 .link-settings__subgroup-title { color: var(--console-text); font-size: 13px; font-weight: 600; line-height: 1.4; }
 .link-settings__strategy-body :deep(.el-form-item) { margin-bottom: 0.75rem; }
-.link-settings__strategy-body :deep(.el-form-item__label) { line-height: 1.35; margin-bottom: 0.3rem; font-size: 12px; color: var(--console-text-muted); }
+.link-settings__strategy-body :deep(.el-form-item__label) { line-height: 1.35; margin-bottom: 0.25rem; font-size: 12px; color: var(--console-text-muted); }
 .link-settings__switch-box { display: flex; align-items: center; gap: 0.5rem; min-height: 32px; padding: 0 0.65rem; border: 1px solid var(--console-border); border-radius: 4px; background: var(--console-bg-elevated); width: 100%; box-sizing: border-box; }
 .link-settings__switch-text { color: var(--console-text-muted); font-size: 12px; }
 .link-settings__failure-list { display: grid; gap: 0.5rem; }
 .link-settings__failure-item { margin-bottom: 0 !important; }
 .link-settings__failure-item :deep(.el-form-item__content) { display: block; line-height: normal; }
-.link-settings__failure-row { display: grid; gap: 0.5rem; width: 100%; padding: 0.55rem 0.75rem; border: 1px solid var(--console-border); border-radius: 4px; background: var(--console-bg-elevated); box-sizing: border-box; }
+.link-settings__failure-row { display: grid; gap: 0.45rem; width: 100%; padding: 0.55rem 0.75rem; border: 1px solid var(--console-border); border-radius: 6px; background: rgb(6 20 34 / 62%); box-sizing: border-box; }
 .link-settings__failure-item.is-enabled .link-settings__failure-row { border-color: color-mix(in srgb, var(--console-cyan) 45%, var(--console-border)); }
 .link-settings__failure-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; min-height: 24px; }
 .link-settings__failure-label { color: var(--console-text); font-size: 12px; line-height: 1.4; }
@@ -625,9 +729,10 @@ defineExpose({ revealField })
 .link-settings__empty { margin: 0; color: var(--console-text-muted); font-size: 12px; }
 .link-settings__error { color: var(--el-color-danger); font-size: 12px; }
 .link-settings__hot-group { display: grid; gap: 0.5rem; min-width: 0; }
+.link-settings__hot-group + .link-settings__hot-group { padding-top: 0.7rem; border-top: 1px dashed rgb(52 104 134 / 55%); }
 .link-settings__hot-group .link-settings__rule small { display: block; margin: 0.25rem 0; }
-.link-settings__rule { min-width: 0; padding: 0.65rem 0.75rem 0.25rem; border: 1px solid var(--console-border); border-radius: 4px; }
-.link-settings__rule-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+.link-settings__rule { min-width: 0; padding: 0.6rem 0.75rem 0.45rem; border: 1px solid var(--console-border); border-radius: 6px; background: rgb(6 20 34 / 62%); }
+.link-settings__rule-head { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.45rem; }
 .link-settings__row-actions { margin-left: auto; }
 .link-settings__rule-head strong { flex: 1; min-width: 0; font-weight: 600; line-height: 1.4; }
 .link-settings__hot-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
@@ -638,16 +743,19 @@ defineExpose({ revealField })
 .link-settings__hot-arrow { color: var(--console-text-muted); font-size: 12px; }
 .link-settings__hot-next { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.35rem; }
 .link-settings__hot-next :deep(.el-select) { flex: 1; min-width: 0; }
-.link-settings__rule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
+.link-settings__rule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 0.85rem; }
 .link-settings__rule-grid :deep(.el-select) { width: 100%; }
 .link-settings__rule-wide { grid-column: 1 / -1; }
 @media (min-width: 961px) {
   :global(.el-dialog.link-settings-dialog > .el-dialog__body) { display: flex; overflow: hidden; }
   .link-settings__fields { flex: 1; min-width: 0; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
-  .link-settings__column { overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; }
+  .link-settings__column { overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; padding-right: 2px; }
 }
 @media (max-width: 960px) {
   .link-settings__fields { grid-template-columns: 1fr; }
+}
+@media (max-width: 680px) {
+  .link-settings__base-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 600px) {
   .link-settings__rule-grid { grid-template-columns: 1fr; }

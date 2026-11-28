@@ -67,7 +67,7 @@ it.skipIf(!pdfFont)('大表格分批写出完整 PDF，已有目标文件不被�
 it('统计 CSV 保留最新报文的分项损耗、通信参数、干扰源及待确认标记', async () => {
   const result = await exportLocalReport(await directory(), LATEST_FRAME_REPORT, 'CSV', 'operator')
   const text = await readFile(result.filePath, 'utf8')
-  for (const value of ['自由空间', '雨衰', '云衰', '44.092173718306995', '频率（GHz）', '数据率（Mbps）', 'G/T（dB/K）', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '总复合损耗（dB）', '错误信息', '1.189035332459013e-243']) expect(text).toContain(value)
+  for (const value of ['自由空间', '雨衰', '云衰', '44.092173718306995', '频率（GHz）', '数据率（Mbit/s）', 'G/T（dB/K）', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '总复合损耗（dB）', '错误信息', '1.189035332459013e-243']) expect(text).toContain(value)
   expect(text).toContain('"GXB（dB）","BER","接收功率（dBm）"')
 })
 

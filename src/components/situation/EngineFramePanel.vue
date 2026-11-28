@@ -11,9 +11,10 @@ import { includesEngineSimulationTime, resolveEngineSwitchHighlights, type Engin
 import type { EngineReplayEvidence } from '../../features/replays/engine-replay'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { nodeCategory } from '../../config/map.config'
-import { wattsToDbm } from '../../features/scenarios/jammer-settings'
 import { formatCommunicationPortLabel, formatMessageTypeLabel } from '../../features/situation/file-message-links'
 import { describeSwitchReasonThreshold, summarizeSegmentJammingEvidence, type LinkCalcThresholds } from '../../features/situation/engine-narrative'
+import { formatJammerPowerValue } from '../../features/scenarios/jammer-settings'
+import { jammerPowerUnit, setJammerPowerUnit } from '../../features/scenarios/jammer-power-unit'
 
 const props = defineProps<{
   section: 'quality' | 'decisions' | 'jammers' | 'events'
@@ -24,6 +25,7 @@ const props = defineProps<{
   nodeNames?: Record<string, string>
   sourceLabel?: string
   nodePlatforms?: readonly Pick<SituationMapNode, 'platformId' | 'name' | 'type'>[]
+  hidePowerUnitToggle?: boolean
 }>()
 const sourceLabel = computed(() => props.evidence ? '历史引擎数据' : props.sourceLabel ?? '引擎数据（状态未确认）')
 const qualityStatusLabels: Record<string, string> = {
@@ -125,13 +127,13 @@ const label = (v: string | null | undefined) => v == null ? '暂无数据' : lab
 const ENGINE_PLATFORM_TYPE_LABELS: Record<string, string> = {
   ...PLATFORM_TYPE_LABELS,
   UAV: '无人机',
-  MISSION_UAV: '空中无人作业节点',
-  MISSION_UAV_PLATFORM: '空中无人作业节点',
-  RELAY_UAV: '高空前出中继节点',
-  RELAY_UAV_PLATFORM: '高空前出中继节点',
-  COMMAND_VEHICLE: '地面无人集群指挥车',
-  COMMAND_VEHICLE_PLATFORM: '地面无人集群指挥车',
-  REAR_COMM_PLATFORM: '后方指挥节点',
+  MISSION_UAV: '无人机集群',
+  MISSION_UAV_PLATFORM: '无人机集群',
+  RELAY_UAV: '公共服务平台前出节点',
+  RELAY_UAV_PLATFORM: '公共服务平台前出节点',
+  COMMAND_VEHICLE: '无人集群指挥车节点',
+  COMMAND_VEHICLE_PLATFORM: '无人集群指挥车节点',
+  REAR_COMM_PLATFORM: '公共服务平台后方节点',
   TIAN_TONG_SAT: '通信卫星（天通）',
   SHEN_TONG_SAT: '通信卫星（神通）',
   SAT: '通信卫星',
@@ -180,13 +182,9 @@ function detectionProbabilityText(detection: EngineFrameSnapshot['jammers'][numb
   const min = Math.min(...probs), max = Math.max(...probs)
   return Math.abs(max - min) < 1e-9 ? formatPercent(min) : `${formatPercent(min)} ～ ${formatPercent(max)}`
 }
-/** 同时展示 dBm 与 W，方便与场景配置（-10～+65 dBm）逐档核对。 */
+/** 按当前界面单位偏好（W / dBm）展示干扰功率。 */
 function formatJammerPower(watts: number | null | undefined): string {
-  if (watts == null || !Number.isFinite(watts)) return '暂无数据'
-  if (watts <= 0) return '0 W'
-  const dbm = Number(wattsToDbm(watts).toFixed(1))
-  const sign = dbm > 0 ? '+' : ''
-  return `${sign}${dbm} dBm（${Number(watts.toPrecision(6))} W）`
+  return formatJammerPowerValue(watts, jammerPowerUnit.value)
 }
 const JAMMER_LIFECYCLE_EVENTS = new Set(['into_jamm', 'release_jamm', 'into_detect', 'release_detect'])
 function jammerEventsFor(jammer: EngineFrameSnapshot['jammers'][number]) {
@@ -470,7 +468,7 @@ function alarmTooltip(item: MergedAlarm): string {
               <div><dt>误码率(BER)</dt><dd>{{ value(route.ber) }}</dd></div>
               <div><dt>抗干扰余量（dB）</dt><dd>{{ value(route.marginDb) }}</dd></div>
               <div><dt>时延（ms）</dt><dd>{{ value(route.delayMs) }}</dd></div>
-              <div><dt>速率（bit/s）</dt><dd>{{ value(route.rateBps) }}</dd></div>
+              <div><dt>速率（Mbit/s）</dt><dd>{{ route.rateBps == null ? '暂无数据' : value(route.rateBps / 1_000_000) }}</dd></div>
             </dl>
           </article>
         </div>
@@ -642,7 +640,22 @@ function alarmTooltip(item: MergedAlarm): string {
     </template>
     <template v-else-if="section === 'jammers'">
       <p v-if="!quality.engineFrame.jammers.length" class="jammer-card__empty">暂无数据</p>
-      <div v-else class="jammer-card-list" role="list" aria-label="干扰与侦测设备">
+      <template v-else>
+        <div v-if="!props.hidePowerUnitToggle" class="jammer-list-toolbar">
+          <span class="jammer-list-toolbar__label">功率单位</span>
+          <el-radio-group
+            :model-value="jammerPowerUnit"
+            size="small"
+            class="jammer-unit-switch"
+            aria-label="干扰功率单位"
+            data-testid="jammer-power-unit-toggle"
+            @update:model-value="setJammerPowerUnit"
+          >
+            <el-radio-button value="W">W</el-radio-button>
+            <el-radio-button value="dBm">dBm</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div class="jammer-card-list" role="list" aria-label="干扰与侦测设备">
         <article v-for="(jammer, index) in quality.engineFrame.jammers" :key="jammer.platformId ?? jammer.name ?? index" class="jammer-card" role="listitem">
           <header class="jammer-card__head">
             <strong>{{ name(jammer.platformId) }}</strong>
@@ -756,6 +769,7 @@ function alarmTooltip(item: MergedAlarm): string {
           </div>
         </article>
       </div>
+      </template>
     </template>
     <template v-else>
       <p v-if="!quality.engineEvents.length">暂无数据</p>
@@ -781,6 +795,9 @@ function alarmTooltip(item: MergedAlarm): string {
 .engine-evidence__time-range { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 4px; }
 .engine-evidence__time-range :deep(.el-input-number) { width: 100%; }
 .engine-evidence small { display: block; margin-top: 4px; }
+.jammer-list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.jammer-list-toolbar__label { color: var(--el-text-color-secondary, #8aa6b8); font-size: 11px; }
+.jammer-unit-switch :deep(.el-radio-button__inner) { padding: 2px 8px; font-size: 11px; line-height: 1.3; }
 .jammer-card-list { display: grid; gap: 10px; padding-bottom: 8px; }
 .engine-evidence .jammer-card { padding: 10px; border: 1px solid #244455; border-radius: 6px; background: rgba(5, 20, 32, .38); }
 .jammer-card__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }

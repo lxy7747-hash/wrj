@@ -2,7 +2,8 @@
 import { computed, ref, toRaw, watch } from 'vue'
 import type { Jammer, JammerUiExtension, Link, Platform, ValidationIssue } from '../../contracts/domain-models'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
-import { BARRAGE_BANDWIDTH_OPTIONS_MHZ, JAMMER_CALC_DEFAULTS, computeJammerEirpDbw, readJammerBands, readJammerParameters, type ResolvedJammerBandParam, isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange, JAMMER_EDITOR_POWER_DBM, isJammerEditorPowerDbm, wattsToDbm, dbmToWatts, SPOT_BANDWIDTH_MHZ, JAMMER_DEFAULTS } from '../../features/scenarios/jammer-settings'
+import { BARRAGE_BANDWIDTH_OPTIONS_MHZ, JAMMER_CALC_DEFAULTS, computeJammerEirpDbw, computeJammerEirpDbwFromWatts, dbmInputToWatts, formatJammerPowerValue, readJammerBands, readJammerParameters, type ResolvedJammerBandParam, isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange, SPOT_BANDWIDTH_MHZ, JAMMER_DEFAULTS, wattsToDisplayDbm } from '../../features/scenarios/jammer-settings'
+import { jammerPowerUnit, setJammerPowerUnit } from '../../features/scenarios/jammer-power-unit'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
@@ -78,52 +79,82 @@ const detectionMinimumRangeKm = computed<number | undefined>({
   get: () => editor.value ? Number(((editor.value.detectionMinimumRange ?? DEFAULT_DETECTION_MINIMUM_RANGE_M) / METERS_PER_KILOMETER).toFixed(3)) : undefined,
   set: value => { if (editor.value) editor.value.detectionMinimumRange = typeof value === 'number' ? value * METERS_PER_KILOMETER : Number.NaN },
 })
-const powerDbmInput = ref<number | undefined>(undefined)
-const powerDbmTouched = ref(false)
 const eirpManualOverride = ref(false)
-/** V1.2 的射频干扰输入使用 dBm，保存和脚本仍以 W 为合同单位。历史大功率 W 值不截断。 */
-function resetPowerDbmInput(): void {
-  powerDbmTouched.value = false
-  eirpManualOverride.value = false
-  const watts = editor.value?.defaultPower
-  if (typeof watts !== 'number' || !Number.isFinite(watts) || watts <= 0) { powerDbmInput.value = undefined; return }
-  const dbm = wattsToDbm(watts)
-  powerDbmInput.value = isJammerEditorPowerDbm(dbm) ? Number(dbm.toFixed(6)) : undefined
+const powerTouched = ref(false)
+const powerDbmDraft = ref<number | undefined>(undefined)
+function syncPowerDbmDraftFromWatts(): void {
+  powerDbmDraft.value = editor.value ? wattsToDisplayDbm(editor.value.defaultPower) : undefined
 }
-const powerDbmError = computed(() => {
-  if (!powerDbmTouched.value) return ''
-  if (!isJammerEditorPowerDbm(powerDbmInput.value)) return '功率必须为 -10～65 dBm 且按 5 dB 档位设置。'
+function resetPowerState(): void {
+  powerTouched.value = false
+  eirpManualOverride.value = false
+  syncPowerDbmDraftFromWatts()
+}
+watch(jammerPowerUnit, (unit) => {
+  if (unit === 'dBm') syncPowerDbmDraftFromWatts()
+})
+const powerInputValue = computed<number | undefined>(() => (
+  jammerPowerUnit.value === 'dBm' ? powerDbmDraft.value : editor.value?.defaultPower
+))
+const powerHintText = computed(() => {
+  if (jammerPowerUnit.value === 'W') return '单位 W，须大于 0。'
+  const watts = editor.value?.defaultPower
+  if (typeof watts === 'number' && Number.isFinite(watts) && watts > 0) {
+    return `单位 dBm，约 ${formatJammerPowerValue(watts, 'W')}（保存为 W）。`
+  }
+  return '单位 dBm，须为有效数值（保存为 W）。'
+})
+const powerError = computed(() => {
+  if (!editor.value || !powerTouched.value) return ''
+  const watts = editor.value.defaultPower
+  if (typeof watts !== 'number' || !Number.isFinite(watts) || watts <= 0) {
+    return jammerPowerUnit.value === 'dBm' ? '请填写有效的干扰功率（dBm）。' : '干扰功率必须大于 0 W。'
+  }
   return ''
 })
-/** 按 LinkCalcManager 插件公式同步干扰辐射功率（dBW）：功率(dBm) - 30 + 天线增益(dBi) - 发射损耗(dB)。 */
-function syncEirpFromPower(force = false): void {
+/** 按 LinkCalcManager 插件公式同步干扰辐射功率（dBW）：10·log10(功率 W) + 天线增益(dBi) - 发射损耗(dB)。 */
+function syncEirpFromPower(force = false, dbmOverride?: number): void {
   if (!editor.value || (!force && eirpManualOverride.value)) return
-  const dbm = isJammerEditorPowerDbm(powerDbmInput.value)
-    ? powerDbmInput.value
-    : (typeof editor.value.defaultPower === 'number' && Number.isFinite(editor.value.defaultPower) && editor.value.defaultPower > 0
-      ? wattsToDbm(editor.value.defaultPower)
-      : undefined)
   const gain = editor.value.antennaGainDbi
-  if (dbm === undefined || typeof gain !== 'number' || !Number.isFinite(gain)) return
+  if (typeof gain !== 'number' || !Number.isFinite(gain)) return
   const txLoss = typeof editor.value.txLossDb === 'number' && Number.isFinite(editor.value.txLossDb)
     ? editor.value.txLossDb
     : JAMMER_CALC_DEFAULTS.txLossDb
-  editor.value.eirpDbw = computeJammerEirpDbw(dbm, gain, txLoss)
+  if (typeof dbmOverride === 'number' && Number.isFinite(dbmOverride)) {
+    editor.value.eirpDbw = computeJammerEirpDbw(dbmOverride, gain, txLoss)
+    return
+  }
+  const watts = editor.value.defaultPower
+  if (typeof watts !== 'number' || !Number.isFinite(watts) || watts <= 0) return
+  editor.value.eirpDbw = computeJammerEirpDbwFromWatts(watts, gain, txLoss)
 }
-function setPowerDbm(value: number | undefined): void {
-  powerDbmTouched.value = true
-  powerDbmInput.value = value
+function setPowerInput(value: number | null | undefined): void {
+  powerTouched.value = true
   if (!editor.value) return
-  if (isJammerEditorPowerDbm(value)) {
-    editor.value.defaultPower = dbmToWatts(value)
-    eirpManualOverride.value = false
-    syncEirpFromPower(true)
+  if (jammerPowerUnit.value === 'dBm') {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      powerDbmDraft.value = value
+      editor.value.defaultPower = dbmInputToWatts(value)
+      eirpManualOverride.value = false
+      syncEirpFromPower(true, value)
+    } else {
+      powerDbmDraft.value = undefined
+      editor.value.defaultPower = Number.NaN
+    }
+    return
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    editor.value.defaultPower = value
+    powerDbmDraft.value = wattsToDisplayDbm(value)
+    if (value > 0) {
+      eirpManualOverride.value = false
+      syncEirpFromPower(true)
+    }
   } else {
     editor.value.defaultPower = Number.NaN
+    powerDbmDraft.value = undefined
   }
 }
-const legacyPower = computed(() => editor.value?.defaultPower !== undefined && !powerDbmTouched.value && powerDbmInput.value === undefined
-  ? `${editor.value.defaultPower} W（历史值，超出 -10～65 dBm 新建范围）` : '')
 const weaponBands = computed<ResolvedJammerBandParam[]>(() => {
   if (!editor.value) return []
   if (!Array.isArray(editor.value.weaponBands) || editor.value.weaponBands.length === 0) {
@@ -290,13 +321,9 @@ function alignFrequency(index: number, linkId: string | undefined): void {
 /** 确认干扰设备及界面扩展的临时副本；处理中、锁定时禁止提交。 */
 function apply(): void {
   if (props.pending || props.locked || editor.value === null || uiEditor.value === null) return
-  if (powerDbmError.value) {
-    localError.value = powerDbmError.value
-    return
-  }
   const powerReady = typeof editor.value.defaultPower === 'number' && Number.isFinite(editor.value.defaultPower) && editor.value.defaultPower > 0
   if (!powerReady) {
-    localError.value = '功率必须为 -10～65 dBm 且按 5 dB 档位设置。'
+    localError.value = '干扰功率必须大于 0 W。'
     return
   }
   const eirpReady = typeof editor.value.eirpDbw === 'number' && Number.isFinite(editor.value.eirpDbw)
@@ -365,7 +392,7 @@ watch(() => props.modelValue, (visible) => {
   alignedLinkIds.value = {}
   customSpotBandwidths.value = {}
   localError.value = ''
-  resetPowerDbmInput()
+  resetPowerState()
 }, { immediate: true })
 </script>
 
@@ -374,7 +401,8 @@ watch(() => props.modelValue, (visible) => {
     :model-value="modelValue"
     class="link-editor-dialog scenario-dialog"
     :title="editing ? '编辑干扰设备' : '新增干扰设备'"
-    width="min(760px, calc(100vw - 2rem))"
+    width="min(860px, calc(100vw - 2rem))"
+    top="5vh"
     destroy-on-close
     append-to-body
     data-testid="jammer-dialog"
@@ -412,7 +440,7 @@ watch(() => props.modelValue, (visible) => {
         </div>
         <details class="scenario-advanced jammer-advanced-sub" data-testid="jammer-calc-advanced" :open="calcFields.some(field => fieldError(field.key))">
           <summary>侦测与链路计算专业参数</summary>
-          <div class="link-editor-grid">
+          <div class="link-editor-grid jammer-calc-grid">
             <el-form-item v-for="field in calcFields.filter(item => item.key !== 'gtDbk' || fieldError(item.key))" :key="field.key" :label="field.label" :error="fieldError(field.key)">
               <el-input-number :model-value="editor[field.key]" :step="0.1" controls-position="right" :data-testid="`jammer-${field.key}`"
                 @update:model-value="setCalcField(field.key, $event)" />
@@ -423,11 +451,31 @@ watch(() => props.modelValue, (visible) => {
 
       <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
         <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰（射频发射）</h4>
-        <div class="link-editor-grid">
-          <el-form-item required label="干扰功率（dBm）" :error="powerDbmError || fieldError('defaultPower')">
-            <el-input-number :model-value="powerDbmInput" :min="validate ? undefined : JAMMER_EDITOR_POWER_DBM.min" :max="validate ? undefined : JAMMER_EDITOR_POWER_DBM.max" :step="JAMMER_EDITOR_POWER_DBM.step" controls-position="right" data-testid="jammer-power" @update:modelValue="setPowerDbm" />
-            <small v-if="legacyPower" class="field-hint" data-testid="jammer-legacy-power">{{ legacyPower }}</small>
-            <small v-else class="field-hint" data-testid="jammer-power-hint">-10～65 dBm，步长 5 dB。</small>
+        <div class="link-editor-grid jammer-rf-grid">
+          <el-form-item required :label="`干扰功率（${jammerPowerUnit}）`" :error="powerError || fieldError('defaultPower')">
+            <div class="jammer-power-row">
+              <el-input-number
+                :key="jammerPowerUnit"
+                :model-value="powerInputValue"
+                :min="jammerPowerUnit === 'W' ? (validate ? undefined : Number.MIN_VALUE) : undefined"
+                :step="jammerPowerUnit === 'W' ? 10 : 1"
+                controls-position="right"
+                data-testid="jammer-power"
+                @update:model-value="setPowerInput"
+              />
+              <el-radio-group
+                :model-value="jammerPowerUnit"
+                size="small"
+                class="jammer-power-unit-switch"
+                aria-label="干扰功率单位"
+                data-testid="jammer-power-unit-switch"
+                @update:model-value="setJammerPowerUnit"
+              >
+                <el-radio-button value="W">W</el-radio-button>
+                <el-radio-button value="dBm">dBm</el-radio-button>
+              </el-radio-group>
+            </div>
+            <small class="field-hint" data-testid="jammer-power-hint">{{ powerHintText }}</small>
           </el-form-item>
           <el-form-item required label="干扰辐射功率（dBW）" :error="fieldError('eirpDbw') || requiredNumberError('eirpDbw', '干扰辐射功率')">
             <el-input-number :model-value="editor.eirpDbw" :step="0.1" controls-position="right" data-testid="jammer-eirpDbw" @update:model-value="setOptionalNumber('eirpDbw', $event)" />
@@ -457,7 +505,7 @@ watch(() => props.modelValue, (visible) => {
               <el-button link type="danger" size="small" :disabled="pending || locked || weaponBands.length <= 1"
                 :data-testid="`jammer-remove-band-${index}`" @click="removeBand(index)">删除</el-button>
             </div>
-            <div class="link-editor-grid">
+            <div class="link-editor-grid" :class="{ 'jammer-band-grid--barrage': band.mode === 'BARRAGE' }">
               <el-form-item required label="干扰方式" :error="fieldError(`weaponBands[${index}].mode`) || (index === 0 ? fieldError('type') : '')">
                 <el-select :model-value="band.mode" style="width: 100%"
                   :data-testid="index === 0 ? 'jammer-type' : `jammer-band-mode-${index}`"
@@ -476,7 +524,6 @@ watch(() => props.modelValue, (visible) => {
                   :data-testid="`jammer-band-sweep-duty-${index}`"
                   @update:model-value="setBandSweepDuty(index, $event)" />
               </el-form-item>
-              <div v-else class="jammer-band-card__spacer" aria-hidden="true" />
               <el-form-item required label="干扰频率（MHz）" :error="bandFieldError(index, 'frequency', '干扰频率')">
                 <el-input-number :model-value="band.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right"
                   :data-testid="index === 0 ? 'jammer-frequency' : `jammer-band-frequency-${index}`"
@@ -536,51 +583,72 @@ watch(() => props.modelValue, (visible) => {
 
 <style scoped>
 .platform-feedback {
-  margin-bottom: 1rem;
+  margin-bottom: 0.85rem;
 }
 
 .field-hint--hidden { visibility: hidden; }
 :deep(.el-form-item.is-error:has(.field-hint--hidden) .el-form-item__error) { transform: translateY(-1.5em); }
-.field-hint { color: var(--console-text-muted); line-height: 1.5; }
+.field-hint {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--console-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 
 .link-editor-form {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.8rem;
 }
 
 .link-editor-section {
   min-width: 0;
+  padding: 0.8rem 0.95rem 0.4rem;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: rgb(8 25 40 / 48%);
 }
 
 .link-editor-section__title {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin: 0 0 0.375rem;
+  gap: 0.65rem;
+  margin: 0 0 0.6rem;
   color: var(--console-cyan);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .link-editor-section__title::after {
   flex: 1;
-  border-top: 1px solid var(--console-border);
+  border-top: 1px solid rgb(52 104 134 / 55%);
   content: '';
 }
 
 .link-editor-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 1rem;
+  gap: 0.15rem 0.9rem;
+}
+
+.jammer-rf-grid {
+  grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(0, 1fr));
+}
+
+.jammer-calc-grid,
+.jammer-band-grid--barrage {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .link-editor-grid :deep(.el-form-item) {
-  /* 为绝对定位的校验红字预留一行，避免压到下一行字段。 */
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.95rem;
 }
 
 .link-editor-grid :deep(.el-form-item__label) {
   margin-bottom: 0.25rem;
+  color: var(--console-text-muted);
+  font-size: 12px;
   line-height: 1.25rem;
 }
 
@@ -588,10 +656,34 @@ watch(() => props.modelValue, (visible) => {
   width: 100%;
 }
 
+.jammer-power-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.jammer-power-row :deep(.el-input-number) {
+  flex: 1;
+  min-width: 0;
+}
+
+.jammer-power-unit-switch {
+  flex-shrink: 0;
+}
+
+.jammer-power-unit-switch :deep(.el-radio-button__inner) {
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
 .jammer-bands {
   display: grid;
-  gap: 0.55rem;
-  margin-bottom: 0.5rem;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.45rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed rgb(52 104 134 / 55%);
 }
 
 .jammer-bands__head {
@@ -617,10 +709,10 @@ watch(() => props.modelValue, (visible) => {
 }
 
 .jammer-band-card {
-  padding: 0.6rem 0.75rem 0.15rem;
+  padding: 0.6rem 0.8rem 0.15rem;
   border: 1px solid var(--console-border);
-  border-radius: 6px;
-  background: var(--console-bg-elevated);
+  border-radius: 7px;
+  background: rgb(6 20 34 / 62%);
 }
 
 .jammer-band-card__head {
@@ -628,24 +720,22 @@ watch(() => props.modelValue, (visible) => {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgb(36 68 85 / 65%);
 }
 
 .jammer-band-card__label {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  color: var(--console-text-muted);
+  color: var(--console-text);
   font-size: 12px;
   font-weight: 600;
 }
 
 .jammer-band-card__align {
   grid-column: 1 / -1;
-}
-
-.jammer-band-card__spacer {
-  display: block;
 }
 
 .jammer-bandwidth-presets {
@@ -657,26 +747,34 @@ watch(() => props.modelValue, (visible) => {
 
 .jammer-bandwidth-presets :deep(.el-button) {
   margin-left: 0;
-  padding: 0 0.5rem;
-  height: 24px;
-  font-size: 12px;
+  padding: 0 0.45rem;
+  height: 22px;
+  font-size: 11px;
 }
 
 .jammer-advanced-sub {
-  margin-top: 0.45rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.4rem;
+}
+
+@media (max-width: 760px) {
+  .jammer-rf-grid,
+  .jammer-calc-grid,
+  .jammer-band-grid--barrage {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 600px) {
-  .link-editor-grid {
+  .link-editor-grid,
+  .jammer-rf-grid,
+  .jammer-calc-grid,
+  .jammer-band-grid--barrage {
     grid-template-columns: 1fr;
   }
 
   .jammer-band-card__align {
     grid-column: auto;
-  }
-
-  .jammer-band-card__spacer {
-    display: none;
   }
 }
 </style>

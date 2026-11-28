@@ -19,7 +19,6 @@ const emit = defineEmits<{
 }>()
 
 type PortKey = Exclude<keyof PortParameters, 'parameterSource'>
-type RateUnit = 'bit/s' | 'kbits/sec' | 'mbits/sec'
 
 const PLATFORM_LABELS: Record<TemplatePlatformType, string> = {
   MISSION_UAV_PLATFORM: '任务无人机（含中继）',
@@ -96,19 +95,6 @@ const antennaRows = computed(() => TEMPLATE_ANTENNA_NAMES
   .filter(name => sectionMode.value !== 'all' || (!portUsedAntennas.value.has(name) && (!UNUSED_TEMPLATE_ANTENNAS.has(name) || Boolean(props.fieldMessage(`deviceParameters.antennaGains.${name}`)))))
   .map(name => ({ name, gain: resolved.value.antennaGains[name] ?? 0 })))
 
-/** 速率写法与生成器一致：C/L 波段与光纤为 bit/s，天通 kbits/sec，其余 mbits/sec。 */
-function rateUnit(type: TemplatePlatformType, port: string): RateUnit {
-  if (port === 'fiber_link' || /^[cl]_band_/u.test(port)) return 'bit/s'
-  return type === 'TIAN_TONG_SAT' ? 'kbits/sec' : 'mbits/sec'
-}
-function displayRate(type: TemplatePlatformType, port: string, mbps: number): number {
-  const unit = rateUnit(type, port)
-  return unit === 'bit/s' ? mbps * 1_000_000 : unit === 'kbits/sec' ? mbps * 1_000 : mbps
-}
-function fromDisplayRate(type: TemplatePlatformType, port: string, value: number): number {
-  const unit = rateUnit(type, port)
-  return unit === 'bit/s' ? value / 1_000_000 : unit === 'kbits/sec' ? value / 1_000 : value
-}
 function rateTiers(port: string): readonly number[] {
   const match = /^([cl])_band_(uplink|downlink)$/u.exec(port)
   return match ? datalinkRateTiers(match[1]!.toUpperCase() as 'C' | 'L', match[2] === 'uplink' ? 'FORWARD' : 'REVERSE') : []
@@ -168,7 +154,7 @@ function updatePort(type: TemplatePlatformType, port: string, key: PortKey, valu
   // 界面已不再提供端口装备引用；手工修改端口数值时清除历史来源，避免保存时与旧来源快照不一致。
   delete parameters.parameterSource
   // 清空输入时写 NaN 交给校验原位提示，不悄悄回填默认值。
-  parameters[key] = value === null || value === undefined ? Number.NaN : key === 'transferRate' ? fromDisplayRate(type, port, value) : value
+  parameters[key] = value === null || value === undefined ? Number.NaN : value
   writePort(type, port, parameters)
 }
 function updateGain(name: TemplateAntennaName, value: number | null | undefined): void {
@@ -182,17 +168,18 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
 <template>
   <div class="device-parameters" data-testid="device-parameters-panel">
     <template v-if="sectionMode !== 'antennas'">
+    <div class="device-parameters__card">
     <el-tabs v-model="activeType" class="device-parameters__tabs" aria-label="通信平台类型">
       <el-tab-pane v-for="type in TEMPLATE_PLATFORM_TYPES" :key="type" :label="PLATFORM_LABELS[type]" :name="type">
         <el-table v-if="activeType === type" :data="rows(type)" row-key="port" border class="device-parameters__ports-table" :data-testid="`device-ports-${type}`">
-          <el-table-column label="端口" min-width="105">
+          <el-table-column label="端口" min-width="116" fixed="left">
             <template #default="{ row }">
-              <div>{{ PORT_LABELS[row.port] ?? row.port }}</div>
+              <div class="device-parameters__port-name">{{ PORT_LABELS[row.port] ?? row.port }}</div>
             </template>
           </el-table-column>
           <el-table-column v-for="group in COLUMN_GROUPS" :key="group.label" :label="group.label" align="center"
             :label-class-name="`device-group-header device-group-header--${group.theme} device-group-start device-group-start--${group.theme}`">
-            <el-table-column v-for="(column, columnIndex) in group.columns" :key="column.key" :label="column.label" min-width="100"
+            <el-table-column v-for="(column, columnIndex) in group.columns" :key="column.key" :label="column.label" min-width="108"
               :class-name="columnIndex === 0 ? `device-group-start device-group-start--${group.theme}` : undefined">
               <template #default="{ row }">
                 <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed">—</span>
@@ -205,7 +192,7 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
             </el-table-column>
           </el-table-column>
           <el-table-column label="收发共用" align="center" label-class-name="device-group-header device-group-header--shared device-group-start device-group-start--shared">
-            <el-table-column label="天线峰值增益（dB）" min-width="125" class-name="device-group-start device-group-start--shared">
+            <el-table-column label="天线峰值增益（dB）" min-width="124" class-name="device-group-start device-group-start--shared">
               <template #default="{ row }">
                 <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed">—</span>
                 <el-form-item v-else class="device-parameters__field" :error="fieldMessage(`deviceParameters.antennaGains.${portAntennaName(type, row.port)}`)">
@@ -216,21 +203,21 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
                 </el-form-item>
               </template>
             </el-table-column>
-            <el-table-column label="传输速率" min-width="175">
+            <el-table-column label="传输速率" min-width="172">
               <template #default="{ row }">
-                <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed" :data-testid="`port-${type}-fiber_link-transferRate`">1000 Mbps（固定）</span>
+                <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed" :data-testid="`port-${type}-fiber_link-transferRate`">1000 Mbit/s（固定）</span>
                 <el-form-item v-else class="device-parameters__field" :error="fieldMessage(path(type, row.port, 'transferRate'))">
                   <div class="device-parameters__rate">
                     <el-select v-if="rateTiers(row.port).length" :model-value="row.parameters.transferRate" :disabled="disabled"
                       :aria-label="`${PORT_LABELS[row.port]}传输速率`" :data-testid="`port-${type}-${row.port}-transferRate`"
-                      @update:model-value="(value: number) => updatePort(type, row.port, 'transferRate', value * 1_000_000)">
+                      @update:model-value="(value: number) => updatePort(type, row.port, 'transferRate', value)">
                       <el-option v-for="tier in rateTiers(row.port)" :key="tier" :label="tierLabel(tier)" :value="tier" />
                       <el-option v-if="!rateTiers(row.port).includes(row.parameters.transferRate)" :label="`${tierLabel(row.parameters.transferRate)}（不在档位内）`" :value="row.parameters.transferRate" />
                     </el-select>
-                    <el-input-number v-else :model-value="Number.isNaN(row.parameters.transferRate) ? undefined : displayRate(type, row.port, row.parameters.transferRate)" :min="0"
+                    <el-input-number v-else :model-value="Number.isNaN(row.parameters.transferRate) ? undefined : row.parameters.transferRate" :min="0"
                       :disabled="disabled" controls-position="right" :aria-label="`${PORT_LABELS[row.port]}传输速率`"
                       :data-testid="`port-${type}-${row.port}-transferRate`" @update:model-value="value => updatePort(type, row.port, 'transferRate', value)" />
-                    <small v-if="!rateTiers(row.port).length" class="device-parameters__unit">{{ rateUnit(type, row.port) === 'kbits/sec' ? 'kbps' : 'Mbps' }}</small>
+                    <small v-if="!rateTiers(row.port).length" class="device-parameters__unit">Mbit/s</small>
                   </div>
                 </el-form-item>
               </template>
@@ -239,6 +226,7 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
         </el-table>
       </el-tab-pane>
     </el-tabs>
+    </div>
     </template>
 
     <details v-if="sectionMode === 'all'" class="scenario-advanced" data-testid="antenna-advanced" :open="antennaAdvancedOpen || antennaRows.some(row => fieldMessage(`deviceParameters.antennaGains.${row.name}`))" @toggle="handleAntennaToggle">
@@ -268,20 +256,65 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
 </template>
 
 <style scoped>
-.device-parameters { display: grid; gap: 12px; min-width: 0; }
+.device-parameters { display: grid; gap: 0.8rem; min-width: 0; }
+.device-parameters__card {
+  min-width: 0;
+  padding: 0.55rem 0.85rem 0.85rem;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: rgb(8 25 40 / 48%);
+}
+.device-parameters__tabs :deep(.el-tabs__header) { margin-bottom: 0.7rem; }
+.device-parameters__tabs :deep(.el-tabs__nav-wrap::after) { background-color: var(--console-border); }
+.device-parameters__tabs :deep(.el-tabs__item) { font-size: 13px; font-weight: 500; }
+.device-parameters__port-name { color: var(--console-text); font-size: 12px; font-weight: 600; line-height: 1.4; }
 .device-parameters__hint { margin: 0; color: var(--el-text-color-secondary); font-size: 13px; }
-.device-parameters__rate { display: flex; align-items: center; gap: 6px; width: 100%; flex-wrap: nowrap; }
+.device-parameters__rate { display: flex; align-items: center; gap: 5px; width: 100%; flex-wrap: nowrap; }
 .device-parameters__rate :deep(.el-input-number), .device-parameters__rate :deep(.el-select) { flex: 1 1 0; min-width: 0; }
 .device-parameters__unit { flex-shrink: 0; white-space: nowrap; color: var(--el-text-color-secondary); font-size: 12px; }
-.device-parameters__fixed { white-space: nowrap; color: var(--el-text-color-secondary); }
+.device-parameters__fixed { white-space: nowrap; color: var(--el-text-color-secondary); font-size: 12px; }
 .device-parameters__field { margin-bottom: 0; }
+.device-parameters__field :deep(.el-form-item__error) { position: static; margin-top: 2px; line-height: 1.3; }
 .device-parameters__field :deep(.el-input-number), .device-parameters__field :deep(.el-select) { width: 100%; }
+.device-parameters__ports-table :deep(.el-table__cell) { padding: 7px 0; }
+.device-parameters__ports-table :deep(.cell) { padding-inline: 6px; }
+.device-parameters__ports-table :deep(.el-input-number.is-controls-right .el-input__wrapper) { padding-inline: 6px 26px; }
+.device-parameters__ports-table :deep(.el-input-number__increase),
+.device-parameters__ports-table :deep(.el-input-number__decrease) { width: 22px; }
 .device-parameters__source { display: grid; gap: 4px; }
 .device-parameters__error { color: var(--el-color-danger); font-size: 12px; }
-.device-parameters__antenna-list { display: grid; gap: 4px; min-width: 0; max-width: 100%; overflow-x: hidden; }
-.device-parameters__antenna-row { display: grid; grid-template-columns: minmax(0, 1fr) 220px; align-items: center; gap: 12px; min-width: 0; }
-.device-parameters__antenna-row--head { padding-bottom: 4px; border-bottom: 1px solid var(--console-border); color: var(--console-text-muted); font-size: 12px; font-weight: 600; }
-.device-parameters__antenna-name { min-width: 0; overflow-wrap: anywhere; }
+.device-parameters > .scenario-advanced { margin: 0; }
+.device-parameters__antenna-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 0.9rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+.device-parameters__antenna-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 170px;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  background: rgb(6 20 34 / 58%);
+}
+.device-parameters__antenna-row--head {
+  grid-column: 1 / -1;
+  padding: 0 0.25rem 0.35rem;
+  border: 0;
+  border-bottom: 1px dashed var(--console-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--console-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.device-parameters__antenna-name { min-width: 0; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
 .device-parameters__ports-table :deep(th.device-group-header) {
   font-size: 13px;
   font-weight: 700;
@@ -310,5 +343,8 @@ function updateGain(name: TemplateAntennaName, value: number | null | undefined)
 }
 .device-parameters__ports-table :deep(.device-group-start--shared) {
   border-left: 2px solid rgba(246, 184, 75, 0.45) !important;
+}
+@media (max-width: 820px) {
+  .device-parameters__antenna-list { grid-template-columns: 1fr; }
 }
 </style>

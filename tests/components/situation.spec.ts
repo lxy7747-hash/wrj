@@ -2514,7 +2514,7 @@ describe('态势主界面', () => {
     })
     mountedWrapper = wrapper
     const items = wrapper.get('[data-testid="node-type-legend"]').findAll(':scope > div').map(item => item.text())
-    expect(items).toEqual(['后方指挥节点', '地面无人集群指挥车', '天通卫星', '神通卫星', '空中无人作业集群', '地面干扰设备', '机载干扰设备', '○其他节点'])
+    expect(items).toEqual(['公共服务平台后方节点', '无人集群指挥车节点', '天通卫星', '神通卫星', '无人机集群', '地面干扰设备', '机载干扰设备', '○其他节点'])
     expect(wrapper.get('[data-testid="node-type-legend"]').findAll('img').map(image => image.attributes('src')))
       .toEqual(nodes.slice(0, 7).map(node => nodeIconUrl(node)))
   })
@@ -2975,7 +2975,7 @@ describe('态势主界面', () => {
     const nodeButton = summary.get(`[data-testid="focus-node-${config.platforms[0]!.id}"]`)
     expect(Array.from(nodeButton.element.children).map(element => element.tagName)).toEqual(['SPAN', 'SMALL'])
     expect(nodeButton.get('span').text()).toBe('场景 B 指挥节点')
-    expect(nodeButton.get('small').text()).toBe('后方指挥节点C1')
+    expect(nodeButton.get('small').text()).toBe('公共服务平台后方节点C1')
     expect(nodeButton.text()).not.toContain(config.platforms[0]!.id)
     expect(summary.text()).toContain('信息节点')
     expect(summary.text()).toContain('支撑实体')
@@ -3337,7 +3337,7 @@ describe('态势主界面', () => {
 
     const uavSummaryButton = wrapper.get('[data-testid="focus-node-UAV-01"]')
     expect(uavSummaryButton.get('span').text()).toBe('高空前出中继节点')
-    expect(uavSummaryButton.get('small').text()).toBe('高空前出中继节点R1')
+    expect(uavSummaryButton.get('small').text()).toBe('公共服务平台前出节点R1')
     expect(uavSummaryButton.text()).not.toContain('UAV-01')
     const satSummaryButton = wrapper.get('[data-testid="focus-node-SAT-01"]')
     expect(satSummaryButton.get('span').text()).toBe('通信卫星')
@@ -4308,7 +4308,7 @@ describe('Leaflet 控制器回归', () => {
     const expandedUav = markerAt('选择节点 蓝方无人机一')!
     expect(nameLabel(expandedUav).textContent).toBe('蓝方无人机一')
     expect(nameLabel(expandedUav).style.display).toBe('block')
-    expect(idLabel(expandedUav).textContent).toMatch(/^空中无人作业集群U\d+$/u)
+    expect(idLabel(expandedUav).textContent).toMatch(/^无人机集群U\d+$/u)
     expect(idLabel(expandedUav).style.display).not.toBe('none')
     expect(markerAt('选择节点 红方无人机一')).toBe(singleUav)
     expect(nameLabel(singleUav).style.display).toBe('block')
@@ -4761,7 +4761,7 @@ describe('Leaflet 控制器回归', () => {
     const markerSpy = vi.spyOn(L, 'marker')
     await createController({ initialNodes: nodes })
     const markers = markerSpy.mock.results.map(result => result.value as L.Marker)
-    const labels = ['后方指挥节点', '地面无人集群指挥车']
+    const labels = ['公共服务平台后方节点', '无人集群指挥车节点']
     for (const [index, label] of labels.entries()) {
       const marker = markers.find(candidate => candidate.options.title === `选择节点 ${label}`)!
       expect(marker.getElement()?.querySelector('.situation-map-node__name')?.textContent).toBe(label)
@@ -4786,11 +4786,11 @@ describe('Leaflet 控制器回归', () => {
     const markers = markerSpy.mock.results.map(result => result.value as L.Marker)
     const sublabels = markers.map(marker => marker.getElement()?.querySelector('.situation-map-node__id')?.textContent).filter(Boolean)
     expect(sublabels).toEqual([
-      '后方指挥节点C1',
-      '高空前出中继节点R1',
-      '地面无人集群指挥车G1',
-      '空中无人作业集群U1',
-      '空中无人作业集群U2',
+      '公共服务平台后方节点C1',
+      '公共服务平台前出节点R1',
+      '无人集群指挥车节点G1',
+      '无人机集群U1',
+      '无人机集群U2',
       '通信卫星S1',
       '地面干扰站J1',
     ])
@@ -6200,7 +6200,7 @@ describe('Leaflet 控制器回归', () => {
       animate: true,
       duration: 0.45,
     })
-    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('高空前出中继节点R1')
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('公共服务平台前出节点R1')
 
     polylineSpy.mockClear()
     controller.focusTarget({ kind: 'link', targetId: 'L-MW-01' })
@@ -6258,7 +6258,7 @@ describe('Leaflet 控制器回归', () => {
       animate: true,
       duration: 0.45,
     })
-    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('空中无人作业集群U3')
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('无人机集群U3')
 
     controller.focusTarget({ kind: 'node', targetId: 'NODE-NOT-FOUND' })
     controller.focusTarget({ kind: 'link', targetId: 'LINK-NOT-FOUND' })
@@ -6582,7 +6582,12 @@ describe('Leaflet 控制器回归', () => {
     const visiblePlatforms = SITUATION_FRAME_F00042.platforms
     expect(nodeCalls).toHaveLength(visiblePlatforms.length)
     visiblePlatforms.forEach((platform) => {
-      const call = nodeCalls.find(([, options]) => options?.title?.includes(platform.name))
+      const displayName = platform.type === 'REAR_COMMAND_NODE'
+        ? '公共服务平台后方节点'
+        : platform.type === 'GROUND_CLUSTER_COMMAND_NODE'
+          ? '无人集群指挥车节点'
+          : platform.name
+      const call = nodeCalls.find(([, options]) => options?.title?.includes(displayName))
       expect(call?.[0]).toEqual(expectedPoints[platform.platformId])
     })
     expect(nodeCalls.some(([, options]) => options?.title?.includes('空中无人作业节点 U03'))).toBe(true)

@@ -12,7 +12,8 @@ import { createPlatformGrid } from '../../features/scenarios/platform-layout'
 import { PLATFORM_POINT_DEFAULT_ALTITUDE, PLATFORM_POSITION_RULES, REAR_DEFAULT_ORIGIN, RELAY_DEFAULT_ORIGIN, RELAY_DEFAULT_ROUTE, SATELLITE_GEO_POSITION } from '../../features/scenarios/platform-position-rules'
 import { saveScriptText } from '../../features/scenarios/script-file'
 import type { ScriptGenerationReceipt as ScriptGenerationResult } from '../../features/scenarios/script-package-preflight'
-import { isJammerPlatformType, JAMMER_CALC_DEFAULTS, JAMMER_DEFAULT_BANDS, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerBands, readJammerReleaseRange, wattsToDbm } from '../../features/scenarios/jammer-settings'
+import { formatJammerPowerValue, isJammerPlatformType, JAMMER_CALC_DEFAULTS, JAMMER_DEFAULT_BANDS, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerBands, readJammerReleaseRange } from '../../features/scenarios/jammer-settings'
+import { jammerPowerUnit } from '../../features/scenarios/jammer-power-unit'
 import { formatDataRate, linkTypeDefaults, RAIN_TIER_OPTIONS, RAIN_TIER_RATES, type RainTier } from '../../features/scenarios/link-calc-defaults'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
@@ -718,7 +719,7 @@ function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boo
   const batchQuantity = addingAirborneBatch ? quantity : 1
   const available = INFORMATION_NODE_TYPE_LIMITS.AIRBORNE_MISSION_CLUSTER - businessNodeTypeCounts.value.AIRBORNE_MISSION_CLUSTER
   if (addingAirborneBatch && (!Number.isSafeInteger(batchQuantity) || batchQuantity < 1 || batchQuantity > available)) {
-    return showEditorValidationMessage(`空中无人作业集群当前还可新增 ${Math.max(0, available)} 个。`)
+    return showEditorValidationMessage(`无人机集群当前还可新增 ${Math.max(0, available)} 个。`)
   }
   const candidate = structuredClone(toRaw(draft.value.config))
   const editedPlatform = structuredClone(toRaw(editor))
@@ -754,7 +755,7 @@ function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boo
   markDirty()
   platformDialogVisible.value = false
   const message = editingPlatformIndex.value === null
-    ? `${batchQuantity > 1 ? `已批量新增 ${batchQuantity} 个空中无人作业集群` : '节点已新增'}，保存草稿后生效。`
+    ? `${batchQuantity > 1 ? `已批量新增 ${batchQuantity} 个无人机集群` : '节点已新增'}，保存草稿后生效。`
     : '节点已更新，保存草稿后生效。'
   ElMessage.success(message)
   return true
@@ -1196,15 +1197,11 @@ function jammerTypeTagType(type: Jammer['type']): 'danger' | 'warning' | 'info' 
 }
 
 function formatJammerPowerPrimary(jammer: Jammer): string {
-  if (!Number.isFinite(jammer.defaultPower) || jammer.defaultPower <= 0) return `${jammer.defaultPower} W`
-  const dbm = Number(wattsToDbm(jammer.defaultPower).toFixed(1))
-  const sign = dbm > 0 ? '+' : ''
-  return `${sign}${dbm} dBm`
+  return Number.isFinite(jammer.defaultPower) ? formatJammerPowerValue(jammer.defaultPower, jammerPowerUnit.value) : `${jammer.defaultPower} W`
 }
 
 function formatJammerPowerDetail(jammer: Jammer): string {
-  const watts = Number.isFinite(jammer.defaultPower) ? `${Number(jammer.defaultPower.toPrecision(6))} W` : `${jammer.defaultPower} W`
-  return jammer.eirpDbw === undefined ? watts : `${watts} · EIRP ${jammer.eirpDbw} dBW`
+  return jammer.eirpDbw === undefined ? '' : `EIRP ${jammer.eirpDbw} dBW`
 }
 
 function formatKmCell(meters: number): number {
@@ -1387,6 +1384,8 @@ function validationTargetId(fieldPath: string): string | undefined {
     rxPolarization: 'link-rx-polarization', noiseFigureDb: 'link-noise-figure',
   } as Record<string, string>)[linkField]
   if (fieldPath.startsWith('linkSettings.enabledSatellites')) return 'link-relay-satellite'
+  const trafficDistanceField = /^linkSettings\.linkCalc\.trafficDistance\.(\w+)/.exec(fieldPath)?.[1]
+  if (trafficDistanceField) return `link-calc-trafficDistance-${trafficDistanceField}`
   const linkCalcField = /^linkSettings\.linkCalc\.(\w+)/.exec(fieldPath)?.[1]
   if (linkCalcField) return `link-calc-${linkCalcField}`
   const hotLinkField = /^linkSettings\.hotLinks\.(forward|reverse)\[(\d+)\]/.exec(fieldPath)
@@ -2113,7 +2112,7 @@ onMounted(() => {
               <el-table-column label="干扰功率" min-width="150">
                 <template #default="{ row }">
                   <div class="jammer-table__value">{{ formatJammerPowerPrimary(row) }}</div>
-                  <div class="jammer-table__sub">{{ formatJammerPowerDetail(row) }}</div>
+                  <div v-if="formatJammerPowerDetail(row)" class="jammer-table__sub">{{ formatJammerPowerDetail(row) }}</div>
                 </template>
               </el-table-column>
               <el-table-column label="探测范围" min-width="135">
@@ -2273,9 +2272,9 @@ onMounted(() => {
 
     <el-dialog
       v-model="portParametersVisible"
-      class="scenario-dialog"
+      class="scenario-dialog port-parameters-dialog"
       title="端口参数设置"
-      width="min(1680px, calc(100vw - 2rem))"
+      width="min(1380px, calc(100vw - 2rem))"
       top="5vh"
       destroy-on-close
       append-to-body
@@ -2283,7 +2282,7 @@ onMounted(() => {
       @opened="deviceFocusPath && focusValidationField(deviceFocusPath)"
       @closed="deviceFocusPath = ''; portParametersError = ''; portParametersWarning = ''"
     >
-      <p class="field-hint">采用平台端口参数的链路会随此处更新。同一平台类型的节点共用一组端口参数。</p>
+      <p class="port-parameters-banner">采用平台端口参数的链路会随此处更新。同一平台类型的节点共用一组端口参数。</p>
       <el-alert
         v-if="portParametersError"
         type="error"
@@ -2674,6 +2673,18 @@ onMounted(() => {
 
 .jammer-table__band .jammer-table__sub {
   margin-top: 0;
+}
+
+:global(.port-parameters-dialog .port-parameters-banner) {
+  margin: 0 0 0.8rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--console-border);
+  border-left: 3px solid var(--console-cyan);
+  border-radius: 6px;
+  background: rgb(6 22 36 / 65%);
+  color: var(--console-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 @media (max-width: 960px) {

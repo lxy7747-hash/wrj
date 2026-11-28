@@ -209,7 +209,7 @@ function reasonLabel(reason: string): string {
           <div><dt>雨衰损耗</dt><dd>{{ optionalMetric(segment.losses.rainDb, 2, ' dB') }}</dd></div>
           <div><dt>云衰损耗</dt><dd>{{ optionalMetric(segment.losses.cloudDb, 2, ' dB') }}</dd></div>
           <div><dt>频率</dt><dd>{{ optionalMetric(segment.inputTrace.frequencyGHz, 3, ' GHz') }}</dd></div>
-          <div><dt>数据率</dt><dd>{{ optionalMetric(segment.inputTrace.dataRateMbps, 3, ' Mbps') }}</dd></div>
+          <div><dt>数据率</dt><dd>{{ optionalMetric(segment.inputTrace.dataRateMbps, 3, ' Mbit/s') }}</dd></div>
           <div><dt>{{ engineSegmentDelay(segment).label }}</dt><dd>{{ engineSegmentDelay(segment).value }}</dd></div>
           <div><dt>传输距离</dt><dd>{{ optionalMetric(segment.distanceM === null ? null : segment.distanceM / 1000, 2, ' km') }}</dd></div>
         </dl>
@@ -267,7 +267,7 @@ function reasonLabel(reason: string): string {
         <div><dt>发射辐射功率</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.inputTrace.eirpDbw, 2, ' dBW') }}</dd></div>
         <div><dt>路径损耗</dt><dd>{{ optionalMetric(runtimeMeasurement.losses.totalLossDb, 2, ' dB') }}</dd></div>
         <div><dt>传输距离</dt><dd>{{ optionalMetric(runtimeMeasurement.distanceMeters === null ? null : runtimeMeasurement.distanceMeters / 1000, 2, ' km') }}</dd></div>
-        <div><dt>计算输入速率</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.inputTrace.dataRateMbps, 2, ' Mbps') }}</dd></div>
+        <div><dt>计算输入速率</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.inputTrace.dataRateMbps, 2, ' Mbit/s') }}</dd></div>
         <div><dt>模型版本</dt><dd>{{ runtimeMeasurement.quality.modelVersion ?? '暂无数据' }}</dd></div>
         <div><dt>调制方式</dt><dd>{{ runtimeMeasurement.quality.modulation ?? '暂无数据' }}</dd></div>
         <div v-for="field in runtimeLossFields" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ optionalMetric(runtimeMeasurement.losses[field.key], 2, ' dB') }}</dd></div>
@@ -300,7 +300,7 @@ function reasonLabel(reason: string): string {
         <div><dt>发射辐射功率</dt><dd>{{ optionalMetric(configuredLink.eirpDbw, 2, ' dBW') }}</dd></div>
         <div><dt>调制方式</dt><dd>{{ configuredLink.modulation }}</dd></div>
         <div><dt>误码率阈值</dt><dd>{{ formatBer(configuredLink.berThreshold) }}</dd></div>
-        <div><dt>数据速率</dt><dd>{{ (configuredLink.direction === 'REVERSE' ? configuredLink.reverseDataRate : configuredLink.forwardDataRate) ?? configuredLink.dataRate }} Mbps</dd></div>
+        <div><dt>数据速率</dt><dd>{{ (configuredLink.direction === 'REVERSE' ? configuredLink.reverseDataRate : configuredLink.forwardDataRate) ?? configuredLink.dataRate }} Mbit/s</dd></div>
         <div v-for="label in ['干信比(GXB)', '信噪比 SNR', '误码率(BER)', '路径损耗', '时延', '可用率', '界面状态', '规范状态', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
       </dl>
     </div>
@@ -348,7 +348,7 @@ function reasonLabel(reason: string): string {
           <div><dt>带宽</dt><dd>{{ link.detailed.bandwidth }} MHz</dd></div>
           <div><dt>误码率阈值</dt><dd>{{ formatBer(link.detailed.berThreshold) }}</dd></div>
           <div><dt>路径损耗</dt><dd>{{ link.detailed.pathLoss }} dB</dd></div>
-          <div><dt>数据速率</dt><dd>{{ link.detailed.dataRate }} Mbps</dd></div>
+          <div><dt>数据速率</dt><dd>{{ link.detailed.dataRate }} Mbit/s</dd></div>
           <div><dt>调制方式</dt><dd>{{ link.detailed.modulation }}</dd></div>
         </template>
         <template v-else><div v-for="label in ['传输距离', '频率', '带宽', '路径损耗', '调制方式']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div></template>

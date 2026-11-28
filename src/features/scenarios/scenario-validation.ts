@@ -17,8 +17,8 @@ import type {
 } from '../../contracts/domain-models'
 
 import { metersBetween } from './position-distance'
-import { JAMMER_CALC_DEFAULTS, isJammerPlatformType, JAMMER_RANGE_METERS, isJammerEditorPowerDbm, wattsToDbm } from './jammer-settings'
-import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LASER_LINK_MODULATION, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
+import { JAMMER_CALC_DEFAULTS, isJammerPlatformType, JAMMER_RANGE_METERS } from './jammer-settings'
+import { CHANNEL_ENCODING_OPTIONS, directionalDataRateBounds, JAMMING_RANGE_KM, LASER_LINK_MODULATION, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX, TRAFFIC_DISTANCE_FIELDS, TRAFFIC_DISTANCE_KEYS } from './link-calc-defaults'
 import { hotLinkChainError } from './hot-links'
 import { PLATFORM_POSITION_RULES, SATELLITE_GEO_POSITION } from './platform-position-rules'
 import { taskPhaseIssue } from './task-phases'
@@ -135,10 +135,10 @@ export const INFORMATION_NODE_TYPE_LIMITS = {
   AIRBORNE_MISSION_CLUSTER: 61,
 } as const
 const INFORMATION_NODE_TYPE_LABELS = {
-  REAR_COMMAND_NODE: '后方指挥节点',
-  FORWARD_RELAY_NODE: '高空前出中继节点',
-  GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车',
-  AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
+  REAR_COMMAND_NODE: '公共服务平台后方节点',
+  FORWARD_RELAY_NODE: '公共服务平台前出节点',
+  GROUND_CLUSTER_COMMAND_NODE: '无人集群指挥车节点',
+  AIRBORNE_MISSION_CLUSTER: '无人机集群',
 } as const
 const DEPLOYMENT_DOMAINS = ['ground', 'air', 'space'] as const
 export const LINK_TYPES = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'] as const
@@ -556,7 +556,7 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   }
   if (mode === 'write' && value.type === 'LASER' && value.enabled !== false) {
     if (!isPositiveFiniteNumber(value.txPower)) addError(errors, 'LASER_POWER_INVALID', '激光光功率必须大于 0 W。', `${path}.txPower`)
-    if (!isPositiveFiniteNumber(value.dataRate)) addError(errors, 'LASER_RATE_INVALID', '激光链路介质传输速率必须大于 0 Mbps。', `${path}.dataRate`)
+    if (!isPositiveFiniteNumber(value.dataRate)) addError(errors, 'LASER_RATE_INVALID', '激光链路介质传输速率必须大于 0 Mbit/s。', `${path}.dataRate`)
   }
   if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路发送端必须引用当前节点。', `${path}.sourcePlatformId`)
   if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路接收端必须引用当前节点。', `${path}.targetPlatformId`)
@@ -572,13 +572,36 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   }
   if (typeof value.modulation !== 'string' || !(MODULATIONS as readonly string[]).includes(value.modulation)) addError(errors, 'MODULATION_INVALID', '调制方式不正确。', `${path}.modulation`)
   if (!isFiniteNumber(value.berThreshold, 0, 1)) addError(errors, 'BER_THRESHOLD_INVALID', '误码率阈值必须在 0 至 1 之间。', `${path}.berThreshold`)
-  if (!isFiniteNumber(value.dataRate, 0)) addError(errors, 'DATA_RATE_INVALID', '数据速率不能小于 0 Mbps。', `${path}.dataRate`)
-  for (const [key, label] of [['forwardDataRate', '前向数据速率'], ['reverseDataRate', '返向数据速率']] as const) {
-    if (Object.hasOwn(value, key) && !isPositiveFiniteNumber(value[key])) addError(errors, 'DIRECTIONAL_DATA_RATE_INVALID', `${label}必须大于 0 Mbps。`, `${path}.${key}`)
+  if (!isFiniteNumber(value.dataRate, 0)) addError(errors, 'DATA_RATE_INVALID', '数据速率不能小于 0 Mbit/s。', `${path}.dataRate`)
+  const validLinkType = typeof value.type === 'string' && (LINK_TYPES as readonly string[]).includes(value.type) ? value.type as Link['type'] : undefined
+  const linkBand = value.band === 'L' ? 'L' : 'C'
+  const linkTypePrefix: Record<Link['type'], string> = {
+    SAT: '卫星',
+    MICROWAVE: '微波',
+    DATALINK: `${linkBand} 波段数传`,
+    LASER: '激光',
+    FIBER: '光纤',
   }
-  if (value.type === 'SAT') {
-    if (Object.hasOwn(value, 'forwardDataRate') && !isFiniteNumber(value.forwardDataRate, 0.128, 8)) addError(errors, 'SAT_FORWARD_RATE_INVALID', '卫星前向速率必须在 0.128～8 Mbps。', `${path}.forwardDataRate`)
-    if (Object.hasOwn(value, 'reverseDataRate') && !isFiniteNumber(value.reverseDataRate, 0.064, 2)) addError(errors, 'SAT_REVERSE_RATE_INVALID', '卫星返向速率必须在 0.064～2 Mbps。', `${path}.reverseDataRate`)
+  for (const [key, direction, label] of [['forwardDataRate', 'FORWARD', '前向数据速率'], ['reverseDataRate', 'REVERSE', '返向数据速率']] as const) {
+    if (!Object.hasOwn(value, key)) continue
+    if (!isPositiveFiniteNumber(value[key])) {
+      addError(errors, 'DIRECTIONAL_DATA_RATE_INVALID', `${label}必须大于 0 Mbit/s。`, `${path}.${key}`)
+      continue
+    }
+    if (validLinkType !== undefined) {
+      const bounds = directionalDataRateBounds(validLinkType, direction, linkBand)
+      if (!isFiniteNumber(value[key], bounds.min, bounds.max)) {
+        const code = validLinkType === 'SAT'
+          ? (direction === 'FORWARD' ? 'SAT_FORWARD_RATE_INVALID' : 'SAT_REVERSE_RATE_INVALID')
+          : 'DIRECTIONAL_DATA_RATE_OUT_OF_RANGE'
+        addError(
+          errors,
+          code,
+          `${linkTypePrefix[validLinkType]}${direction === 'FORWARD' ? '前向' : '返向'}速率必须在 ${bounds.min}～${bounds.max} Mbit/s。`,
+          `${path}.${key}`,
+        )
+      }
+    }
   }
   if (typeof value.direction !== 'string' || !(LINK_DIRECTIONS as readonly string[]).includes(value.direction)) addError(errors, 'LINK_DIRECTION_INVALID', '链路方向不正确。', `${path}.direction`)
   for (const [key, label, minimum] of [
@@ -699,9 +722,9 @@ function inspectHotLinks(value: unknown, links: unknown, errors: ValidationIssue
   }
 }
 
-/** 校验 link_calc 全局阈值、干扰圈半径与信道编码。 */
+/** 校验 link_calc 全局阈值、干扰圈半径、信道编码与链路最大传输距离。 */
 function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
-  if (!isClosedObject(value, LINK_CALC_KEYS, ['updateIntervalS'])) {
+  if (!isClosedObject(value, LINK_CALC_KEYS, ['updateIntervalS', 'trafficDistance'])) {
     addError(errors, 'LINK_CALC_INVALID', '链路计算阈值结构不正确。', 'linkSettings.linkCalc')
     return
   }
@@ -724,6 +747,18 @@ function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
   if (Object.hasOwn(value, 'updateIntervalS') && !isPositiveFiniteNumber(value.updateIntervalS)) addError(errors, 'LINK_CALC_INTERVAL_INVALID', '链路计算更新周期必须大于 0 秒。', 'linkSettings.linkCalc.updateIntervalS')
   if (!CHANNEL_ENCODING_OPTIONS.some(option => option.value === value.channelEncodingScheme)) {
     addError(errors, 'LINK_CALC_ENCODING_INVALID', '信道编码请选择 -1、0、5.0、6.5、3.5 或 8.0。', 'linkSettings.linkCalc.channelEncodingScheme')
+  }
+  if (Object.hasOwn(value, 'trafficDistance') && value.trafficDistance !== undefined) {
+    const td = value.trafficDistance
+    if (!isClosedObject(td, [], TRAFFIC_DISTANCE_KEYS)) {
+      addError(errors, 'LINK_CALC_DISTANCE_INVALID', '链路最大传输距离结构不正确。', 'linkSettings.linkCalc.trafficDistance')
+    } else {
+      for (const field of TRAFFIC_DISTANCE_FIELDS) {
+        if (Object.hasOwn(td, field.key) && !isPositiveFiniteNumber(td[field.key])) {
+          addError(errors, 'LINK_CALC_DISTANCE_INVALID', `${field.label.replace('（km）', '')}最大传输距离必须大于 0 km。`, `linkSettings.linkCalc.trafficDistance.${field.key}`)
+        }
+      }
+    }
   }
 }
 
@@ -903,10 +938,7 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   else if (mode === 'write' && !jammerPlatformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_TYPE_INVALID', '请选择地面干扰站或机载干扰平台作为所属干扰节点。', `${path}.platformId`)
   if (typeof value.type !== 'string' || !(JAMMER_TYPES as readonly string[]).includes(value.type)) addError(errors, 'JAMMER_TYPE_INVALID', '干扰设备类型不正确。', `${path}.type`)
   if (mode === 'write' ? !isPositiveFiniteNumber(value.defaultPower) : !isFiniteNumber(value.defaultPower, 0)) {
-    addError(errors, 'JAMMER_POWER_INVALID', mode === 'write' ? '默认功率必须大于 0 W。' : '默认功率不能小于 0 W。', `${path}.defaultPower`)
-  }
-  if (mode === 'write' && isPositiveFiniteNumber(value.defaultPower) && !isJammerEditorPowerDbm(wattsToDbm(value.defaultPower))) {
-    addError(errors, 'JAMMER_POWER_OUT_OF_RANGE', '干扰功率须为 -10～65 dBm，且按 5 dB 档位设置。', `${path}.defaultPower`)
+    addError(errors, 'JAMMER_POWER_INVALID', mode === 'write' ? '干扰功率必须大于 0 W。' : '干扰功率不能小于 0 W。', `${path}.defaultPower`)
   }
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
@@ -1269,7 +1301,7 @@ function inspectInformationDemand(value: unknown, index: number, platformIds: Re
   if (!isFiniteNumber(value.frequencyHz, 0)) addError(errors, 'INFORMATION_DEMAND_FREQUENCY_INVALID', '发送频率不能小于 0 Hz。', `${path}.frequencyHz`)
   if (value.priority !== 'HIGH' && value.priority !== 'NORMAL') addError(errors, 'INFORMATION_DEMAND_PRIORITY_INVALID', '信息需求优先级不正确。', `${path}.priority`)
   if (!isFiniteNumber(value.maxLatencyMs, 0)) addError(errors, 'INFORMATION_DEMAND_LATENCY_INVALID', '最大时延不能小于 0 ms。', `${path}.maxLatencyMs`)
-  if (!isFiniteNumber(value.minDataRateMbps, 0)) addError(errors, 'INFORMATION_DEMAND_RATE_INVALID', '最低速率不能小于 0 Mbps。', `${path}.minDataRateMbps`)
+  if (!isFiniteNumber(value.minDataRateMbps, 0)) addError(errors, 'INFORMATION_DEMAND_RATE_INVALID', '最低速率不能小于 0 Mbit/s。', `${path}.minDataRateMbps`)
 }
 
 /** 校验干扰设备和传感器 UI 扩展与规范对象 ID 的一一对应关系。 */

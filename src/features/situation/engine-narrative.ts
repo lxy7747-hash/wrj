@@ -7,17 +7,18 @@ import type {
   EngineRouteSwitch,
   Link,
   LinkCalcSettings,
+  TrafficDistanceSettings,
 } from '../../contracts/domain-models'
 import { nodeCategory } from '../../config/map.config'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
-import { LINK_CALC_DEFAULTS } from '../scenarios/link-calc-defaults'
+import { LINK_CALC_DEFAULTS, readTrafficDistanceSettings } from '../scenarios/link-calc-defaults'
 import type { EngineSwitchEntry } from './engine-route-highlights'
 import type { FileDeviceEvent } from './file-device-events'
 import { formatCommunicationPortLabel } from './file-message-links'
 import type { SituationMapNode } from './initial-nodes'
 import type { DetectionRange, InterferenceRange } from './interference-ranges'
 
-export type LinkCalcThresholds = Partial<Pick<LinkCalcSettings, 'emergencyThreshold' | 'warningThreshold' | 'valueThresholdBer'>>
+export type LinkCalcThresholds = Partial<Pick<LinkCalcSettings, 'emergencyThreshold' | 'warningThreshold' | 'valueThresholdBer' | 'trafficDistance'>>
 
 export interface ActiveJammingBeam {
   id: string
@@ -505,23 +506,25 @@ function resolveTrafficDistanceRole(
   return 'other'
 }
 
-/** 对应 1112 模板 link_calc 的 traffic_distance 距离上限（km）。 */
+/** 对应 link_calc 的 traffic_distance 距离上限（km），优先读取场景配置并回退模板默认值。 */
 export function resolveSegmentDistanceLimitKm(
   segment: Pick<EngineLinkSegment, 'sourcePort' | 'targetPort' | 'sourcePlatformId' | 'targetPlatformId' | 'sourceName' | 'targetName'>,
   nodes: readonly Pick<SituationMapNode, 'platformId' | 'name' | 'type'>[],
+  trafficDistance?: Partial<TrafficDistanceSettings>,
 ): number | null {
   const port = (segment.sourcePort ?? segment.targetPort ?? '').toLowerCase()
   if (!port) return null
-  if (port.includes('microwave')) return 200
-  if (port.includes('lazer') || port.includes('laser')) return 40
+  const limits = readTrafficDistanceSettings(trafficDistance)
+  if (port.includes('microwave')) return limits.microwaveKm
+  if (port.includes('lazer') || port.includes('laser')) return limits.laserKm
   if (port.includes('c_band') || port.includes('l_band')) {
     const a = resolveTrafficDistanceRole(nodes, segment.sourcePlatformId, segment.sourceName)
     const b = resolveTrafficDistanceRole(nodes, segment.targetPlatformId, segment.targetName)
-    if ((a === 'relay' && b === 'uav') || (a === 'uav' && b === 'relay')) return 60
-    if (a === 'relay' && b === 'relay') return 200
-    if ((a === 'relay' && b === 'command') || (a === 'command' && b === 'relay')) return 240
-    if ((a === 'uav' && b === 'command') || (a === 'command' && b === 'uav')) return 240
-    return 240
+    if ((a === 'relay' && b === 'uav') || (a === 'uav' && b === 'relay')) return limits.relayUavKm
+    if (a === 'relay' && b === 'relay') return limits.relayRelayKm
+    if ((a === 'relay' && b === 'command') || (a === 'command' && b === 'relay')) return limits.relayCommandKm
+    if ((a === 'uav' && b === 'command') || (a === 'command' && b === 'uav')) return limits.uavCommandKm
+    return limits.uavCommandKm
   }
   return null
 }
@@ -559,6 +562,7 @@ function findTriggerSegment(
   route: EngineRouteSwitch | null | undefined,
   frameLinks: readonly EngineLinkSegment[],
   nodes: readonly Pick<SituationMapNode, 'platformId' | 'name' | 'type'>[],
+  trafficDistance?: Partial<TrafficDistanceSettings>,
 ): EngineLinkSegment | undefined {
   if (linkId) {
     const exact = frameLinks.find(seg => seg.linkId === linkId || seg.linkIds.includes(linkId))
@@ -568,7 +572,7 @@ function findTriggerSegment(
   if (!oldSegments.length) return undefined
   if (reasonCode === 'bey_switch' || reasonCode === 'beyond_weitch') {
     const exceeded = oldSegments.find(seg => {
-      const limit = resolveSegmentDistanceLimitKm(seg, nodes)
+      const limit = resolveSegmentDistanceLimitKm(seg, nodes, trafficDistance)
       const km = segmentDistanceKm(seg)
       return limit !== null && km !== null && km >= limit
     })
@@ -588,6 +592,7 @@ function findTriggerSegment(
 function resolveOldRouteDistanceInfo(
   route: EngineRouteSwitch | null | undefined,
   nodes: readonly Pick<SituationMapNode, 'platformId' | 'name' | 'type'>[],
+  trafficDistance?: Partial<TrafficDistanceSettings>,
 ): { portLabel: string; limitKm: number } | null {
   if (!route || route.oldNodes.length < 2) return null
   let best: { portLabel: string; limitKm: number } | null = null
@@ -603,7 +608,7 @@ function resolveOldRouteDistanceInfo(
       targetPlatformId: b.platformId,
       sourceName: a.platformName,
       targetName: b.platformName,
-    }, nodes)
+    }, nodes, trafficDistance)
     if (limitKm !== null && (!best || limitKm < best.limitKm)) {
       best = { portLabel: formatCommunicationPortLabel(port), limitKm }
     }
@@ -634,12 +639,12 @@ export function describeSwitchReasonThreshold(
   const emergency = thresholds?.emergencyThreshold ?? LINK_CALC_DEFAULTS.emergencyThreshold
   const warning = thresholds?.warningThreshold ?? LINK_CALC_DEFAULTS.warningThreshold
   const base = thresholds?.valueThresholdBer ?? LINK_CALC_DEFAULTS.valueThresholdBer
-  const segment = findTriggerSegment(reasonCode, linkId, route, frameLinks, nodes)
+  const segment = findTriggerSegment(reasonCode, linkId, route, frameLinks, nodes, thresholds?.trafficDistance)
   const portPrefix = segmentPortPrefix(segment, route)
 
   if (reasonCode === 'bey_switch' || reasonCode === 'beyond_weitch') {
-    const segLimitKm = segment ? resolveSegmentDistanceLimitKm(segment, nodes) : null
-    const oldInfo = segLimitKm === null ? resolveOldRouteDistanceInfo(route, nodes) : null
+    const segLimitKm = segment ? resolveSegmentDistanceLimitKm(segment, nodes, thresholds?.trafficDistance) : null
+    const oldInfo = segLimitKm === null ? resolveOldRouteDistanceInfo(route, nodes, thresholds?.trafficDistance) : null
     const limitKm = segLimitKm ?? oldInfo?.limitKm ?? null
     const label = portPrefix || oldInfo?.portLabel || ''
     const dist = segment ? segmentDistanceKm(segment) : null
@@ -734,7 +739,7 @@ export function summarizeSwitchThresholdEvidence(
     ?? findOldRouteCandidateSegments(route, frameLinks)[0]
   if (candidate) {
     const portLabel = segmentPortPrefix(candidate, route)
-    const limitKm = resolveSegmentDistanceLimitKm(candidate, nodes)
+    const limitKm = resolveSegmentDistanceLimitKm(candidate, nodes, thresholds?.trafficDistance)
     const candidateKm = segmentDistanceKm(candidate)
     if (limitKm !== null && candidateKm !== null && candidateKm >= limitKm) {
       details.push(`超视距 · ${portLabel ? `${portLabel} ` : ''}${candidateKm.toFixed(1)} > ${limitKm} km`)

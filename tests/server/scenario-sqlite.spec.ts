@@ -103,7 +103,7 @@ describe('SQLite 场景开发持久化', () => {
     value.config.platforms.push({ ...structuredClone(relay), id: 'RELAY-03', name: '中继节点 3',
       linkIds: [], sensorIds: [], jammerIds: [] })
     const rejected = await api.put(endpoint).set(headers).send(update(value, saved.revision)).expect(422)
-    expect(rejected.body.error).toMatchObject({ fieldPath: 'platforms', message: '高空前出中继节点当前场景不能超过 2 个。' })
+    expect(rejected.body.error).toMatchObject({ fieldPath: 'platforms', message: '公共服务平台前出节点当前场景不能超过 2 个。' })
     expect(storage.load()).toEqual(saved)
     expect((await api.get(endpoint).set(headers).expect(200)).body.data).toEqual(saved)
   })
@@ -535,7 +535,7 @@ describe('SQLite 场景开发持久化', () => {
     const original = draft()
     const saved = (await api.put(endpoint).set(headers).send(update(original)).expect(200)).body.data
     await api.post('/api/v1/scenarios/import').set(headers).send({
-      items: [{ format: 'wrj.scenario.snapshot', version: 2, config: original.config, uiExtensions: original.uiExtensions }],
+      items: [{ format: 'wrj.scenario.unknown', version: 1, config: original.config, uiExtensions: original.uiExtensions }],
     }).expect(422)
     expect(storage.load()).toEqual(saved)
   })

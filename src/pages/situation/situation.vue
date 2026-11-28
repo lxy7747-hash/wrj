@@ -34,7 +34,8 @@ import {
 } from '../../features/situation/situation-model'
 import { useSimulationStore } from '../../stores/simulation'
 import { useScenarioStore } from '../../stores/scenario'
-import { wattsToDbm } from '../../features/scenarios/jammer-settings'
+import { formatJammerPowerValue } from '../../features/scenarios/jammer-settings'
+import { jammerPowerUnit, setJammerPowerUnit } from '../../features/scenarios/jammer-power-unit'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { useRuntimeQualityStore, type RuntimeQualityScope } from '../../stores/runtime-quality'
 import { runtimeDecisionReason, selectRuntimeQualityViews } from '../../features/situation/runtime-quality-view'
@@ -1389,9 +1390,7 @@ function focusInterferenceOnMap(jammerId: string, platformId: string): void {
  */
 function formatSituationJammerPower(watts: number): string {
   if (!Number.isFinite(watts) || watts <= 0) return `${watts} W`
-  const dbm = Number(wattsToDbm(watts).toFixed(1))
-  const sign = dbm > 0 ? '+' : ''
-  return `${sign}${dbm} dBm（${Number(watts.toPrecision(6))} W）`
+  return formatJammerPowerValue(watts, jammerPowerUnit.value)
 }
 
 function jammerTypeLabel(jammerId: string, platformId: string): string {
@@ -1831,11 +1830,22 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           <div class="panel-heading">
             <div><strong>干扰 / 侦测设备</strong></div>
             <div class="panel-heading__actions">
+              <el-radio-group
+                :model-value="jammerPowerUnit"
+                size="small"
+                class="jammer-unit-switch"
+                aria-label="干扰功率单位"
+                data-testid="jammer-power-unit-toggle"
+                @update:model-value="setJammerPowerUnit"
+              >
+                <el-radio-button value="W">W</el-radio-button>
+                <el-radio-button value="dBm">dBm</el-radio-button>
+              </el-radio-group>
               <span class="panel-heading__more">{{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineFrame.jammers.length} 台` : sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
             </div>
           </div>
           <div class="telemetry-section__body">
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" :source-label="engineSourceLabel" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" :source-label="engineSourceLabel" hide-power-unit-toggle />
             <div v-else-if="displayedJammers.length" class="jammer-list">
               <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
               <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
@@ -2111,6 +2121,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .link-table td strong { display: block; white-space: normal; overflow-wrap: anywhere; }
 .link-table td small { display: block; margin-top: .2rem; color: #829db3; font-size: 11px; }
 .jammer-list { display: block; padding: 0; }
+.jammer-unit-switch :deep(.el-radio-button__inner) { padding: 2px 8px; font-size: 11px; line-height: 1.3; }
 .jammer-list article { padding: .6rem .85rem; border-bottom: 1px solid #1e3448; color: #a8bfd4; background: transparent; }
 .jammer-list article>div:first-child { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .45rem; }
 .jammer-list article>div:first-child::before { width: .55rem; height: .55rem; border-radius: 50%; background: #6b8299; content: ""; }

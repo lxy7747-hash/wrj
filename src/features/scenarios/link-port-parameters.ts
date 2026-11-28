@@ -5,7 +5,7 @@ export const LINK_PORT_FIELDS = [
   { portKey: 'txFrequency', linkKey: 'frequency', label: '频率(MHz)' },
   { portKey: 'txBandwidth', linkKey: 'bandwidth', label: '发射带宽(MHz)' },
   { portKey: 'txPower', linkKey: 'txPower', label: '功率(W)' },
-  { portKey: 'transferRate', linkKey: 'dataRate', label: '速率(Mbps)' },
+  { portKey: 'transferRate', linkKey: 'dataRate', label: '速率(Mbit/s)' },
   { portKey: 'rxFrequency', linkKey: 'rxFrequency', label: '接收频率(MHz)' },
   { portKey: 'rxBandwidth', linkKey: 'rxBandwidth', label: '接收带宽(MHz)' },
   { portKey: 'noiseFigureDb', linkKey: 'noiseFigureDb', label: '噪声系数(dB)' },

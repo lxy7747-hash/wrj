@@ -34,7 +34,7 @@ const OUTPUT_FIELDS: readonly ContractField[] = [
   { key: 'ber', label: '误码率' },
   { key: 'linkStatus', label: '规范状态' },
   { key: 'berThreshold', label: '误码率阈值' },
-  { key: 'dataRate', label: '数据速率', unit: 'Mbps' },
+  { key: 'dataRate', label: '数据速率', unit: 'Mbit/s' },
 ] as const
 
 const EXCEPTION_RULES = [

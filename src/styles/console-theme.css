@@ -167,7 +167,11 @@ body {
   max-height: 90dvh;
   margin: 5vh auto;
   margin: 5dvh auto;
+  padding: 0;
   overflow: hidden;
+  border: 1px solid var(--console-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 20px 50px rgb(0 8 18 / 55%);
 }
 
 .scenario-dialog > .el-dialog__header,
@@ -175,21 +179,65 @@ body {
   flex-shrink: 0;
 }
 
+.scenario-dialog > .el-dialog__header {
+  position: relative;
+  margin-right: 0;
+  padding: 0.9rem 3rem 0.9rem 1.25rem;
+  border-bottom: 1px solid var(--console-border);
+  background: rgb(8 24 39 / 85%);
+}
+
+.scenario-dialog > .el-dialog__header .el-dialog__headerbtn {
+  top: 50%;
+  right: 0.35rem;
+  transform: translateY(-50%);
+}
+
+.scenario-dialog > .el-dialog__header .el-dialog__title {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .scenario-dialog > .el-dialog__body {
   min-height: 0;
+  padding: 1rem 1.25rem;
   overflow: auto;
   overscroll-behavior: contain;
 }
 
+.scenario-dialog > .el-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--console-border);
+  background: rgb(6 20 33 / 82%);
+}
+
 .scenario-advanced {
   min-width: 0;
-  margin: 0.75rem 0;
-  padding: 0.75rem;
+  margin: 0.65rem 0;
+  padding: 0.65rem 0.85rem;
   border: 1px solid var(--console-border);
-  border-radius: 6px;
+  border-radius: 8px;
+  background: rgb(6 20 34 / 52%);
+  transition: border-color 0.15s ease;
 }
-.scenario-advanced > summary { cursor: pointer; color: var(--console-text); font-weight: 600; }
-.scenario-advanced[open] > summary { margin-bottom: 0.75rem; }
+.scenario-advanced:hover { border-color: var(--console-border-strong); }
+.scenario-advanced > summary {
+  cursor: pointer;
+  color: var(--console-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  user-select: none;
+}
+.scenario-advanced[open] > summary {
+  margin-bottom: 0.7rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px dashed var(--console-border);
+}
 .scenario-advanced > summary:focus-visible { outline: 2px solid var(--console-cyan); outline-offset: 3px; }
 
 .el-table {

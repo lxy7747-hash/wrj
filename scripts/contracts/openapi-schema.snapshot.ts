@@ -4274,6 +4274,43 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "type": "number",
             "exclusiveMinimum": 0,
             "default": 5
+          },
+          "trafficDistance": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "链路最大传输距离配置（单位 km），对应 link_calc 的 traffic_distance。",
+            "properties": {
+              "relayUavKm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 60
+              },
+              "relayRelayKm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 200
+              },
+              "relayCommandKm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 240
+              },
+              "uavCommandKm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 240
+              },
+              "microwaveKm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 200
+              },
+              "laserKm": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "default": 40
+              }
+            }
           }
         }
       },

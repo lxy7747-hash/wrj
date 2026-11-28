@@ -256,7 +256,7 @@ onBeforeUnmount(() => store.resetMaintenance())
             </el-form-item>
             <el-form-item label="发射带宽（MHz）" :error="parameterIssues.bandwidthMHz"><el-input-number :model-value="editor.bandwidthMHz ?? null" :disabled="pending" controls-position="right" placeholder="未配置" data-testid="equipment-bandwidth" @update:model-value="editor.bandwidthMHz = $event ?? null" /></el-form-item>
             <el-form-item :label="EQUIPMENT_LINK_TYPES[editor.type] === 'LASER' ? '激光光功率（W）' : '发射功率（W）'" :error="parameterIssues.txPowerW"><el-input-number :model-value="editor.txPowerW ?? null" :disabled="pending" controls-position="right" placeholder="未配置" data-testid="equipment-power" @update:model-value="editor.txPowerW = $event ?? null" /></el-form-item>
-            <el-form-item :label="dataRateOptions ? '数据速率' : '数据速率（Mbps）'" :error="dataRateError">
+            <el-form-item :label="dataRateOptions ? '数据速率' : '数据速率（Mbit/s）'" :error="dataRateError">
               <el-select v-if="dataRateOptions" :model-value="editor.dataRateMbps ?? null" :disabled="pending" clearable placeholder="未配置" data-testid="equipment-data-rate" @update:model-value="editor.dataRateMbps = $event ?? null">
                 <el-option v-if="editor.dataRateMbps != null && !dataRateOptions.some(option => option.value === editor?.dataRateMbps)" :value="editor.dataRateMbps" :label="`${formatDataRate(editor.dataRateMbps)}（不适用，请重新选择）`" disabled />
                 <el-option v-for="option in dataRateOptions" :key="option.value" :value="option.value" :label="option.label" />
@@ -265,8 +265,8 @@ onBeforeUnmount(() => store.resetMaintenance())
               <small v-if="EQUIPMENT_LINK_TYPES[editor.type] === 'MICROWAVE'">仅支持所列固定速率，未配置可留空。</small>
               <small v-else-if="EQUIPMENT_LINK_TYPES[editor.type] === 'SAT'">按天通／神通选择，引用时与实际卫星核对。</small>
               <small v-else-if="EQUIPMENT_LINK_TYPES[editor.type] === 'DATALINK'">档位标明适用波段与方向，引用时按实际链路核对。</small>
-              <small v-else-if="EQUIPMENT_LINK_TYPES[editor.type] === 'FIBER'">{{ FIBER_DATA_RATE_MBPS.min }}～{{ FIBER_DATA_RATE_MBPS.max }} Mbps。</small>
-              <small v-else-if="EQUIPMENT_LINK_TYPES[editor.type] === 'LASER'">大于 0 Mbps，与激光链路介质传输速率一致。</small>
+              <small v-else-if="EQUIPMENT_LINK_TYPES[editor.type] === 'FIBER'">{{ FIBER_DATA_RATE_MBPS.min }}～{{ FIBER_DATA_RATE_MBPS.max }} Mbit/s。</small>
+              <small v-else-if="EQUIPMENT_LINK_TYPES[editor.type] === 'LASER'">大于 0 Mbit/s，与激光链路介质传输速率一致。</small>
             </el-form-item>
           </div>
         </section>

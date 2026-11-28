@@ -13,7 +13,8 @@ import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-val
 import type { LinkPortEditorProjection } from '../../src/features/scenarios/link-port-parameters'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import { dbmToWatts, readJammerParameters } from '../../src/features/scenarios/jammer-settings'
+import { readJammerParameters } from '../../src/features/scenarios/jammer-settings'
+import { setJammerPowerUnit } from '../../src/features/scenarios/jammer-power-unit'
 import { createTemplateScenario } from '../fixtures/template-scenario'
 
 const dialogStub = { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' }
@@ -89,6 +90,24 @@ describe('场景参数弹框的真实编辑路径', () => {
     await typed.setProps({ modelValue: latest() })
     expect(wrapper.find('[data-testid="link-calc-jammingRangeKm"]').exists()).toBe(false)
     expect(latest().linkCalc!.jammingRangeKm).toBe(30)
+
+    // 链路最大传输距离（trafficDistance）：默认折叠展示“默认距离”，展开可编辑 6 项距离并一键恢复默认
+    expect(wrapper.get('[data-testid="traffic-distance-state"]').text()).toBe('默认距离')
+    await wrapper.get('[data-testid="traffic-distance-settings"] > summary').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="link-calc-trafficDistance-relayUavKm"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="link-calc-trafficDistance-laserKm"]').exists()).toBe(true)
+    })
+    wrapper.findAllComponents({ name: 'ElInputNumber' })
+      .find(item => item.attributes('data-testid') === 'link-calc-trafficDistance-relayUavKm')!
+      .vm.$emit('update:modelValue', 90)
+    expect(latest().linkCalc!.trafficDistance).toMatchObject({ relayUavKm: 90, microwaveKm: 200, laserKm: 40 })
+    await typed.setProps({ modelValue: latest() })
+    expect(wrapper.get('[data-testid="traffic-distance-state"]').text()).toBe('已自定义 1 项')
+    await wrapper.get('[data-testid="traffic-distance-reset"]').trigger('click')
+    expect(latest().linkCalc!.trafficDistance).toBeUndefined()
+    await typed.setProps({ modelValue: latest() })
+    expect(wrapper.get('[data-testid="traffic-distance-state"]').text()).toBe('默认距离')
 
     await typed.setProps({ modelValue: readLinkSettings(config) })
     // 已删除“热链终点平台类型”下拉，热链只按链路序列配置。
@@ -249,7 +268,7 @@ describe('场景参数弹框的真实编辑路径', () => {
     select(wrapper, 'link-type').vm.$emit('update:modelValue', 'FIBER')
     select(wrapper, 'link-type').vm.$emit('change', 'FIBER')
     await flushPromises()
-    expect(wrapper.text()).toContain('10～1000 Mbps')
+    expect(wrapper.text()).toContain('10～1000 Mbit/s')
     expect(wrapper.find('[data-testid="link-bandwidth"]').exists()).toBe(false)
     expect(inputNumber(wrapper, 'link-data-rate').props('min')).toBe(10)
     expect(inputNumber(wrapper, 'link-data-rate').props('max')).toBe(1000)
@@ -482,7 +501,7 @@ describe('场景参数弹框的真实编辑路径', () => {
     wrapper.unmount()
   })
 
-  it('dBm 功率只接受 -10～65 的 5 dB 档位，旧瓦特值未编辑时原样保留', async () => {
+  it('干扰功率直接按 W 输入，拒绝 0/负值/空值并支持任意正瓦数', async () => {
     const config = scenario()
     const jammer = { ...(structuredClone(config.jammers[0]) as Jammer), defaultPower: 10_000 }
     const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
@@ -491,8 +510,8 @@ describe('场景参数弹框的真实编辑路径', () => {
         platforms: config.platforms, links: config.links, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001, validate: () => [] },
       global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
     })
-    expect(wrapper.get('[data-testid="jammer-legacy-power"]').text()).toContain('10000 W')
-    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 70)
+    expect(inputNumber(wrapper, 'jammer-power').props('modelValue')).toBe(10_000)
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 0)
     await wrapper.vm.$nextTick()
     await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
     expect(wrapper.emitted('apply')).toBeUndefined()
@@ -501,9 +520,9 @@ describe('场景参数弹框的真实编辑路径', () => {
     await wrapper.vm.$nextTick()
     await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
     expect(wrapper.emitted('apply')).toBeUndefined()
-    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 65)
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 250)
     await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
-    expect((wrapper.emitted('apply')!.at(-1)![0] as Jammer).defaultPower).toBeCloseTo(dbmToWatts(65))
+    expect((wrapper.emitted('apply')!.at(-1)![0] as Jammer).defaultPower).toBe(250)
     wrapper.unmount()
   })
 
@@ -556,10 +575,28 @@ describe('场景参数弹框的真实编辑路径', () => {
     })
     expect(fiberWrapper.find('[data-testid="link-forward-data-rate"]').exists()).toBe(true)
     expect(fiberWrapper.find('[data-testid="link-reverse-data-rate"]').exists()).toBe(false)
+    expect(fiberWrapper.text()).toContain('10～1000 Mbit/s；留空沿用端口/默认速率。')
+    expect(inputNumber(fiberWrapper, 'link-forward-data-rate').props('min')).toBe(10)
+    expect(inputNumber(fiberWrapper, 'link-forward-data-rate').props('max')).toBe(1000)
     inputNumber(fiberWrapper, 'link-forward-data-rate').vm.$emit('update:modelValue', 500)
     await fiberWrapper.get('[data-testid="apply-link"]').trigger('click')
     expect(fiberWrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ type: 'FIBER', forwardDataRate: 500 })
     fiberWrapper.unmount()
+
+    // 微波链路与 L 波段数传链路同样按各自上下界显示范围提示。
+    const microwaveWrapper = mount(LinkEditorDialog, {
+      props: {
+        modelValue: true,
+        link: { ...baseLink, type: 'MICROWAVE', direction: 'FORWARD' },
+        editing: true, error: '', pending: false, locked: false,
+        platforms: config.platforms, linkTypeOptions: typeOptions, linkDirectionLabels: { FORWARD: '前向', REVERSE: '返向' }, minimumStep: 0.001,
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+    })
+    expect(microwaveWrapper.text()).toContain('0.1～100 Mbit/s；留空沿用端口/默认速率。')
+    expect(inputNumber(microwaveWrapper, 'link-forward-data-rate').props('min')).toBe(0.1)
+    expect(inputNumber(microwaveWrapper, 'link-forward-data-rate').props('max')).toBe(100)
+    microwaveWrapper.unmount()
   })
 
   it('脚本预览引导保存生成，保留预检操作和错误位置', async () => {
@@ -673,7 +710,7 @@ describe('干扰带宽档位和链路对准', () => {
   it('宽带压制提供 100/200/400 MHz 快捷带宽并提示功率填写范围', async () => {
     const { wrapper } = openJammer(200, 'BARRAGE')
     expect(wrapper.find('[data-testid="jammer-timing-advanced"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="jammer-power-hint"]').text()).toBe('-10～65 dBm，步长 5 dB。')
+    expect(wrapper.get('[data-testid="jammer-power-hint"]').text()).toBe('单位 W，须大于 0。')
     await wrapper.get('[data-testid="jammer-bandwidth-preset-400"]').trigger('click')
     expect(inputNumber(wrapper, 'jammer-bandwidth').props('modelValue')).toBe(400)
     await wrapper.get('[data-testid="jammer-bandwidth-preset-100"]').trigger('click')
@@ -762,14 +799,14 @@ describe('干扰带宽档位和链路对准', () => {
     inputNumber(wrapper, 'jammer-frequency').vm.$emit('update:modelValue', 8200)
     await flushPromises()
     expect(wrapper.find('[data-testid="jammer-frequency-ghz-hint"]').exists()).toBe(false)
-    // 功率输入 +70 dBm 超出 -10～65 dBm，点击确认拦截并展示明确错误提示。
-    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 70)
+    // 功率输入 0 W 非法，点击确认拦截并展示明确错误提示。
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 0)
     await flushPromises()
     await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
     expect(wrapper.emitted('apply')).toBeUndefined()
-    expect(wrapper.get('.platform-feedback').text()).toContain('-10～65 dBm')
+    expect(wrapper.get('.platform-feedback').text()).toContain('大于 0 W')
     // 修正功率后切为瞄准式，仅改干扰带宽会自动联动瞄准带宽；单独改瞄准带宽后不再被覆盖。
-    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 20)
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 200)
     select(wrapper, 'jammer-type').vm.$emit('update:modelValue', 'SPOT')
     select(wrapper, 'jammer-type').vm.$emit('change', 'SPOT')
     await flushPromises()
@@ -844,27 +881,27 @@ it('调整干扰功率、天线增益与发射损耗时自动联动更新干扰�
   // 打开已有设备时不擅自改写原保存的 eirpDbw
   expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(40)
 
-  // 调整干扰功率：+20 dBm -> 20 - 30 + 25 - 1 = 14 dBW；-10 dBm -> -16 dBW；+65 dBm -> 59 dBW
-  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 20)
+  // 调整干扰功率（W）：0.1 W(-10 dBW) -> -10+25-1=14 dBW；10 W(10 dBW) -> 34 dBW；1000 W(30 dBW) -> 54 dBW
+  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 0.1)
   await flushPromises()
   expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(14)
 
-  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', -10)
+  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 10)
   await flushPromises()
-  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(-16)
+  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(34)
 
-  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 65)
+  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 1000)
   await flushPromises()
-  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(59)
+  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(54)
 
   // 调整天线增益与发射损耗同样同步联动
   inputNumber(wrapper, 'jammer-antennaGainDbi').vm.$emit('update:modelValue', 30)
   await flushPromises()
-  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(64)
+  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(59)
 
   inputNumber(wrapper, 'jammer-txLossDb').vm.$emit('update:modelValue', 2.5)
   await flushPromises()
-  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(62.5)
+  expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(57.5)
 
   // 手动覆盖 eirpDbw 后，微调天线增益不冲掉手动值；再次调功率后恢复联动
   inputNumber(wrapper, 'jammer-eirpDbw').vm.$emit('update:modelValue', 48)
@@ -873,11 +910,50 @@ it('调整干扰功率、天线增益与发射损耗时自动联动更新干扰�
   await flushPromises()
   expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(48)
 
-  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 30)
+  inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 1)
   await flushPromises()
   expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(17.5)
 
   await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
   expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ eirpDbw: 17.5, antennaGainDbi: 20, txLossDb: 2.5 })
   wrapper.unmount()
+})
+
+it('干扰功率支持在 W 与 dBm 之间切换显示和编辑，保存仍输出合同瓦数', async () => {
+  setJammerPowerUnit('W')
+  try {
+    const draft = createTemplateScenario()
+    const jammer = { ...structuredClone(draft.config.jammers[0]!), defaultPower: 1000, antennaGainDbi: 25, txLossDb: 1, eirpDbw: 54 }
+    const wrapper = mount(JammerEditorDialog, {
+      props: { modelValue: true, jammer, uiExtension: draft.uiExtensions.jammers[0], editing: true, error: '', pending: false, locked: false,
+        platforms: draft.config.platforms, links: draft.config.links, jammerTypeOptions: [], minimumStep: 1 },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+    })
+    expect(inputNumber(wrapper, 'jammer-power').props('modelValue')).toBe(1000)
+
+    // 切换到 dBm：1000 W 显示为 60 dBm，不改写原 eirpDbw
+    const unitSwitch = wrapper.findAllComponents({ name: 'ElRadioGroup' })
+      .find(item => item.attributes('data-testid') === 'jammer-power-unit-switch')!
+    unitSwitch.vm.$emit('update:modelValue', 'dBm')
+    await flushPromises()
+    expect(inputNumber(wrapper, 'jammer-power').props('modelValue')).toBe(60)
+    expect(wrapper.get('[data-testid="jammer-power-hint"]').text()).toContain('1000 W')
+    expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(54)
+
+    // 在 dBm 下输入 20 dBm（0.1 W）：自动换算 W 并联动 EIRP（20 - 30 + 25 - 1 = 14 dBW）
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 20)
+    await flushPromises()
+    expect(inputNumber(wrapper, 'jammer-eirpDbw').props('modelValue')).toBe(14)
+
+    // 切回 W 后显示 0.1 W
+    unitSwitch.vm.$emit('update:modelValue', 'W')
+    await flushPromises()
+    expect(inputNumber(wrapper, 'jammer-power').props('modelValue')).toBe(0.1)
+
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ defaultPower: 0.1, eirpDbw: 14 })
+    wrapper.unmount()
+  } finally {
+    setJammerPowerUnit('W')
+  }
 })

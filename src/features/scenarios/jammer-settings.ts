@@ -11,11 +11,31 @@ export const JAMMER_RELEASE_MARGIN_METERS = 5 * METERS_PER_NAUTICAL_MILE
 export const JAMMER_POWER_DBM = { min: -10, max: 30, step: 5 } as const
 /** 场景配置的干扰设备弹框允许更高功率；执行侧仍沿用 JAMMER_POWER_DBM 的受控档位。 */
 export const JAMMER_EDITOR_POWER_DBM = { min: -10, max: 65, step: 5 } as const
+export type JammerPowerUnit = 'W' | 'dBm'
 export const wattsToDbm = (watts: number): number => 10 * Math.log10(watts * 1000)
 export const dbmToWatts = (dbm: number): number => 10 ** ((dbm - 30) / 10)
+/** 将合同瓦特值换算为界面展示用的 dBm 数值（保留两位小数）；非正数返回 undefined。 */
+export function wattsToDisplayDbm(watts: number): number | undefined {
+  return Number.isFinite(watts) && watts > 0 ? Number(wattsToDbm(watts).toFixed(2)) : undefined
+}
+/** 将界面输入的 dBm 数值换算为合同瓦特值（去除浮点尾差）。 */
+export function dbmInputToWatts(dbm: number): number {
+  return Number(dbmToWatts(dbm).toPrecision(12))
+}
+/** 按指定单位（W / dBm）格式化干扰功率展示文本。 */
+export function formatJammerPowerValue(watts: number | null | undefined, unit: JammerPowerUnit = 'W'): string {
+  if (watts == null || !Number.isFinite(watts)) return '暂无数据'
+  if (watts <= 0) return '0 W'
+  if (unit === 'dBm') return `${Number(wattsToDbm(watts).toFixed(2))} dBm`
+  return `${Number(watts.toPrecision(6))} W`
+}
 /** 与 LinkCalcManager 插件一致的干扰辐射功率（dBW）换算：功率(dBm) - 30 + 天线增益(dBi) - 发射损耗(dB)。 */
 export function computeJammerEirpDbw(powerDbm: number, antennaGainDbi: number, txLossDb = 0): number {
   return Number((powerDbm - 30 + antennaGainDbi - txLossDb).toFixed(2))
+}
+/** 按瓦特功率计算干扰辐射功率（dBW）：10·log10(功率 W) + 天线增益(dBi) - 发射损耗(dB)。 */
+export function computeJammerEirpDbwFromWatts(powerW: number, antennaGainDbi: number, txLossDb = 0): number {
+  return Number((10 * Math.log10(powerW) + antennaGainDbi - txLossDb).toFixed(2))
 }
 function isPowerDbmInRange(value: unknown, range: { min: number; max: number; step: number }): value is number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return false
@@ -49,7 +69,7 @@ export const JAMMER_DEFAULT_BANDS: readonly ResolvedJammerBandParam[] = [
   { frequency: 8_200, bandwidth: 10, mode: 'BARRAGE', spotBandwidthMHz: 0, sweepDutyCycle: 0 },
 ]
 
-/** 地面干扰站默认参数：1000 W（60 dBm）、20 GHz / 10 MHz，探测 20 / 干扰 15 / 释放 16 海里。 */
+/** 地面干扰站默认参数：1000 W、20 GHz / 10 MHz，探测 20 / 干扰 15 / 释放 16 海里。 */
 export const JAMMER_DEFAULTS = {
   defaultPower: 1000, frequency: 20_000, bandwidth: 10,
   detectionRange: 20 * METERS_PER_NAUTICAL_MILE,

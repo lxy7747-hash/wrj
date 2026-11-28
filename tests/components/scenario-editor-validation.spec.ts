@@ -110,7 +110,7 @@ describe('节点弹框确认校验', () => {
 
   it.each([
     { field: 'waypoint-acceleration-0', group: null, invalidate: (config: ScenarioConfig) => { config.platforms[3]!.waypoints[0]!.acceleration = Number.NaN } },
-    { field: 'link-rx-bandwidth', group: '接收与极化', invalidate: (config: ScenarioConfig) => { config.links.find(link => link.type === 'LASER')!.rxBandwidth = -1 } },
+    { field: 'link-rx-bandwidth', group: '接收参数', invalidate: (config: ScenarioConfig) => { config.links.find(link => link.type === 'LASER')!.rxBandwidth = -1 } },
     { field: 'link-modulation', group: null, invalidate: (config: ScenarioConfig) => { Object.assign(config.links[0]!, { modulation: 'INVALID' }) } },
   ])('定位 $field 校验错误时聚焦字段，并展开所属折叠区', async ({ field, group, invalidate }) => {
     const { wrapper, store } = await loadPage()
@@ -313,7 +313,7 @@ describe('节点弹框确认校验', () => {
     expect(formError('link-target')).not.toContain('微波链路仅支持')
     select('link-target', 'GCC-01')
     await flushPromises()
-    const message = '微波链路仅支持任务/中继无人机之间或与后方指挥节点之间。'
+    const message = '微波链路仅支持任务/中继无人机之间或与公共服务平台后方节点之间。'
     expect(formError('link-type')).not.toContain(message)
     await vi.waitFor(() => {
       expect(formError('link-source')).toContain(message)
@@ -366,13 +366,13 @@ describe('节点弹框确认校验', () => {
     const fieldError = (id: string) => document.querySelector(`[data-testid="${id}"]`)!
       .closest('.el-form-item')!.querySelector('.el-form-item__error')?.textContent ?? ''
 
-    const firstLoiter = { longitude: 120.1, latitude: 24.1, altitude: 1000, speed: 1 }
-    const secondLoiter = { ...firstLoiter, longitude: 120.2 }
-    await click('add-loiter-waypoint')
+    const secondLoiter = { longitude: 120.2, latitude: 24.1, altitude: 1000, speed: 1 }
+    await click('loiter-enabled')
+    document.querySelector<HTMLDetailsElement>('[data-testid="loiter-details"]')!.open = true
+    const pointCount = document.querySelectorAll('[data-testid^="delete-loiter-"]').length
+    expect(pointCount).toBeGreaterThanOrEqual(2)
+    for (let index = pointCount - 1; index > 0; index -= 1) await click('delete-loiter-' + index)
     const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
-    picker.vm.$emit('confirm-route', [firstLoiter, secondLoiter])
-    await flushPromises()
-    await click('delete-loiter-1')
     await click('return-enabled')
     expect(listError('loiter')).toBeNull()
     expect(listError('return')).toBeNull()
@@ -503,9 +503,9 @@ describe('5.2.2 输入时字段下即时校验', () => {
     expect(store.draft).toEqual(original)
     await input('jammer-range', '80')
     expect(errorFor('jammer-range')).toBe('')
-    await input('jammer-power', '2')
-    expect(errorFor('jammer-power')).toContain('-10～65 dBm')
-    await input('jammer-power', '65')
+    await input('jammer-power', '0')
+    expect(errorFor('jammer-power')).toContain('大于 0 W')
+    await input('jammer-power', '200')
     expect(errorFor('jammer-power')).toBe('')
     await confirm('cancel-jammer')
     expect(store.draft).toEqual(original)
@@ -775,7 +775,7 @@ it('端口托管链路的同频互扰警告在校验面板显示对应端口，�
   expect(panelText).toContain('第 1 条链路')
   expect(panelText).toContain('发射频率（端口：任务无人机（含中继） · 微波）')
 
-  await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
+  await wrapper.get('[data-testid^="locate-validation-issue-"][data-field-path="links[0].frequency"]').trigger('click')
   await flushPromises()
 
   expect(document.querySelector('[data-testid="link-dialog"]')).toBeNull()

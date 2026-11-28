@@ -20,7 +20,7 @@ export function engineSegmentLossRows(
 export function engineSegmentInputRows(segment: EngineLinkSegment): string[][] {
   const input = segment.inputTrace
   return [
-    ['频率（GHz）', value(input.frequencyGHz)], ['数据率（Mbps）', value(input.dataRateMbps)],
+    ['频率（GHz）', value(input.frequencyGHz)], ['数据率（Mbit/s）', value(input.dataRateMbps)],
     ['发射辐射功率（dBW）', value(input.eirpDbw)], ['G/T（dB/K）', value(input.gtDbk)],
   ]
 }

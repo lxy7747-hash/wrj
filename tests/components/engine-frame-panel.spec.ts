@@ -1,6 +1,6 @@
 import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 import { flushPromises, mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
-import ElementPlus, { ElInputNumber, ElSelect, ElTooltip } from 'element-plus'
+import ElementPlus, { ElInputNumber, ElRadioGroup, ElSelect, ElTooltip } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { EngineFrameSnapshot, EngineLinkSegment, EngineRouteSwitch, Link, LinkType } from '../../src/contracts/domain-models'
 import EngineFramePanel from '../../src/components/situation/EngineFramePanel.vue'
@@ -10,6 +10,7 @@ import detected from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 import { useRuntimeQualityStore } from '../../src/stores/runtime-quality'
 import { useSimulationStore } from '../../src/stores/simulation'
+import { setJammerPowerUnit } from '../../src/features/scenarios/jammer-power-unit'
 import { LATEST_FRAMES } from '../fixtures/engine-frame/latest-report'
 
 const losses = { freeSpaceDb: null, seaMultipathDb: null, atmosphericDb: null, cloudRainDb: null, jammingDb: null, totalDb: null }
@@ -132,10 +133,10 @@ describe('EngineFramePanel', () => {
     expect(pathCards[0]!.get('header').text()).toContain('PATH-1')
     expect(metrics(pathCards[0]!)).toEqual({
       '干信比(GXB)（dB）': '9.5', '误码率(BER)': '1.2e-7', '抗干扰余量（dB）': '26.3',
-      '时延（ms）': '1.26', '速率（bit/s）': '2356',
+      '时延（ms）': '1.26', '速率（Mbit/s）': '0.002356',
     })
     expect(pathCards[1]!.get('header').text()).toContain('暂无数据')
-    expect(metrics(pathCards[1]!)).toMatchObject({ '时延（ms）': '暂无数据', '速率（bit/s）': '0' })
+    expect(metrics(pathCards[1]!)).toMatchObject({ '时延（ms）': '暂无数据', '速率（Mbit/s）': '0' })
 
     runtime.engineFrame = { ...adaptEngineFrameSnapshot({ ...detected, frame_id: 380 }).data!, runId: 'RUN-1' }
     await flushPromises()
@@ -263,7 +264,7 @@ describe('EngineFramePanel', () => {
     expect(wrapper.findAll('[data-testid="jammer-detect-status"]').map(tag => tag.text())).toEqual(['未侦测到目标', '未侦测到目标'])
     expect(wrapper.findAll('[data-testid="jammer-no-detection"]').map(el => el.text())).toEqual(['未侦测到目标', '未侦测到目标'])
   })
-  it('干扰侦测卡片同步展示 dBm 与 W 功率，并记录该干扰机启停事件', async () => {
+  it('干扰侦测卡片按 W 展示干扰功率，并记录该干扰机启停事件', async () => {
     const runtime = useRuntimeQualityStore()
     const baseJammer = adaptEngineFrameSnapshot(detected).data!.jammers[0]!
     runtime.engineFrame = {
@@ -279,8 +280,8 @@ describe('EngineFramePanel', () => {
     ]
     wrapper = mount(EngineFramePanel, { props: { section: 'jammers' }, global: { plugins: [pinia, ElementPlus] } })
     expect(wrapper.findAll('[data-testid="jammer-power-value"]').map(el => el.text())).toEqual([
-      '+20 dBm（0.1 W）',
-      '-10 dBm（0.0001 W）',
+      '0.1 W',
+      '0.0001 W',
     ])
     const eventBlocks = wrapper.findAll('[data-testid="jammer-lifecycle-events"]')
     expect(eventBlocks[0]!.text()).toContain('进入干扰圈')
@@ -408,7 +409,7 @@ describe('EngineFramePanel', () => {
     expect(wrapper.get('.link-quality-dialog__header strong').text()).toBe('C 波段数传链路 · 前向 · 指挥车与中继节点 · 引擎实时数据')
     const details = wrapper.get('[data-testid="link-detail-engine-segments"]')
     const endpoint = () => details.get('.engine-segment > strong').text()
-    expect(endpoint()).toBe('地面无人集群指挥车（C 波段上行） → 任务无人机 01（C 波段上行）')
+    expect(endpoint()).toBe('无人集群指挥车节点（C 波段上行） → 任务无人机 01（C 波段上行）')
     expect(details.text()).not.toContain('引擎段编号')
     expect(details.text()).toContain('来源帧 7 · 源仿真时刻 0分12.5秒')
     expect(details.text()).toContain('干信比(GXB)0.00 dB')
@@ -654,5 +655,45 @@ describe('EngineFramePanel', () => {
     expect(wrapper.get('[data-testid="detection-probability"]').text()).toBe('85% ～ 92%')
     expect(wrapper.findAll('[data-testid="target-detect-prob"]').map(el => el.text())).toEqual(['探测概率 92%', '探测概率 85%'])
     expect(wrapper.findAll('[data-testid="jammer-action-freq"]').map(el => el.text())).toEqual(['4.5 GHz', '2.5 GHz'])
+  })
+
+  it('干扰侦测卡片支持通过开关在 W 与 dBm 之间切换显示干扰功率', async () => {
+    setJammerPowerUnit('W')
+    try {
+      const runtime = useRuntimeQualityStore()
+      runtime.engineFrame = {
+        ...runtime.engineFrame!,
+        jammers: [
+          {
+            name: 'jammer_station_01', platformId: 'jammer_station_01',
+            detectStatus: 'DETECTED', deviceStatus: 'ON',
+            powerW: 200, frequencyHz: 4.5e9, rangeM: 111120,
+            detections: [], actions: [],
+          },
+          {
+            name: 'jammer_station_02', platformId: 'jammer_station_02',
+            detectStatus: 'DETECTED', deviceStatus: 'ON',
+            powerW: 0.1, frequencyHz: 4.5e9, rangeM: 111120,
+            detections: [], actions: [],
+          },
+        ],
+      }
+      const mounted = mount(EngineFramePanel, { props: { section: 'jammers' }, global: { plugins: [pinia, ElementPlus] } })
+      wrapper = mounted
+      const powerValues = () => mounted.findAll('[data-testid="jammer-power-value"]').map(el => el.text())
+      expect(powerValues()).toEqual(['200 W', '0.1 W'])
+
+      const toggle = mounted.findAllComponents(ElRadioGroup)
+        .find(item => item.attributes('data-testid') === 'jammer-power-unit-toggle')!
+      toggle.vm.$emit('update:modelValue', 'dBm')
+      await flushPromises()
+      expect(powerValues()).toEqual(['53.01 dBm', '20 dBm'])
+
+      toggle.vm.$emit('update:modelValue', 'W')
+      await flushPromises()
+      expect(powerValues()).toEqual(['200 W', '0.1 W'])
+    } finally {
+      setJammerPowerUnit('W')
+    }
   })
 })

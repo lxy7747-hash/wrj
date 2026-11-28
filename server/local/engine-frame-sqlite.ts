@@ -33,8 +33,8 @@ function compactPortMedium(port: string): string {
 function formatEngineActorName(raw: string): string {
   const trimmed = raw.trim()
   if (!trimmed) return ''
-  if (trimmed === 'rear_comm_vehicle') return '后方指挥节点'
-  if (trimmed === 'command_vehicle') return '集群指挥车'
+  if (trimmed === 'rear_comm_vehicle') return '公共服务平台后方节点'
+  if (trimmed === 'command_vehicle') return '无人集群指挥车节点'
   if (trimmed === 'tiantong_sat') return '天通卫星'
   if (trimmed === 'shentong_sat') return '神通卫星'
   const uav = /^mission_uav_(\d+)$/i.exec(trimmed)

@@ -44,13 +44,13 @@ export function prepareLinkEquipment(link: Link, equipment: EquipmentParameter, 
   if (equipment.dataRateMbps !== undefined && equipment.dataRateMbps !== null) {
     const fixedRate = fixedLinkDataRate(link, platforms)
     if (fixedRate !== null && equipment.dataRateMbps !== fixedRate) {
-      return failure('dataRate', `该链路数据速率固定为 ${fixedRate} Mbps，与装备参数不一致。`)
+      return failure('dataRate', `该链路数据速率固定为 ${fixedRate} Mbit/s，与装备参数不一致。`)
     }
     if (link.type === 'DATALINK' && !datalinkRateTiers(link.band ?? 'C', link.direction).includes(equipment.dataRateMbps)) {
       return failure('dataRate', '装备数据速率不在当前数传波段和方向的可用档位内。')
     }
     if (link.type === 'FIBER' && (equipment.dataRateMbps < FIBER_DATA_RATE_MBPS.min || equipment.dataRateMbps > FIBER_DATA_RATE_MBPS.max)) {
-      return failure('dataRate', `光纤数据速率必须在 ${FIBER_DATA_RATE_MBPS.min}～${FIBER_DATA_RATE_MBPS.max} Mbps 之间。`)
+      return failure('dataRate', `光纤数据速率必须在 ${FIBER_DATA_RATE_MBPS.min}～${FIBER_DATA_RATE_MBPS.max} Mbit/s 之间。`)
     }
   }
 

@@ -267,6 +267,21 @@ export interface ScenarioLinkSettings {
 export interface HotLinkSettings {
   forward: Identifier[][]; reverse: Identifier[][];
 }
+/** 链路最大传输距离配置（单位 km），对应 link_calc 的 traffic_distance；旧场景缺省按模板默认值补齐。 */
+export interface TrafficDistanceSettings {
+  /** C/L 波段数传：前出中继 ↔ 作业无人机，默认 60 km。 */
+  relayUavKm: number;
+  /** C/L 波段数传：前出中继 ↔ 前出中继，默认 200 km。 */
+  relayRelayKm: number;
+  /** C/L 波段数传：前出中继 ↔ 指挥车，默认 240 km。 */
+  relayCommandKm: number;
+  /** C/L 波段数传：作业无人机 ↔ 指挥车，默认 240 km。 */
+  uavCommandKm: number;
+  /** 微波链路最大传输距离，默认 200 km。 */
+  microwaveKm: number;
+  /** 激光链路最大传输距离，默认 40 km。 */
+  laserKm: number;
+}
 /** 信道编码增益（dB）：-1 关闭，0 无编码，5.0/6.5 卷积码，3.5 RS 码，8.0 Turbo 码。 */
 export type ChannelEncodingScheme = -1 | 0 | 5 | 6.5 | 3.5 | 8;
 export interface LinkCalcSettings {
@@ -276,6 +291,8 @@ export interface LinkCalcSettings {
   /** 干扰圈半径，单位 km（0～100）。 */
   jammingRangeKm: number;
   channelEncodingScheme: ChannelEncodingScheme;
+  /** 链路最大传输距离（km）；缺省时按模板默认值（60/200/240/240、微波 200、激光 40）生成。 */
+  trafficDistance?: TrafficDistanceSettings;
 }
 export interface JammerBandParam {
   frequency: Megahertz;

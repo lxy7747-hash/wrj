@@ -1,5 +1,5 @@
 import type {
-  ChannelEncodingScheme, DatalinkBand, Environment, Link, LinkCalcSettings, LinkDirection, LinkType, Modulation, Platform, Polarization, UiLinkStatus,
+  ChannelEncodingScheme, DatalinkBand, Environment, Link, LinkCalcSettings, LinkDirection, LinkType, Modulation, Platform, Polarization, TrafficDistanceSettings, UiLinkStatus,
 } from '../../contracts/domain-models'
 
 /**
@@ -44,7 +44,59 @@ export const CHANNEL_ENCODING_OPTIONS: readonly { value: ChannelEncodingScheme; 
   { value: 8, label: 'Turbo 码 1/3（8.0 dB）' },
 ]
 export const JAMMING_RANGE_KM = { min: 0, max: 100 } as const
-export const LINK_CALC_DEFAULTS: Required<LinkCalcSettings> = {
+export const TRAFFIC_DISTANCE_DEFAULTS: TrafficDistanceSettings = {
+  relayUavKm: 60,
+  relayRelayKm: 200,
+  relayCommandKm: 240,
+  uavCommandKm: 240,
+  microwaveKm: 200,
+  laserKm: 40,
+}
+export type TrafficDistanceKey = keyof TrafficDistanceSettings
+export const TRAFFIC_DISTANCE_KEYS = [
+  'relayUavKm',
+  'relayRelayKm',
+  'relayCommandKm',
+  'uavCommandKm',
+  'microwaveKm',
+  'laserKm',
+] as const satisfies readonly TrafficDistanceKey[]
+export const TRAFFIC_DISTANCE_FIELDS: readonly {
+  key: TrafficDistanceKey
+  group: 'cl_link' | 'direct'
+  label: string
+  defaultKm: number
+}[] = [
+  { key: 'relayUavKm', group: 'cl_link', label: '中继 ↔ 无人机（km）', defaultKm: TRAFFIC_DISTANCE_DEFAULTS.relayUavKm },
+  { key: 'relayRelayKm', group: 'cl_link', label: '中继 ↔ 中继（km）', defaultKm: TRAFFIC_DISTANCE_DEFAULTS.relayRelayKm },
+  { key: 'relayCommandKm', group: 'cl_link', label: '中继 ↔ 指挥车（km）', defaultKm: TRAFFIC_DISTANCE_DEFAULTS.relayCommandKm },
+  { key: 'uavCommandKm', group: 'cl_link', label: '无人机 ↔ 指挥车（km）', defaultKm: TRAFFIC_DISTANCE_DEFAULTS.uavCommandKm },
+  { key: 'microwaveKm', group: 'direct', label: '微波链路（km）', defaultKm: TRAFFIC_DISTANCE_DEFAULTS.microwaveKm },
+  { key: 'laserKm', group: 'direct', label: '激光链路（km）', defaultKm: TRAFFIC_DISTANCE_DEFAULTS.laserKm },
+]
+/** 读取链路最大传输距离配置（km）；缺省字段按 1112 模板默认值补齐。 */
+export function readTrafficDistanceSettings(value?: Partial<TrafficDistanceSettings>): TrafficDistanceSettings {
+  return { ...TRAFFIC_DISTANCE_DEFAULTS, ...value }
+}
+/** 生成 link_calc 的 traffic_distance 结构体，键名保留 1112 模板拼写（relay-comand / uav-comand / lazer_link）。 */
+export function buildTrafficDistancePayload(value?: Partial<TrafficDistanceSettings>) {
+  const resolved = readTrafficDistanceSettings(value)
+  return [
+    {
+      link_type: 'cl_link',
+      distance_set: [
+        { dist_seg: 'relay-uav', distance: resolved.relayUavKm },
+        { dist_seg: 'relay-relay', distance: resolved.relayRelayKm },
+        { dist_seg: 'relay-comand', distance: resolved.relayCommandKm },
+        { dist_seg: 'uav-comand', distance: resolved.uavCommandKm },
+      ],
+    },
+    { link_type: 'microwave_link', distance: resolved.microwaveKm },
+    { link_type: 'lazer_link', distance: resolved.laserKm },
+  ]
+}
+export type ResolvedLinkCalcSettings = Required<Omit<LinkCalcSettings, 'trafficDistance'>> & Pick<LinkCalcSettings, 'trafficDistance'>
+export const LINK_CALC_DEFAULTS: Required<Omit<LinkCalcSettings, 'trafficDistance'>> = {
   updateIntervalS: 5,
   emergencyThreshold: 1e-5, warningThreshold: 1e-6, valueThresholdBer: 1e-7,
   jammingRangeKm: 30, channelEncodingScheme: 0,
@@ -61,7 +113,7 @@ export function linkStatusWithBer(status: UiLinkStatus, ber: number | null, thre
 }
 
 /** 读取 link_calc 全局设置；缺省字段按文档默认值补齐，返回副本。 */
-export function readLinkCalcSettings(value: Partial<LinkCalcSettings> | undefined): Required<LinkCalcSettings> {
+export function readLinkCalcSettings(value: Partial<LinkCalcSettings> | undefined): ResolvedLinkCalcSettings {
   return { ...LINK_CALC_DEFAULTS, ...value }
 }
 
@@ -118,12 +170,40 @@ export function datalinkRateTiers(band: DatalinkBand, direction: LinkDirection):
   return direction === 'FORWARD' ? [0.0256, 2, 4] : [0.0512, 2, 4, 8, 16]
 }
 
-/** 将 Mbps 档位显示为 kbps 或 Mbps 文本。 */
+/** 将速率数值统一格式化为 Mbit/s 文本。 */
 export function formatDataRate(valueMbps: number): string {
-  return valueMbps < 1 ? `${Number((valueMbps * 1000).toPrecision(6))} kbps` : `${valueMbps} Mbps`
+  return `${Number(valueMbps.toPrecision(6))} Mbit/s`
 }
 
 export const FIBER_DATA_RATE_MBPS = { min: 10, max: 1000 } as const
+
+export interface DataRateBounds {
+  readonly min: number
+  readonly max: number
+}
+
+/**
+ * 各类链路前向/返向信息速率取值上下界（Mbps），与弹窗范围提示、输入约束及保存校验共用。
+ * - 卫星：前向 0.128～8 Mbps，返向 0.064～2 Mbps
+ * - 微波：0.1～100 Mbps
+ * - 数传：沿用各波段/方向速率档位的最小值与最大值
+ * - 激光：0.1～10000 Mbps
+ * - 光纤：10～1000 Mbps
+ */
+export function directionalDataRateBounds(
+  type: LinkType,
+  direction: LinkDirection,
+  band: DatalinkBand = 'C',
+): DataRateBounds {
+  if (type === 'SAT') return direction === 'REVERSE' ? { min: 0.064, max: 2 } : { min: 0.128, max: 8 }
+  if (type === 'MICROWAVE') return { min: 0.1, max: 100 }
+  if (type === 'DATALINK') {
+    const tiers = datalinkRateTiers(band, direction)
+    return { min: tiers[0]!, max: tiers[tiers.length - 1]! }
+  }
+  if (type === 'LASER') return { min: 0.1, max: 10000 }
+  return { min: FIBER_DATA_RATE_MBPS.min, max: FIBER_DATA_RATE_MBPS.max }
+}
 /** 发射功率上限：卫星链路 1000 W，其余 100 W。 */
 export function linkPowerMaxW(type: LinkType): number {
   return type === 'SAT' ? 1000 : 100

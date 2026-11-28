@@ -22,9 +22,9 @@ function equipment(change: Partial<EquipmentParameter> = {}): EquipmentParameter
 
 describe('装备参数预填链路', () => {
   it('设备速率复用微波、卫星固定值，数传列出所有既有档位并保留目标方向校验', () => {
-    expect(equipmentDataRateOptions('微波通信设备')).toEqual([{ value: 80, label: '80 Mbps' }])
+    expect(equipmentDataRateOptions('微波通信设备')).toEqual([{ value: 80, label: '80 Mbit/s' }])
     expect(equipmentDataRateOptions('卫星通信设备')).toEqual([
-      { value: 0.016, label: '16 kbps（天通）' }, { value: 16, label: '16 Mbps（神通）' },
+      { value: 0.016, label: '0.016 Mbit/s（天通）' }, { value: 16, label: '16 Mbit/s（神通）' },
     ])
     const options = equipmentDataRateOptions('数传通信设备')!
     expect(options.map(option => option.value)).toEqual([0.0064, 0.0128, 0.0256, 0.0512, 1, 2, 4, 8, 16])

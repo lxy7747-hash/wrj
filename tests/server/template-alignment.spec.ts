@@ -263,14 +263,42 @@ describe('1112 固定模板基线', () => {
     expect(block.join('\n')).not.toContain('end_platform_type')
   })
 
-  it('仅本机运行包注释 traffic_distance，保留交付值和其余指令', () => {
+  it('本机运行包与交付脚本都保留启用的 traffic_distance', () => {
     const draft = createTemplateScenario()
     const file = 'comm_platform_REAR.txt'
     const delivery = linkCalcBlock(buildMissionPackage(draft).files[file]!)
     const local = linkCalcBlock(buildMissionPackage(draft, undefined, { linkCalc: 'PRESERVE' }).files[file]!)
-    const distance = delivery.find(line => line.trimStart().startsWith('traffic_distance '))
-    expect(distance).toBeDefined()
-    expect(local).toEqual(delivery.map(line => line === distance ? line.replace('traffic_distance', '// traffic_distance') : line))
+    expect(delivery.some(line => line.trimStart().startsWith('traffic_distance '))).toBe(true)
+    expect(local).toEqual(delivery)
+  })
+
+  it('场景自定义链路最大传输距离按 1112 模板结构写入交付脚本 traffic_distance', () => {
+    const draft = createTemplateScenario()
+    draft.config.linkSettings!.linkCalc = {
+      ...draft.config.linkSettings!.linkCalc!,
+      trafficDistance: {
+        relayUavKm: 85,
+        relayRelayKm: 210,
+        relayCommandKm: 260,
+        uavCommandKm: 250,
+        microwaveKm: 180,
+        laserKm: 55,
+      },
+    }
+    const block = linkCalcBlock(buildMissionPackage(draft).files['comm_platform_REAR.txt']!)
+    expect(directiveValue(block, 'traffic_distance')).toEqual([
+      {
+        link_type: 'cl_link',
+        distance_set: [
+          { dist_seg: 'relay-uav', distance: 85 },
+          { dist_seg: 'relay-relay', distance: 210 },
+          { dist_seg: 'relay-comand', distance: 260 },
+          { dist_seg: 'uav-comand', distance: 250 },
+        ],
+      },
+      { link_type: 'microwave_link', distance: 180 },
+      { link_type: 'lazer_link', distance: 55 },
+    ])
   })
 
   it('激光端口声明、port_params 与引用统一为 lazer_link，不保留 laser_link', () => {

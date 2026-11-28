@@ -58,11 +58,11 @@ function numericConflict(link: Link, field: NumberMapping['field'], value: numbe
   if ((field === 'frequency' || field === 'bandwidth' || field === 'rxFrequency' || field === 'rxBandwidth') && value <= 0) return '必须大于 0。'
   if (field === 'txPower' && (value < 0 || value > linkPowerMaxW(link.type))) return `必须在 0～${linkPowerMaxW(link.type)} W 之间。`
   if (field === 'dataRate') {
-    if (link.type === 'LASER' && value <= 0) return '激光链路数据速率必须大于 0 Mbps。'
+    if (link.type === 'LASER' && value <= 0) return '激光链路数据速率必须大于 0 Mbit/s。'
     const fixed = fixedLinkDataRate(link, platforms)
-    if (fixed !== null && value !== fixed) return `该链路数据速率固定为 ${fixed} Mbps。`
+    if (fixed !== null && value !== fixed) return `该链路数据速率固定为 ${fixed} Mbit/s。`
     if (link.type === 'DATALINK' && !datalinkRateTiers(link.band ?? 'C', link.direction).includes(value)) return '不在当前数传波段和方向的可用档位内。'
-    if (link.type === 'FIBER' && (value < FIBER_DATA_RATE_MBPS.min || value > FIBER_DATA_RATE_MBPS.max)) return `必须在 ${FIBER_DATA_RATE_MBPS.min}～${FIBER_DATA_RATE_MBPS.max} Mbps 之间。`
+    if (link.type === 'FIBER' && (value < FIBER_DATA_RATE_MBPS.min || value > FIBER_DATA_RATE_MBPS.max)) return `必须在 ${FIBER_DATA_RATE_MBPS.min}～${FIBER_DATA_RATE_MBPS.max} Mbit/s 之间。`
   }
   if (field === 'berThreshold' && (value < 0 || value > 1)) return '必须在 0～1 之间。'
   if (field === 'noiseFigureDb' && (value < 0 || value > 100)) return '必须在 0～100 dB 之间。'
@@ -101,8 +101,10 @@ export function prepareLinkMasterData(link: Link, data: MasterData, platforms: r
     if (!mapping) { skip(skipped, entry.key, '不是受支持的链路参数字段。'); continue }
     if (entry.valueType !== 'NUMBER' || typeof entry.value !== 'number' || !Number.isFinite(entry.value)) { skip(skipped, entry.key, '参数必须是有限 NUMBER。'); continue }
     const isAlias = entry.key !== mapping.field
-    if ((mapping.unit === undefined && entry.unit !== undefined) || (mapping.unit !== undefined && entry.unit !== undefined && entry.unit !== mapping.unit)
-      || (!isAlias && mapping.unit !== undefined && entry.unit !== mapping.unit)) { skip(skipped, entry.key, '单位与链路字段不一致。'); continue }
+    const matchesUnit = (expected: NumberMapping['unit'], actual: string | undefined): boolean =>
+      expected === actual || (expected === 'Mbps' && actual === 'Mbit/s')
+    if ((mapping.unit === undefined && entry.unit !== undefined) || (mapping.unit !== undefined && entry.unit !== undefined && !matchesUnit(mapping.unit, entry.unit))
+      || (!isAlias && mapping.unit !== undefined && !matchesUnit(mapping.unit, entry.unit))) { skip(skipped, entry.key, '单位与链路字段不一致。'); continue }
     if (fields.includes(mapping.field)) { skip(skipped, entry.key, '同一链路字段已由先前条目设置。'); continue }
     const conflict = numericConflict(next, mapping.field, entry.value, platforms)
     if (conflict) return failure(mapping.field, `通用基础数据 ${entry.key}${conflict}`)

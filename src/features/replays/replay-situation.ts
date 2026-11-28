@@ -170,8 +170,8 @@ function buildEngineAliasNames(
 }
 
 function formatFallbackEngineIdentifier(token: string): string {
-  if (token === 'rear_comm_vehicle') return '后方指挥节点'
-  if (token === 'command_vehicle') return '集群指挥车'
+  if (token === 'rear_comm_vehicle') return '公共服务平台后方节点'
+  if (token === 'command_vehicle') return '无人集群指挥车节点'
   if (token === 'tiantong_sat') return '天通卫星'
   if (token === 'shentong_sat') return '神通卫星'
   const uav = /^mission_uav_(\d+)$/i.exec(token)

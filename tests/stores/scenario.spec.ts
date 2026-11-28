@@ -1772,7 +1772,7 @@ describe('P2-2 平台与航点字段校验', () => {
     const result = inspectScenarioConfig(config).result
     expect(result.valid).toBe(count <= 2)
     if (count === 3) expect(result.errors).toContainEqual(expect.objectContaining({
-      code: 'NODE_TYPE_LIMIT_EXCEEDED', message: '高空前出中继节点当前场景不能超过 2 个。', fieldPath: 'platforms',
+      code: 'NODE_TYPE_LIMIT_EXCEEDED', message: '公共服务平台前出节点当前场景不能超过 2 个。', fieldPath: 'platforms',
     }))
   })
 

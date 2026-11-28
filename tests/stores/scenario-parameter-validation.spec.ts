@@ -4,7 +4,7 @@ import type { ScenarioConfig } from '../../src/contracts/domain-models'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import { LINK_CALC_DEFAULTS } from '../../src/features/scenarios/link-calc-defaults'
 import { dropRetiredScenarioFields, inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
-import { dbmToWatts, isControlledPowerDbm, wattsToDbm } from '../../src/features/scenarios/jammer-settings'
+import { isControlledPowerDbm } from '../../src/features/scenarios/jammer-settings'
 import { createTemplateScenario } from '../fixtures/template-scenario'
 
 function configuration(): ScenarioConfig {
@@ -204,6 +204,34 @@ describe('新增场景参数的写入边界', () => {
     }
   })
 
+  it('链路最大传输距离必须为正数且结构闭合，合法自定义值校验通过', () => {
+    const valid = configuration()
+    Object.assign(valid.linkSettings!, {
+      linkCalc: {
+        ...LINK_CALC_DEFAULTS,
+        trafficDistance: { relayUavKm: 80, relayRelayKm: 220, relayCommandKm: 260, uavCommandKm: 250, microwaveKm: 180, laserKm: 50 },
+      },
+    })
+    expect(inspectScenarioConfig(valid, 'write').result.errors).toEqual([])
+
+    const badField = configuration()
+    Object.assign(badField.linkSettings!, {
+      linkCalc: { ...LINK_CALC_DEFAULTS, trafficDistance: { relayUavKm: 0, laserKm: -5 } },
+    })
+    expect(inspectScenarioConfig(badField, 'write').result.errors).toEqual([
+      expect.objectContaining({ code: 'LINK_CALC_DISTANCE_INVALID', fieldPath: 'linkSettings.linkCalc.trafficDistance.relayUavKm' }),
+      expect.objectContaining({ code: 'LINK_CALC_DISTANCE_INVALID', fieldPath: 'linkSettings.linkCalc.trafficDistance.laserKm' }),
+    ])
+
+    const badShape = configuration()
+    Object.assign(badShape.linkSettings!, {
+      linkCalc: { ...LINK_CALC_DEFAULTS, trafficDistance: { relayUavKm: 60, extra: 10 } },
+    })
+    expect(inspectScenarioConfig(badShape, 'write').result.errors).toEqual([
+      expect.objectContaining({ code: 'LINK_CALC_DISTANCE_INVALID', fieldPath: 'linkSettings.linkCalc.trafficDistance' }),
+    ])
+  })
+
   it('紧急、告警、质量三档误码率阈值须满足 紧急 >= 告警 >= 质量', () => {
     const config = configuration()
     Object.assign(config.linkSettings!, { linkCalc: { ...LINK_CALC_DEFAULTS, emergencyThreshold: 1e-6, warningThreshold: 1e-5, valueThresholdBer: 2e-5 } })
@@ -226,6 +254,47 @@ describe('新增场景参数的写入边界', () => {
     expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toEqual(expect.arrayContaining([
       'linkSettings.failureGxbDb', 'linkSettings.failureBer',
     ]))
+  })
+
+  it('各类链路前向/返向速率均按类型上下界校验', () => {
+    const cases: Array<{
+      type: ScenarioConfig['links'][number]['type']
+      band?: 'C' | 'L'
+      key: 'forwardDataRate' | 'reverseDataRate'
+      valid: number
+      tooLow: number
+      tooHigh: number
+    }> = [
+      { type: 'MICROWAVE', key: 'forwardDataRate', valid: 80, tooLow: 0.05, tooHigh: 120 },
+      { type: 'DATALINK', band: 'C', key: 'forwardDataRate', valid: 2, tooLow: 0.01, tooHigh: 5 },
+      { type: 'DATALINK', band: 'C', key: 'reverseDataRate', valid: 16, tooLow: 0.02, tooHigh: 20 },
+      { type: 'DATALINK', band: 'L', key: 'forwardDataRate', valid: 0.512, tooLow: 0.005, tooHigh: 2 },
+      { type: 'DATALINK', band: 'L', key: 'reverseDataRate', valid: 8, tooLow: 0.01, tooHigh: 10 },
+      { type: 'LASER', key: 'forwardDataRate', valid: 2500, tooLow: 0.05, tooHigh: 12000 },
+      { type: 'FIBER', key: 'reverseDataRate', valid: 500, tooLow: 5, tooHigh: 2000 },
+    ]
+    for (const item of cases) {
+      const config = configuration()
+      const link = config.links[0]!
+      link.type = item.type
+      if (item.band) link.band = item.band
+      else delete link.band
+      delete link.forwardDataRate
+      delete link.reverseDataRate
+
+      link[item.key] = item.valid
+      expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).not.toContain(`links[0].${item.key}`)
+
+      link[item.key] = item.tooLow
+      expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'DIRECTIONAL_DATA_RATE_OUT_OF_RANGE', fieldPath: `links[0].${item.key}` }),
+      ]))
+
+      link[item.key] = item.tooHigh
+      expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'DIRECTIONAL_DATA_RATE_OUT_OF_RANGE', fieldPath: `links[0].${item.key}` }),
+      ]))
+    }
   })
 
   it('热链结构及有序引用分别定位，不修改已保存的链路', () => {
@@ -258,22 +327,21 @@ describe('新增场景参数的写入边界', () => {
 })
 
 
-describe('V1.2 干扰功率、带宽及瞄准频率', () => {
-  it.each([-15, 70, 12])('%s dBm 写入被拒绝，定位功率字段且不修改原值', dbm => {
+describe('V1.2 干扰功率（W）、带宽及瞄准频率', () => {
+  it.each([0, -10, Number.NaN])('非法干扰功率 %s W 写入被拒绝，定位功率字段且不修改原值', powerW => {
     const config = createTemplateScenario().config
-    config.jammers[0]!.defaultPower = dbmToWatts(dbm)
+    config.jammers[0]!.defaultPower = powerW
     const before = structuredClone(config)
     expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([
-      expect.objectContaining({ code: 'JAMMER_POWER_OUT_OF_RANGE', fieldPath: 'jammers[0].defaultPower',
-        message: '干扰功率须为 -10～65 dBm，且按 5 dB 档位设置。' }),
+      expect.objectContaining({ code: 'JAMMER_POWER_INVALID', fieldPath: 'jammers[0].defaultPower',
+        message: '干扰功率必须大于 0 W。' }),
     ])
     expect(config).toEqual(before)
   })
 
-  it.each([-10, -5, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65])('%s dBm 档位换算成 W 后可写入', dbm => {
+  it.each([0.0001, 1, 200, 500, 1000, 10_000])('任意正瓦特功率 %s W 可直接写入', powerW => {
     const config = createTemplateScenario().config
-    config.jammers[0]!.defaultPower = dbmToWatts(dbm)
-    expect(wattsToDbm(config.jammers[0]!.defaultPower)).toBeCloseTo(dbm, 6)
+    config.jammers[0]!.defaultPower = powerW
     expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
   })
 
@@ -282,13 +350,11 @@ describe('V1.2 干扰功率、带宽及瞄准频率', () => {
     for (const value of [-10 - 2e-6, 5 + 2e-6, 30 + 2e-6, NaN, Infinity, '5', null]) expect(isControlledPowerDbm(value)).toBe(false)
   })
 
-  it('旧场景可读取超上限功率并支持自定义正数带宽，写入时仅拒绝超限功率和非法带宽', () => {
+  it('场景支持大功率 W 值和自定义正数带宽，读写均可通过', () => {
     const config = createTemplateScenario().config
     Object.assign(config.jammers[0]!, { defaultPower: 10_000, bandwidth: 50 })
     expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
-    expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.code)).toEqual([
-      'JAMMER_POWER_OUT_OF_RANGE',
-    ])
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
   })
 
   it.each([

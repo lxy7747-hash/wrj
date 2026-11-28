@@ -64,10 +64,10 @@ export const SITUATION_EVENTS_F00042 = (deterministicData.events as unknown as S
   .filter((event) => event.frameId === SITUATION_FRAME_F00042.frameId)
 
 export const PLATFORM_TYPE_LABELS: Record<PlatformStatus['type'], string> = {
-  REAR_COMMAND_NODE: '后方指挥节点',
-  FORWARD_RELAY_NODE: '高空前出中继节点',
-  GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车',
-  AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
+  REAR_COMMAND_NODE: '公共服务平台后方节点',
+  FORWARD_RELAY_NODE: '公共服务平台前出节点',
+  GROUND_CLUSTER_COMMAND_NODE: '无人集群指挥车节点',
+  AIRBORNE_MISSION_CLUSTER: '无人机集群',
   COMMUNICATION_SATELLITE: '通信卫星',
   GROUND_JAMMER_DETECTION_STATION: '地面干扰设备',
   AIRBORNE_JAMMER_PLATFORM: '机载干扰设备',

@@ -118,7 +118,7 @@ describe('统一运行质量投影与展示', () => {
     expect(detail('路径损耗')).toBe('107.00 dB')
     expect(detail('干信比(GXB)')).toBe('-7.50 dB')
     expect(detail('传输距离')).toBe('12.50 km')
-    expect(detail('计算输入速率')).toBe('1.60 Mbps')
+    expect(detail('计算输入速率')).toBe('1.60 Mbit/s')
     expect(detail('模型版本')).toBe('engine-model')
     expect(detail('调制方式')).toBe('QPSK')
     for (const label of ['信噪比 SNR', '规范状态', '界面状态', '稳定帧数']) expect(detail(label)).toBe('暂无数据')

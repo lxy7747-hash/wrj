@@ -10,6 +10,7 @@ import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConf
 import { INFORMATION_NODE_LIMIT, inspectScenarioConfig, isBusinessInformationNodeType, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
 import { scenarioPlatformLabel, SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
+import { JAMMER_DEFAULT_BANDS, JAMMER_DEFAULTS } from '../../src/features/scenarios/jammer-settings'
 import AdminPage from '../../src/pages/admin/admin.vue'
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
 import { createAppRouter } from '../../src/router'
@@ -768,7 +769,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.uiExtensions.jammers.map(item => item.enabled)).toEqual(switches)
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     const dialog = wrapper.findComponent({ name: 'JammerEditorDialog' })
-    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 1, frequency: 2400, bandwidth: 200, detectionRange: 55560, jammingRange: 55560, releaseRange: 64820 })
+    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', ...JAMMER_DEFAULTS, weaponBands: JAMMER_DEFAULT_BANDS })
     expect(dialog.props('jammer')).not.toHaveProperty('triggerTimeS')
     expect(dialog.props('jammerTypeOptions')).toContainEqual({ value: 'SWEEP', label: '扫频' })
     dialog.vm.$emit('update:modelValue', false)
@@ -2069,7 +2070,7 @@ describe('P2-1 场景管理页面', () => {
     typeSelect.vm.$emit('update:modelValue', 'REAR_COMMAND_NODE')
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
-    expect(document.body.textContent).toContain('后方指挥节点当前场景不能超过 1 个')
+    expect(document.body.textContent).toContain('公共服务平台后方节点当前场景不能超过 1 个')
     wrapper.unmount()
   })
 
@@ -2459,7 +2460,7 @@ describe('P2-1 场景管理页面', () => {
     expect(document.body.textContent).toContain('干扰频率必须大于 0 MHz。')
 
     select('jammer-platform').vm.$emit('update:modelValue', 'AJ-002')
-    inputNumber('jammer-power').vm.$emit('update:modelValue', 30)
+    inputNumber('jammer-power').vm.$emit('update:modelValue', 1)
     inputNumber('jammer-range').vm.$emit('update:modelValue', 44.448)
     inputNumber('jammer-frequency').vm.$emit('input', 2200)
     inputNumber('jammer-frequency').vm.$emit('update:modelValue', 2200)
@@ -2474,6 +2475,11 @@ describe('P2-1 场景管理页面', () => {
     inputNumber('jammer-bandwidth').vm.$emit('input', 5)
     inputNumber('jammer-bandwidth').vm.$emit('update:modelValue', 5)
     inputNumber('jammer-bandwidth').vm.$emit('input', undefined)
+    // 同类机载平台共用参数，新增设备沿用既有设备的单频段配置。
+    document.querySelector<HTMLElement>('[data-testid="jammer-remove-band-2"]')!.click()
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="jammer-remove-band-1"]')!.click()
+    await flushPromises()
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
 
@@ -2482,8 +2488,8 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.jammers.at(-1)).toEqual({
       radarFrequency: 2400, radarBandwidth: 1, radarPower: 1000, noiseFigureDb: 3,
-      // 功率 30 dBm 按 功率(dBm)-30+增益-损耗 联动得 0 dBW。
-      gtDbk: -12, eirpDbw: 0, antennaGainDbi: 0, txLossDb: 0, sweepDutyCycle: 0.1,
+      // 功率改为 1 W，联动结果等于默认天线增益。
+      gtDbk: -12, eirpDbw: 20, antennaGainDbi: 20, txLossDb: 0, sweepDutyCycle: 0.1,
       id: 'JAM-CFG-001',
       platformId: 'AJ-002',
       type: 'SWEEP',
@@ -2491,10 +2497,9 @@ describe('P2-1 场景管理页面', () => {
       frequency: 2200,
       bandwidth: 5,
       weaponBands: [{ frequency: 2200, bandwidth: 5, mode: 'SWEEP', spotBandwidthMHz: 0, sweepDutyCycle: 0.1 }],
-      // 探测范围按 km 输入；干扰与释放范围取文档默认的 30、35 海里。
       detectionRange: 44448,
-      jammingRange: 55560,
-      releaseRange: 64820,
+      jammingRange: JAMMER_DEFAULTS.jammingRange,
+      releaseRange: JAMMER_DEFAULTS.releaseRange,
     })
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AJ-002')?.jammerIds).toContain('JAM-CFG-001')
     expect(scenario.draft?.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({

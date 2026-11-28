@@ -242,10 +242,10 @@ export function resolvePlatformCoordinates(
 }
 
 const MAP_NODE_SUBLABEL_PREFIXES: Readonly<Record<string, string>> = {
-  REAR_COMMAND_NODE: '后方指挥节点C',
-  FORWARD_RELAY_NODE: '高空前出中继节点R',
-  GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车G',
-  AIRBORNE_MISSION_CLUSTER: '空中无人作业集群U',
+  REAR_COMMAND_NODE: '公共服务平台后方节点C',
+  FORWARD_RELAY_NODE: '公共服务平台前出节点R',
+  GROUND_CLUSTER_COMMAND_NODE: '无人集群指挥车节点G',
+  AIRBORNE_MISSION_CLUSTER: '无人机集群U',
   COMMUNICATION_SATELLITE: '通信卫星S',
   GROUND_JAMMER_DETECTION_STATION: '地面干扰站J',
   AIRBORNE_JAMMER_PLATFORM: '机载干扰平台J',

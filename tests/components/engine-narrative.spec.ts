@@ -162,6 +162,17 @@ describe('engine-narrative', () => {
     expect(jumpedSwitch!.summary).not.toContain('光纤')
     expect(jumpedSwitch!.threshold).toBe('超视距 · C 波段下行 > 240 km')
 
+    // 1.7) 场景自定义链路最大传输距离时，超视距条件提示同步读取自定义上限
+    const customDistanceBanner = extractEngineMapStoryBanner(
+      nextFrame,
+      nodes,
+      undefined,
+      { trafficDistance: { relayUavKm: 75, relayRelayKm: 200, relayCommandKm: 240, uavCommandKm: 180, microwaveKm: 200, laserKm: 40 } },
+      { frameId: beyFrame.frameId, simulationTime: beyFrame.simulationTime, route: jumpedRoute },
+      null,
+    )
+    expect(customDistanceBanner.find(item => item.kind === 'SWITCH')!.threshold).toBe('超视距 · C 波段下行 > 180 km')
+
     // 2) 误码劣化切换：实测 BER 触发自定义紧急门限 + 干扰损耗
     const berFrame = structuredClone(frame)
     const jammedSeg = berFrame.links.find(item => (item.losses.jammingDb ?? 0) > 0)!

@@ -608,7 +608,7 @@ describe('1112 固定模板 + 受控替换生成器', () => {
       ...structuredClone(duplicateRear.config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')!),
       id: 'extra_rear', name: '额外后方车', linkIds: [], sensorIds: [], jammerIds: [],
     })
-    expect(() => buildMissionPackage(duplicateRear)).toThrow(/后方指挥节点当前场景不能超过 1 个/u)
+    expect(() => buildMissionPackage(duplicateRear)).toThrow(/公共服务平台后方节点当前场景不能超过 1 个/u)
 
     const invalidReference = createTemplateScenario()
     invalidReference.config.informationDemand[0]!.destinationPlatformIds = ['not_a_template_instance']

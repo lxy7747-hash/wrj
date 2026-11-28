@@ -70,10 +70,10 @@ export function equipmentLinkIssues(record: EquipmentParameter): Partial<Record<
   if (configured(record.dataRateMbps)) {
     const value = record.dataRateMbps!
     const options = equipmentDataRateOptions(record.type)
-    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) errors.dataRateMbps = '数据速率必须大于 0 Mbps，未配置请留空。'
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) errors.dataRateMbps = '数据速率必须大于 0 Mbit/s，未配置请留空。'
     else if (options && !options.some(option => option.value === value)) errors.dataRateMbps = '数据速率与设备类型不一致，请选择对应的速率档位或清空。'
     else if (type === 'FIBER' && (value < FIBER_DATA_RATE_MBPS.min || value > FIBER_DATA_RATE_MBPS.max)) {
-      errors.dataRateMbps = `光纤数据速率必须在 ${FIBER_DATA_RATE_MBPS.min}～${FIBER_DATA_RATE_MBPS.max} Mbps 之间。`
+      errors.dataRateMbps = `光纤数据速率必须在 ${FIBER_DATA_RATE_MBPS.min}～${FIBER_DATA_RATE_MBPS.max} Mbit/s 之间。`
     }
   }
   if (configured(record.berThreshold) && (typeof record.berThreshold !== 'number' || !Number.isFinite(record.berThreshold) || record.berThreshold < 0 || record.berThreshold > 1)) {

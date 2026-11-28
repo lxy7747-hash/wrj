@@ -84,7 +84,7 @@ async function inspectExecutionLog(path: string, interrupted = false): Promise<b
   let completed = false
   try {
     for await (const line of lines) {
-      if (/^\s*\*{5}\s+(ERROR|FATAL):/.test(line)) return false
+      if (/^\s*(?:\*{5}\s+(?:ERROR|FATAL):|\[ASSERT FAILED\])/.test(line)) return false
       if (line.trim() === 'Simulation complete') completed = true
     }
     return completed || interrupted
@@ -277,7 +277,11 @@ export class LocalMissionRunner implements MissionExecution {
           try {
             continuousArchiveDirectory = await continuous.close(code === 0 && !outcome.errorMessage && !stopped ? 'COMPLETED' : 'INCOMPLETE', { stopped })
           } catch (error) {
-            outcome.errorMessage = `连续时序留存失败：${error instanceof Error ? error.message : '未知错误'}；运行目录保留未完成数据。`
+            const reason = error instanceof Error ? error.message.replace(/[。；]+$/u, '') : '未知错误'
+            const archiveError = `连续时序留存失败：${reason}。运行目录保留未完成数据。`
+            outcome.errorMessage = outcome.errorMessage
+              ? `${outcome.errorMessage.replace(/[。；]+$/u, '')}。${archiveError}`
+              : archiveError
           }
           const receipt = {
             taskId, runId, scenarioId: draft.config.scenario.id, revision: draft.revision, entryPath,

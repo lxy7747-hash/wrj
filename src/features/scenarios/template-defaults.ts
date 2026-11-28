@@ -282,7 +282,7 @@ export function resolveTemplateLinkPorts(config: Pick<ScenarioConfig, 'platforms
   if (link.type === 'FIBER') {
     return sourceType === 'COMMAND_VEHICLE_PLATFORM' && targetType === 'REAR_COMM_PLATFORM'
       ? pair('fiber_link', 'fiber_link') : sourceType === 'REAR_COMM_PLATFORM' && targetType === 'COMMAND_VEHICLE_PLATFORM'
-        ? pair('fiber_link', 'fiber_link') : { status: 'ERROR', message: '光纤链路仅支持地面无人集群指挥车与后方指挥节点之间。' }
+        ? pair('fiber_link', 'fiber_link') : { status: 'ERROR', message: '光纤链路仅支持无人集群指挥车节点与公共服务平台后方节点之间。' }
   }
   if (link.type === 'MICROWAVE') {
     const sourceIsUav = sourceType === 'MISSION_UAV_PLATFORM'
@@ -292,7 +292,7 @@ export function resolveTemplateLinkPorts(config: Pick<ScenarioConfig, 'platforms
       || (sourceType === 'REAR_COMM_PLATFORM' && targetIsUav)
     return uavPair || rearPair
       ? pair('microwave_link', 'microwave_link')
-      : { status: 'ERROR', message: '微波链路仅支持任务/中继无人机之间或与后方指挥节点之间。' }
+      : { status: 'ERROR', message: '微波链路仅支持任务/中继无人机之间或与公共服务平台后方节点之间。' }
   }
   if (link.type === 'DATALINK') {
     const sourceIsUav = sourceType === 'MISSION_UAV_PLATFORM'
@@ -300,7 +300,7 @@ export function resolveTemplateLinkPorts(config: Pick<ScenarioConfig, 'platforms
     const sourceIsCommand = sourceType === 'COMMAND_VEHICLE_PLATFORM'
     const targetIsCommand = targetType === 'COMMAND_VEHICLE_PLATFORM'
     if (!((sourceIsUav && targetIsCommand) || (sourceIsCommand && targetIsUav) || (sourceIsUav && targetIsUav))) {
-      return { status: 'ERROR', message: '数传链路仅支持任务/中继无人机之间或与地面无人集群指挥车之间。' }
+      return { status: 'ERROR', message: '数传链路仅支持任务/中继无人机之间或与无人集群指挥车节点之间。' }
     }
     const band = link.band ?? 'C'
     const forward = link.direction !== 'REVERSE'
@@ -311,7 +311,7 @@ export function resolveTemplateLinkPorts(config: Pick<ScenarioConfig, 'platforms
     const sourcePort = sourceType === 'REAR_COMM_PLATFORM' ? (link.direction === 'REVERSE' ? 'sat_link_b' : 'sat_link_a') : 'sat_link'
     const targetPort = targetType === 'REAR_COMM_PLATFORM' ? (link.direction === 'REVERSE' ? 'sat_link_b' : 'sat_link_a') : 'sat_link'
     const supportsSatellitePath = [sourceType, targetType].includes('REAR_COMM_PLATFORM') && [sourceType, targetType].some(type => type === 'MISSION_UAV_PLATFORM' || type === 'TIAN_TONG_SAT' || type === 'SHEN_TONG_SAT')
-    return supportsSatellitePath ? pair(sourcePort, targetPort) : { status: 'ERROR', message: '卫星链路需连接后方指挥节点与任务/中继无人机或通信卫星。' }
+    return supportsSatellitePath ? pair(sourcePort, targetPort) : { status: 'ERROR', message: '卫星链路需连接公共服务平台后方节点与任务/中继无人机或通信卫星。' }
   }
   return { status: 'ERROR', message: '链路类型没有新模板端口映射。' }
 }

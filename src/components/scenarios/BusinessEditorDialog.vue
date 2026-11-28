@@ -71,7 +71,7 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
     width="min(760px, calc(100vw - 2rem))" top="5vh" append-to-body destroy-on-close
     :data-testid="embedded ? 'link-business-fields' : 'business-dialog'" @opened="emit('opened')" @update:model-value="emit('update:modelValue', $event)">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <component :is="embedded ? 'div' : ElForm" v-if="editor" label-position="top" :disabled="disabled" class="business-editor">
+    <component :is="embedded ? 'div' : ElForm" v-if="editor" label-position="top" :disabled="disabled" class="business-editor" :class="{ 'business-editor--embedded': embedded }">
       <el-form-item v-if="!embedded" label="业务方向" :error="fieldError('direction')"><el-select :model-value="editor.direction" placeholder="旧业务未设置方向" data-testid="demand-direction" @change="changeDirection">
         <el-option label="前向" value="FORWARD" /><el-option label="返向" value="REVERSE" />
       </el-select></el-form-item>
@@ -93,7 +93,7 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
       <el-form-item required :label="'传输频次（次/秒）'" :error="fieldError('frequencyHz')">
         <el-input-number v-model="editor.frequencyHz" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-frequency" />
       </el-form-item>
-      <el-form-item v-if="Boolean(fieldError('minDataRateMbps'))" required label="最低业务速率（Mbps）" :error="fieldError('minDataRateMbps')"><el-input-number v-model="editor.minDataRateMbps" :min="validate ? undefined : 0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
+      <el-form-item v-if="Boolean(fieldError('minDataRateMbps'))" required label="最低业务速率（Mbit/s）" :error="fieldError('minDataRateMbps')"><el-input-number v-model="editor.minDataRateMbps" :min="validate ? undefined : 0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
       <el-form-item v-if="Boolean(fieldError('maxLatencyMs'))" required label="最大时延（ms）" :error="fieldError('maxLatencyMs')"><el-input-number v-model="editor.maxLatencyMs" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-latency" /></el-form-item>
     </component>
     <template v-if="!embedded" #footer><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="disabled" data-testid="apply-business" @click="apply">确认</el-button></template>
@@ -101,9 +101,13 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
 </template>
 
 <style scoped>
-.business-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; margin-top: 1rem; }
+.business-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.15rem 0.9rem; margin-top: 0.75rem; }
+.business-editor--embedded { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
+.business-editor :deep(.el-form-item) { margin-bottom: 0.9rem; }
+.business-editor :deep(.el-form-item__label) { margin-bottom: 0.25rem; color: var(--console-text-muted); font-size: 12px; line-height: 1.25rem; }
 .business-editor :deep(.el-input-number) { width: 100%; }
-.business-editor__volume { display: flex; gap: 0.5rem; width: 100%; }
-.business-editor__volume :deep(.el-select) { width: 90px; flex-shrink: 0; }
-@media (max-width: 600px) { .business-editor { grid-template-columns: 1fr; } }
+.business-editor__volume { display: flex; gap: 0.45rem; width: 100%; }
+.business-editor__volume :deep(.el-select) { width: 84px; flex-shrink: 0; }
+@media (max-width: 720px) { .business-editor--embedded { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .business-editor, .business-editor--embedded { grid-template-columns: 1fr; } }
 </style>

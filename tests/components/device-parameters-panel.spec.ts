@@ -30,7 +30,7 @@ describe('通信设备参数面板', () => {
     expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-sat_link-txFrequency').props('modelValue')).toBe(20000)
     // C/L 波段速率按模板 bit/s 档位显示。
     expect(select(wrapper, 'port-MISSION_UAV_PLATFORM-c_band_uplink-transferRate').props('modelValue')).toBe(2)
-    expect(wrapper.text()).toContain('2 Mbps')
+    expect(wrapper.text()).toContain('2 Mbit/s')
     expect(wrapper.findAllComponents({ name: 'ElInputNumber' }).filter(item => item.attributes('data-testid')?.startsWith('antenna-gain-'))).toHaveLength(1)
     expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-c_band_uplink-peakGainDb').props('modelValue')).toBe(5)
     expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-lazer_link-peakGainDb').props('modelValue')).toBe(45)
@@ -40,13 +40,13 @@ describe('通信设备参数面板', () => {
 
     await wrapper.findAll('[role="tab"]')[1]!.trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-testid="port-COMMAND_VEHICLE_PLATFORM-fiber_link-transferRate"]').text()).toBe('1000 Mbps（固定）')
+    expect(wrapper.get('[data-testid="port-COMMAND_VEHICLE_PLATFORM-fiber_link-transferRate"]').text()).toBe('1000 Mbit/s（固定）')
     expect(wrapper.find('[data-testid="port-COMMAND_VEHICLE_PLATFORM-fiber_link-txFrequency"]').exists()).toBe(false)
 
     await wrapper.findAll('[role="tab"]')[3]!.trigger('click')
     await flushPromises()
-    // 天通速率按 kbps 显示（16000 kbps = 16 Mbps），领域值仍为 Mbps。
-    expect(numberInput(wrapper, 'port-TIAN_TONG_SAT-sat_link-transferRate').props('modelValue')).toBe(16000)
+    // 天通速率统一按 Mbit/s 显示。
+    expect(numberInput(wrapper, 'port-TIAN_TONG_SAT-sat_link-transferRate').props('modelValue')).toBe(16)
   })
 
   it('编辑端口写回完整端口参数，未编辑的端口与天线保持缺省；速率按端口单位换算', async () => {

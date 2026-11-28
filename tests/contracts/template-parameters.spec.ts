@@ -349,12 +349,12 @@ it('11-06 新键保持闭合校验：有限数、正周期、正雷达功率/带
   expect(inspectScenarioConfig(candidate, 'write').result.valid).toBe(false)
 })
 
-it('11-06 扩展不放宽 V1.2 干扰功率档位和正带宽校验，同类雷达差异不会静默采用首台', () => {
+it('11-06 扩展不放宽正干扰功率和正带宽校验，同类雷达差异不会静默采用首台', () => {
   const draft = createTemplateScenario()
-  for (const patch of [{ defaultPower: 2 }, { bandwidth: 0 }]) {
+  for (const patch of [{ defaultPower: 0 }, { bandwidth: 0 }]) {
     const config = structuredClone(draft.config)
     Object.assign(config.jammers[0]!, patch)
-    expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'defaultPower' in patch ? 'JAMMER_POWER_OUT_OF_RANGE' : 'JAMMER_BANDWIDTH_INVALID' }))
+    expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'defaultPower' in patch ? 'JAMMER_POWER_INVALID' : 'JAMMER_BANDWIDTH_INVALID' }))
   }
   const platform = structuredClone(draft.config.platforms.find(p => p.id === draft.config.jammers[0]!.platformId)!)
   platform.id = 'second-ground'; platform.jammerIds = ['JAM-SECOND']

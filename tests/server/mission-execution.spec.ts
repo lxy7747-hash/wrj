@@ -921,6 +921,7 @@ describe('本机 mission 执行器', () => {
     [0, 'Simulation complete\n', false],
     [2, '***** FATAL: input failed\n', true],
     [0, '***** ERROR: Script Exception:\nSimulation complete\n', true],
+    [0, '[ASSERT FAILED] missing record\nSimulation complete\n', true],
     [0, 'Starting simulation.\n', true],
   ] as const)('退出码 %s 与日志 %s 共同验证实际完成', async (code, log, failed) => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-runner-'))
@@ -1038,6 +1039,35 @@ describe('本机 mission 执行器', () => {
       expect(rows).toHaveLength(manifest.files.find((file: { fileName: string }) => file.fileName === 'events.csv').rowCount)
       expect(completedCsv).toContain(',SIMULATION_COMPLETE,')
     } finally { Object.assign(APP_CONFIG.scenarioOutput, originalOutput); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.each([0, 1])('CSV 缺少 System 时保留本次 Mission 结果和归档错误（退出码 %s）', async code => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-archive-error-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8788, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    const capture = vi.fn(async () => {})
+    try {
+      const process = await new LocalMissionRunner(join(root, 'mission.exe'), root, { capture }).start(draftForMission())
+      const directory = dirname(process.entryPath)
+      const schema = REPORT_EVENT_CSV.split('\n').find(line => line.startsWith('! MESSAGE_RECEIVED,'))!.trimEnd()
+      const raw = `${schema}\n1,MESSAGE_RECEIVED,A,blue,radio,1,0,CMD_ORDER,8\n2,MESSAGE_RECEIVED,A,blue`
+      const output = join(directory, 'output', 'scenario_events.csv')
+      await writeFile(output, raw)
+      await appendFile(join(directory, 'mission-console.log'), code === 0 ? 'Simulation complete\n' : '[ASSERT FAILED] missing record\n')
+      child.emit('exit', code)
+      child.emit('close', code)
+
+      const outcome = await process.completed
+      const archiveError = '连续时序留存失败：scenario_events.csv 第 3 行无法按原生事件解析：事件缺少字段 System。运行目录保留未完成数据。'
+      expect(outcome).toMatchObject({
+        code,
+        errorMessage: code === 0 ? archiveError : expect.stringMatching(/^mission 执行失败（退出码 1）/u),
+      })
+      expect(outcome.errorMessage).toContain(archiveError)
+      expect(JSON.parse(await readFile(join(directory, 'execution.json'), 'utf8'))).toMatchObject(outcome)
+      expect(await readFile(output, 'utf8')).toBe(raw)
+      expect(capture).not.toHaveBeenCalled()
+    } finally { await rm(root, { recursive: true, force: true }) }
   })
 
   it('停止的任务不发布结果；旧草稿关闭事件输出不覆盖系统配置', async () => {

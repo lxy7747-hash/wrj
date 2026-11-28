@@ -49,10 +49,10 @@ const props = defineProps<{
 }>()
 
 const DEFAULT_TYPE_NAMES: Record<PlatformType, string> = {
-  REAR_COMMAND_NODE: '后方指挥节点',
-  FORWARD_RELAY_NODE: '高空前出中继节点',
-  GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车',
-  AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
+  REAR_COMMAND_NODE: '公共服务平台后方节点',
+  FORWARD_RELAY_NODE: '公共服务平台前出节点',
+  GROUND_CLUSTER_COMMAND_NODE: '无人集群指挥车节点',
+  AIRBORNE_MISSION_CLUSTER: '无人机集群',
   COMMUNICATION_SATELLITE: '天通卫星',
   GROUND_JAMMER_DETECTION_STATION: '地面干扰设备',
   AIRBORNE_JAMMER_PLATFORM: '机载干扰设备',
@@ -715,7 +715,7 @@ watch(() => props.modelValue, (visible) => {
         </div>
         <p class="platform-editor-field__hint">开启后选择盘旋圆心并设置半径，系统自动生成 {{ DEFAULT_LOITER_POINT_COUNT }} 个圆周盘旋航点并在航线末尾循环飞行；非必填。</p>
         <template v-if="loiterEnabled">
-          <div class="position-grid">
+          <div class="loiter-circle-grid">
             <el-form-item required label="圆心经度（°）">
               <el-input-number :model-value="loiterCircle.longitude" :min="-180" :max="180" :step="0.01" controls-position="right" data-testid="loiter-center-longitude" @update:model-value="updateLoiterCircle('longitude', $event)" />
             </el-form-item>
@@ -817,32 +817,37 @@ watch(() => props.modelValue, (visible) => {
 
 <style scoped>
 .platform-feedback {
-  margin-bottom: 1rem;
+  margin-bottom: 0.85rem;
 }
 
 .platform-editor-grid,
-.position-grid {
+.position-grid,
+.loiter-circle-grid {
   display: grid;
-  gap: 0 1rem;
+  gap: 0.15rem 0.9rem;
 }
 
 .platform-editor-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .platform-editor-form {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.8rem;
+}
+
+.platform-editor-form > .scenario-advanced {
+  margin: 0;
 }
 
 .platform-editor-field__hint--hidden { visibility: hidden; }
 :deep(.el-form-item.is-error:has(.platform-editor-field__hint--hidden) .el-form-item__error) { transform: translateY(-1.5em); }
 .platform-editor-field__hint {
   display: block;
-  margin-top: 0.25rem;
+  margin-top: 0.2rem;
   color: var(--console-text-muted);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .platform-editor-field__error {
@@ -854,36 +859,51 @@ watch(() => props.modelValue, (visible) => {
 
 .platform-editor-section {
   min-width: 0;
+  padding: 0.8rem 0.95rem 0.4rem;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: rgb(8 25 40 / 48%);
 }
 
 .platform-editor-section__title {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin: 0 0 0.375rem;
+  gap: 0.65rem;
+  margin: 0 0 0.6rem;
   color: var(--console-cyan);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .platform-editor-section__title::after {
   flex: 1;
-  border-top: 1px solid var(--console-border);
+  border-top: 1px solid rgb(52 104 134 / 55%);
   content: '';
 }
 
 .platform-editor-form :deep(.el-form-item) {
-  /* 为绝对定位的校验红字预留一行。 */
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.9rem;
+}
+
+.platform-editor-form :deep(.el-table .el-form-item) {
+  margin-bottom: 0;
+}
+
+.platform-editor-form :deep(.el-table .el-table__cell) {
+  padding: 6px 0;
 }
 
 .platform-editor-form :deep(.el-form-item__label) {
   margin-bottom: 0.25rem;
+  color: var(--console-text-muted);
+  font-size: 12px;
   line-height: 1.25rem;
 }
 
 .platform-editor-form :deep(.el-form-item__error) {
   position: static;
+  margin-top: 2px;
 }
 
 .platform-editor-form :deep(.el-input-number) {
@@ -900,8 +920,18 @@ watch(() => props.modelValue, (visible) => {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.loiter-circle-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 0.4rem;
+}
+
 .platform-editor-form :deep(.waypoint-actions .cell) {
   white-space: nowrap;
+}
+
+.waypoint-table {
+  margin-top: 0.4rem;
+  margin-bottom: 0.35rem;
 }
 
 .waypoint-table :deep(.cell) {
@@ -922,7 +952,7 @@ watch(() => props.modelValue, (visible) => {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  margin-bottom: 0.375rem;
+  margin-bottom: 0.45rem;
 }
 
 .waypoint-heading .platform-editor-section__title {
@@ -931,7 +961,8 @@ watch(() => props.modelValue, (visible) => {
 }
 
 .loiter-points-details {
-  margin-top: 0.25rem;
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
 }
 
 .loiter-details-toolbar {
@@ -939,7 +970,7 @@ watch(() => props.modelValue, (visible) => {
   align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
-  margin: 0.5rem 0;
+  margin: 0.4rem 0 0.55rem;
 }
 
 :global(.platform-editor-dialog .el-dialog__close) {
@@ -955,11 +986,16 @@ watch(() => props.modelValue, (visible) => {
   .position-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .loiter-circle-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
-@media (max-width: 600px) {
+@media (max-width: 640px) {
   .platform-editor-grid,
-  .position-grid {
+  .position-grid,
+  .loiter-circle-grid {
     grid-template-columns: 1fr;
   }
 }

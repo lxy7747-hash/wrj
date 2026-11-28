@@ -5,7 +5,7 @@ import {
   inspectScenarioConfig,
 } from '../../src/features/scenarios/scenario-validation.js'
 import { isConfiguredLinkEnabled, readLinkSettings, withoutRetiredLinkSettings } from '../../src/features/scenarios/link-settings.js'
-import { readLinkCalcSettings, readNaturalEnvironment } from '../../src/features/scenarios/link-calc-defaults.js'
+import { buildTrafficDistancePayload, readLinkCalcSettings, readNaturalEnvironment } from '../../src/features/scenarios/link-calc-defaults.js'
 import { hotLinkChainError, readHotLinks } from '../../src/features/scenarios/hot-links.js'
 import { FIBER_MAPPED_PORT_FIELDS, LINK_PORT_FIELDS, RADIO_MAPPED_PORT_FIELDS, linkOverride, mappedPortFields } from '../../src/features/scenarios/link-port-parameters.js'
 import { deriveCommPortsFromLinks, readDeviceParameters, resolveLinkRequiredCommPorts, resolveTemplateLinkPorts, templatePlatformType, TEMPLATE_PLATFORM_TYPES, TEMPLATE_PORT_PARAMS } from '../../src/features/scenarios/template-defaults.js'
@@ -1133,20 +1133,6 @@ function routeInputs(
   }
   return { traffic: traffic(config, all, enabledLinks, hot, laserOnlyTargets), forward: chain(hot.forward, all), reverse: chain(hot.reverse, all) }
 }
-/** 1112 模板的链路默认传输距离，单位为千米（km）。键名保留模板拼写。 */
-const DEFAULT_TRAFFIC_DISTANCE = [
-  {
-    link_type: 'cl_link',
-    distance_set: [
-      { dist_seg: 'relay-uav', distance: 60 },
-      { dist_seg: 'relay-relay', distance: 200 },
-      { dist_seg: 'relay-comand', distance: 240 },
-      { dist_seg: 'uav-comand', distance: 240 },
-    ],
-  },
-  { link_type: 'microwave_link', distance: 200 },
-  { link_type: 'lazer_link', distance: 40 },
-] as const
 function calculator(
   config: ScenarioDraft['config'],
   routes: RouteInputs,
@@ -1155,6 +1141,7 @@ function calculator(
   emittedPortParams: EmittedPortParams,
 ): string {
   const settings = readLinkSettings(config); const calc = readLinkCalcSettings(settings.linkCalc); const environment = readNaturalEnvironment(config.scenario.environment)
+  const trafficDistance = buildTrafficDistancePayload(calc.trafficDistance)
   const natural = { rain: { enabled: environment.rainEnabled, rain_rate_mm_hr: environment.rainRateMmPerHour, rain_altitude_limit_m: environment.rainAltitudeLimitM, rain_attenuation_db: environment.rainAttenuationDb }, cloud: { enabled: environment.cloudEnabled, cloud_altitude_min_m: environment.cloudAltitudeMinM, cloud_altitude_max_m: environment.cloudAltitudeMaxM, cloud_water_density_g_m3: environment.cloudWaterDensityGM3 }, atmosphere: { enabled: true, model: environment.atmosphereModel, simplified_attenuation_db_per_km: environment.simplifiedAttenuationDbPerKm }, misc_loss_db: { polarization_mismatch_db: environment.polarizationMismatchDb, pointing_error_db: environment.pointingErrorDb }, sea_state: { enabled: config.scenario.environment.multipathEnabled, sea_state_level: environment.seaState, low_altitude_threshold_m: environment.seaLowAltitudeThresholdM, path_over_sea_threshold_km: environment.seaPathOverSeaThresholdKm, mode: environment.seaModel, sea_polygon: (environment.seaPolygon ?? []).map(point => ({ lat: point.latitude, lon: point.longitude })), polarization: environment.seaPolarization, sea_water_temp_c: environment.seaWaterTempC, sea_surface_roughness_m: environment.seaSurfaceRoughnessM } }
   const jammerParamMode = (mode: string) => mode === 'BARRAGE' ? 'broadband' : mode === 'SPOT' ? 'spot' : 'sweep'
   const jams = { jammers: jammers.map(item => ({
@@ -1173,7 +1160,23 @@ function calculator(
     detect_radius_nm: item.detectionRangeM / 1852, trigger_radius_nm: item.jammingRangeM / 1852, release_radius_nm: item.releaseRangeM / 1852,
     spot_bandwidth_mhz: item.type === 'SPOT' ? (item.weaponBands[0]?.spotBandwidthMHz ?? item.bandwidthMHz) : 20, sweep_duty_cycle: item.sweepDutyCycle,
   })) }
-  return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR', `    update_interval ${n(calc.updateIntervalS)} sec`, `    emergency_threshold ${sci(calc.emergencyThreshold)}`, `    warning_threshold ${sci(calc.warningThreshold)}`, `    value_threshold_ber ${n(calc.valueThresholdBer)}`, `    channel_encoding_scheme ${n(calc.channelEncodingScheme)}`, `    traffic_type ${JSON.stringify(routes.traffic)}`, `    traffic_distance ${JSON.stringify(DEFAULT_TRAFFIC_DISTANCE)}`, `    relay_uav_names ${JSON.stringify(config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id))}`, `    hot_link_ret ${JSON.stringify(routes.reverse)}`, `    hot_link_fw ${JSON.stringify(routes.forward)}`, `    port_params ${JSON.stringify(emittedPortParams)}`, `    natural_environment ${JSON.stringify(natural)}`, `    jammer_param ${JSON.stringify(jams)}`, '  end_processor'].join('\n')
+  return [
+    '  add processor link_calc WSF_LINK_CALC_PROCESSOR',
+    `    update_interval ${n(calc.updateIntervalS)} sec`,
+    `    emergency_threshold ${sci(calc.emergencyThreshold)}`,
+    `    warning_threshold ${sci(calc.warningThreshold)}`,
+    `    value_threshold_ber ${n(calc.valueThresholdBer)}`,
+    `    channel_encoding_scheme ${n(calc.channelEncodingScheme)}`,
+    `    traffic_type ${JSON.stringify(routes.traffic)}`,
+    `    traffic_distance ${JSON.stringify(trafficDistance)}`,
+    `    relay_uav_names ${JSON.stringify(config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id))}`,
+    `    hot_link_ret ${JSON.stringify(routes.reverse)}`,
+    `    hot_link_fw ${JSON.stringify(routes.forward)}`,
+    `    port_params ${JSON.stringify(emittedPortParams)}`,
+    `    natural_environment ${JSON.stringify(natural)}`,
+    `    jammer_param ${JSON.stringify(jams)}`,
+    '  end_processor',
+  ].join('\n')
 }
 /** 本地运行包选项；对接方 TXT、预览和 writeScriptText 都不传，保持模板原样。 */
 export type LocalRuntimeOptions = {
@@ -2113,11 +2116,6 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   // 交付/预览的 TXT 脚本不保留注释；mapping.json、input.json、README.txt 等资料文件不受影响。
   for (const name of scriptFiles) {
     if (typeof files[name] === 'string') files[name] = stripScriptComments(files[name]!)
-  }
-  if (runtime) {
-    // 当前本机 LinkCalc DLL 不识别 traffic_distance。升级到支持该指令的版本后移除此处适配。
-    const rearFile = 'comm_platform_REAR.txt'
-    files[rearFile] = files[rearFile]!.replace(/^([ \t]*)(traffic_distance[ \t])/mu, '$1// $2')
   }
   return { manifest, files }
 }
